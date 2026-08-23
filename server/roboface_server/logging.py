@@ -139,10 +139,26 @@ def log(event: str, *, level: str = "info", **fields: object) -> None:
 
     ``event`` is a stable dotted name, not a sentence -- it is what a query groups by.
     Pass measurements, never bodies: ``chars=len(text)``, not ``text=text``.
+
+    **An unrecognised ``level`` falls back to INFO rather than raising.** This function is
+    called from inside the router's frame handling, so an exception here would propagate out
+    of ``serve()`` and drop a live connection -- meaning a typo in a log line ("warn" for
+    "warning", the likeliest one there is) would take a device down mid-turn, and would do so
+    only on the path that logs it, which is usually an error path nobody exercises.
+    Observability must not be able to cause an outage. The bad value is recorded as
+    ``unknown_log_level`` so the typo is still visible rather than merely survivable.
+
+    ``configure()`` stays strict by contrast: that is startup configuration, where failing
+    loudly is right, and ``config.py`` validates ``ROBOFACE_LOG_LEVEL`` against this same set.
     """
+    resolved = LEVELS.get(level)
+    if resolved is None:
+        fields = {**fields, "unknown_log_level": level}
+        resolved = logging.INFO
+
     logger = logging.getLogger(LOGGER_NAME)
     logger.log(
-        LEVELS[level],
+        resolved,
         event,
         # The context is captured *now*, not at format time: a handler may format later
         # (a queue, a background writer) by which point the contextvar has moved on.

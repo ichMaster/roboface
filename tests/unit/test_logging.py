@@ -225,3 +225,58 @@ def test_non_reserved_fields_are_untouched(stream: StringIO) -> None:
     (line,) = _lines(stream)
     assert line["proto_ver"] == 1
     assert "field_proto_ver" not in line
+
+
+# ---------------------------------------------------------------------------------------
+# A log-level typo must not take a connection down (code review #3)
+# ---------------------------------------------------------------------------------------
+
+
+def test_an_unknown_level_falls_back_instead_of_raising(stream: StringIO) -> None:
+    # "warn" for "warning" is the likeliest typo there is, and log() is called from inside
+    # the router's frame handling -- a raise here would drop a live device mid-turn.
+    with connection_context("s"):
+        log("router.something", level="warn")
+
+    (line,) = _lines(stream)
+    assert line["level"] == "info"
+    assert line["unknown_log_level"] == "warn"
+
+
+def test_the_fallback_keeps_the_line_and_its_fields(stream: StringIO) -> None:
+    with connection_context("s"):
+        bind_device("core-s3-01")
+        log("turn.text_in", level="nonsense", chars=12)
+
+    (line,) = _lines(stream)
+    assert line["event"] == "turn.text_in"
+    assert line["chars"] == 12
+    assert line["device_id"] == "core-s3-01"
+
+
+@pytest.mark.asyncio
+async def test_a_bad_level_in_the_router_does_not_drop_the_connection() -> None:
+    """The failure this fix is actually about, exercised through the router.
+
+    Patching a real call site is the only way to show that the connection survives -- the
+    unit tests above prove `log` returns, not that `serve` does.
+    """
+    from fake_device import connect
+    from roboface_server import router as router_module
+    from roboface_server.app import create_app
+    from roboface_server.protocol import Reply, TextIn
+
+    original = router_module.log
+
+    def typo(event: str, *, level: str = "info", **fields: object) -> None:
+        original(event, level="warn" if event == "turn.text_in" else level, **fields)
+
+    router_module.log = typo
+    try:
+        with connect(create_app()) as fake:
+            fake.hello()
+            fake.send(TextIn(text="does this survive?"))
+
+            assert fake.recv_until(Reply).text == "does this survive?"
+    finally:
+        router_module.log = original
