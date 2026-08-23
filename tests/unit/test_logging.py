@@ -172,3 +172,56 @@ def test_a_body_logged_as_a_length_does_not_appear(stream: StringIO) -> None:
     assert secret_ish not in raw
     assert "4171" not in raw
     assert json.loads(raw)["chars"] == len(secret_ish)
+
+
+# ---------------------------------------------------------------------------------------
+# Identity cannot be overwritten (code review #2)
+# ---------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("key", ["device_id", "session_id", "ts"])
+def test_a_caller_field_cannot_overwrite_a_reserved_key(key: str, stream: StringIO) -> None:
+    """The three reserved keys a caller field can actually reach.
+
+    `event` and `level` are named parameters of `log()`, so they are absorbed by the
+    signature and never arrive in `**fields` -- see the test below. They stay in
+    RESERVED_FIELDS anyway: the guard should not depend on the signature never changing.
+    """
+    with connection_context("real-session"):
+        bind_device("real-device")
+        log("real-event", **{key: "IMPOSTOR"})
+
+    (line,) = _lines(stream)
+    assert line[key] != "IMPOSTOR", f"a caller field replaced {key}"
+    assert line[f"field_{key}"] == "IMPOSTOR", "the colliding field was dropped instead of re-keyed"
+
+
+def test_identity_survives_a_deliberate_spoof(stream: StringIO) -> None:
+    # The scenario from the review: a call site passes a field that happens to be named
+    # device_id, and the line is attributed to the wrong device with no trace.
+    with connection_context("real-session"):
+        bind_device("core-s3-01")
+        log("turn.text_in", device_id="ATTACKER", session_id="ATTACKER", chars=3)
+
+    (line,) = _lines(stream)
+    assert line["device_id"] == "core-s3-01"
+    assert line["session_id"] == "real-session"
+    assert line["chars"] == 3
+
+
+def test_event_is_protected_by_the_signature() -> None:
+    # A different mechanism from the reserved-key guard, and worth pinning as such: `event`
+    # is a positional parameter, so a call site trying to set it as a field fails loudly at
+    # the call rather than quietly in the line. (`level` is likewise absorbed by the
+    # signature -- what it does with an unrecognised value is covered below.)
+    with pytest.raises(TypeError):
+        log("real-event", event="IMPOSTOR")  # type: ignore[misc]
+
+
+def test_non_reserved_fields_are_untouched(stream: StringIO) -> None:
+    with connection_context("s"):
+        log("hello.negotiated", proto_ver=1, caps=["touch"])
+
+    (line,) = _lines(stream)
+    assert line["proto_ver"] == 1
+    assert "field_proto_ver" not in line

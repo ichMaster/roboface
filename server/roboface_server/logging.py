@@ -49,6 +49,12 @@ LEVELS: Final[dict[str, int]] = {
 FIELDS_ATTRIBUTE: Final = "roboface_fields"
 CONTEXT_ATTRIBUTE: Final = "roboface_context"
 
+#: The keys a line always owns. A caller field of the same name is re-keyed rather than
+#: allowed to win: the entire justification for this module is that ``device_id`` and
+#: ``session_id`` can be trusted when reading an interleaved multi-device log, and a field
+#: that can quietly replace them removes the guarantee while leaving its appearance intact.
+RESERVED_FIELDS: Final = frozenset({"ts", "level", "event", "device_id", "session_id"})
+
 
 @dataclass(frozen=True, slots=True)
 class LogContext:
@@ -107,7 +113,10 @@ class JsonFormatter(logging.Formatter):
             "device_id": context.device_id,
             "session_id": context.session_id,
         }
-        payload.update(getattr(record, FIELDS_ATTRIBUTE, {}))
+        for key, value in getattr(record, FIELDS_ATTRIBUTE, {}).items():
+            # Renamed, not dropped: information a call site meant to record is kept, and the
+            # collision is visible in the line rather than silently resolved.
+            payload[f"field_{key}" if key in RESERVED_FIELDS else key] = value
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
