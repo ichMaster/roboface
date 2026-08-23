@@ -38,3 +38,31 @@ jobs:
 
       - name: Tests
         run: pytest
+
+  firmware:
+    name: pio test -e native
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('firmware/platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      # The pure half only. `pio run -e cores3` needs the ESP32 toolchain (a few hundred MB) and
+      # proves the glue compiles, which is worth doing locally before every flash but is not what
+      # guards the logic -- everything that can be wrong lives in src/pure/, and this is the job
+      # that tests it.
+      - name: Host tests
+        working-directory: firmware
+        run: pio test -e native

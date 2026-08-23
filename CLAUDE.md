@@ -133,4 +133,23 @@ skipped unless the variable is exactly `1`:
 ROBOFACE_LIVE_TESTS=1 .venv/bin/pytest tests/live
 ```
 
-- **Firmware:** C++ / PlatformIO for the Core S3 — M5Unified + M5GFX sprites, PSRAM for audio buffers, the face framebuffer and JPEG frames; esp-sr for the AFE in v3.4. `pio run -e cores3`, `pio test -e native`, `pio device monitor`. Add these once `firmware/` lands in v0.3.
+**Firmware** — C++ / PlatformIO for the Core S3 (board id `m5stack-cores3`), M5Unified + M5GFX
+sprites, PSRAM for audio buffers, the face framebuffer and JPEG frames; esp-sr for the AFE in
+v3.4. Run everything from `firmware/`:
+
+```bash
+cp src/config.example.h src/config.h && $EDITOR src/config.h   # once: WiFi + server URL
+pio test -e native          # the pure half — no board needed
+pio run -e cores3           # compile for the board
+pio run -e cores3 -t upload # flash it
+pio device monitor          # the serial debug channel: type a line, read the reply
+```
+
+`src/config.h` is **gitignored** — it holds the WiFi password. `SERVER_URL` is `ws://<host>:8000/ws`,
+not `wss://`: the server runs uvicorn with no TLS.
+
+**The two envs are the firmware architecture**, not a convenience. `native` compiles **only**
+`src/pure/` — header-only, `namespace roboface`, Arduino-free — so an `#include <M5Unified.h>` that
+reaches pure code fails `pio test -e native` at once rather than being found by the next person who
+tries to test that logic without hardware. `src/app/` is glue in `namespace app` and is validated by
+compiling plus the manual DoD checks in each phase.
