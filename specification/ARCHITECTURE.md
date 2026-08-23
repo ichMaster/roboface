@@ -63,6 +63,8 @@ Audio is **PCM16, 16 kHz, mono** in both directions (the device down-mixes its t
 
 `hello.proto_ver` is the wire version, currently **1**. There is no compatibility window: a device announcing any other version is rejected with `proto_unsupported` and the socket closes. One server serves one household's devices and they are flashed together.
 
+A text frame is capped at **64 KiB** and refused before it is parsed — control frames are small by construction, and the server binds every interface with no authentication, so an unbounded frame is an unbounded allocation from anything that can reach the port. Bulk payloads never travel this way: audio and images are binary frames, each carrying its own limit from the version that introduces it.
+
 `hello.caps` is the capability set (§Hardware variants) — `touch`, `camera`, `dual_mic`, `halo`, `buttons` — and the server tailors what it sends to it.
 
 ### EmotionFrame

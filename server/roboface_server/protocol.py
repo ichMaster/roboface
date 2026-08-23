@@ -59,6 +59,30 @@ AUDIO_FMT: Final = f"{AUDIO_FORMAT}/{AUDIO_SAMPLE_RATE}/{AUDIO_CHANNELS}"
 
 
 # --------------------------------------------------------------------------------------
+# Frame size
+# --------------------------------------------------------------------------------------
+
+#: The largest text frame this server will parse. Control frames are small by construction
+#: -- the biggest is a ``hello`` with every capability, or a debug-channel ``text_in`` line --
+#: so 64 KiB is generous by three orders of magnitude and still bounded.
+#:
+#: Enforced *before* ``json.loads`` in :func:`decode_envelope`: the point of a cap is not to
+#: reject a parsed blob but never to allocate one. The server binds ``0.0.0.0`` by design (the
+#: device connects across the LAN) and v0.1 has no authentication, so "only our device talks to
+#: it" is a claim about the network, not about this process.
+#:
+#: Bulk payloads do not pass through here at all -- audio and JPEG are **binary** frames with
+#: no envelope, and each will carry its own limit in the phase that introduces it (v1, v3).
+#:
+#: Note the unit: for a ``str`` this bounds *characters*, and UTF-8 can be up to four bytes
+#: each. That is intentional -- the constant exists to stop unbounded growth, not to be an
+#: exact byte budget, and checking length is O(1) where encoding first would allocate the very
+#: copy the cap is meant to prevent. uvicorn's transport-level ``ws_max_size`` (16 MiB by
+#: default) remains the outer backstop.
+MAX_TEXT_FRAME_BYTES: Final = 64 * 1024
+
+
+# --------------------------------------------------------------------------------------
 # Message vocabulary
 # --------------------------------------------------------------------------------------
 
@@ -294,7 +318,14 @@ def decode_envelope(raw: str | bytes) -> tuple[str, dict[str, Any]]:
 
     The generic layer: it round-trips any declared message, including the ones no phase
     implements yet, which is what lets a later phase add a typed frame without touching this.
+
+    Oversize frames are refused here, before any parsing happens.
     """
+    if len(raw) > MAX_TEXT_FRAME_BYTES:
+        raise MalformedFrame(
+            f"text frame is {len(raw)} long; the limit is {MAX_TEXT_FRAME_BYTES}"
+        )
+
     try:
         parsed = json.loads(raw)
     except (TypeError, ValueError) as exc:

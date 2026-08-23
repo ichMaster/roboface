@@ -16,6 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from roboface_server import protocol
 from roboface_server.protocol import (
     AUDIO_CHANNELS,
@@ -24,6 +25,7 @@ from roboface_server.protocol import (
     AUDIO_SAMPLE_RATE,
     BINARY_DEVICE_MESSAGES,
     BINARY_SERVER_MESSAGES,
+    MAX_TEXT_FRAME_BYTES,
     PROTO_VERSION,
     Accepted,
     BinaryPhase,
@@ -153,6 +155,25 @@ def test_audio_fmt_string_agrees_with_its_parts() -> None:
     # provider adapters read theirs from configuration; this is the authority they match.
     assert AUDIO_FMT == "pcm16/16000/1"
     assert parse_audio_fmt(AUDIO_FMT) == (AUDIO_FORMAT, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS)
+
+
+# ---------------------------------------------------------------------------------------
+# Frame size
+# ---------------------------------------------------------------------------------------
+
+
+def test_the_text_frame_cap_is_pinned() -> None:
+    # Part of the contract: the firmware must know what it may not exceed, and a later
+    # phase must not quietly raise this to accommodate a payload that belongs in a binary
+    # frame. Bulk data (audio, JPEG) never travels as a text frame.
+    assert MAX_TEXT_FRAME_BYTES == 64 * 1024
+
+
+def test_an_oversize_text_frame_is_refused_before_it_is_parsed() -> None:
+    oversize = "x" * (MAX_TEXT_FRAME_BYTES + 1)
+
+    with pytest.raises(protocol.MalformedFrame, match="the limit is"):
+        protocol.decode_envelope(oversize)
 
 
 # ---------------------------------------------------------------------------------------

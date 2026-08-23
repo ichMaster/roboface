@@ -217,3 +217,39 @@ def test_protocol_errors_carry_an_enumerated_code() -> None:
         with pytest.raises((MalformedFrame, UnknownMessage)) as raised:
             decode(raw)
         assert raised.value.code is ErrorCode.INTERNAL
+
+
+# ---------------------------------------------------------------------------------------
+# Frame size (code review #1)
+# ---------------------------------------------------------------------------------------
+
+
+def test_an_oversize_frame_is_refused_without_being_parsed() -> None:
+    from roboface_server.protocol import MAX_TEXT_FRAME_BYTES
+
+    # Valid JSON, and still refused: the cap is about never allocating the parsed object,
+    # not about the payload being wrong.
+    oversize = json.dumps({"type": "text_in", "text": "x" * MAX_TEXT_FRAME_BYTES})
+    assert len(oversize) > MAX_TEXT_FRAME_BYTES
+
+    with pytest.raises(MalformedFrame, match="the limit is"):
+        decode(oversize)
+
+
+def test_a_frame_at_the_limit_is_still_accepted() -> None:
+    from roboface_server.protocol import MAX_TEXT_FRAME_BYTES
+
+    # Off-by-one guard: the boundary is inclusive, so a device sized exactly to the
+    # documented cap is not rejected by it.
+    padding = MAX_TEXT_FRAME_BYTES - len(json.dumps({"type": "text_in", "text": ""}))
+    at_limit = json.dumps({"type": "text_in", "text": "x" * padding})
+    assert len(at_limit) == MAX_TEXT_FRAME_BYTES
+
+    assert decode(at_limit) == TextIn(text="x" * padding)
+
+
+def test_oversize_bytes_are_refused_too() -> None:
+    from roboface_server.protocol import MAX_TEXT_FRAME_BYTES
+
+    with pytest.raises(MalformedFrame, match="the limit is"):
+        decode(b"x" * (MAX_TEXT_FRAME_BYTES + 1))
