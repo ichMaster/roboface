@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Final
 
@@ -89,45 +90,71 @@ class Orchestrator:
 
         stream = self.provider.stream(self.system_prompt, tuple(history))
         collected: list[str] = []
+        # A turn has exactly two endings: it completes, or it rolls back. Abandonment -- a
+        # consumer that stops iterating -- was silently a third, leaving the user message
+        # stranded with no reply and the provider's stream (an open HTTP response, in the real
+        # adapter) waiting on garbage collection. Unreachable through today's router, which
+        # tears the connection down; reachable in **v3.4**, where ARCHITECTURE §Budgets and
+        # abort semantics has barge-in cancel a turn while the session continues. An invariant
+        # with three outcomes is not an invariant, so it is closed here rather than inherited.
+        #
+        # Each ending below marks itself settled; the ``finally`` handles only the one nobody
+        # wrote.
+        settled = False
 
         try:
-            first = await asyncio.wait_for(anext(stream), timeout=self.first_token_budget_s)
-        except TimeoutError as exc:
-            raise self._abort_turn(
-                session_id,
-                user_message,
-                TurnAborted(
-                    f"the model produced no token within {self.first_token_budget_s}s",
-                    ErrorCode.LLM_TIMEOUT,
-                ),
-            ) from exc
-        except StopAsyncIteration:
-            # The model declined to say anything. Not a failure: ARCHITECTURE treats silence
-            # as a clean end to a turn, and a spurious llm_failed here would put an error face
-            # on the device for a turn that simply had no answer worth giving.
-            #
-            # The user message *stays*: the person did speak, and the next turn should know
-            # it. This is the one place a turn ends without a reply and history is still right.
-            log("turn.reply", chars=0, deltas=0, empty=True)
-            return
-        except ProviderError as exc:
-            raise self._abort_turn(session_id, user_message, self._translate(exc)) from exc
+            try:
+                first = await asyncio.wait_for(anext(stream), timeout=self.first_token_budget_s)
+            except TimeoutError as exc:
+                settled = True
+                raise self._abort_turn(
+                    session_id,
+                    user_message,
+                    TurnAborted(
+                        f"the model produced no token within {self.first_token_budget_s}s",
+                        ErrorCode.LLM_TIMEOUT,
+                    ),
+                ) from exc
+            except StopAsyncIteration:
+                # The model declined to say anything. Not a failure: ARCHITECTURE treats
+                # silence as a clean end to a turn, and a spurious llm_failed here would put
+                # an error face on the device for a turn that simply had no answer worth
+                # giving.
+                #
+                # The user message *stays*: the person did speak, and the next turn should
+                # know it. This is the one ending with no reply where history is still right.
+                settled = True
+                log("turn.reply", chars=0, deltas=0, empty=True)
+                return
+            except ProviderError as exc:
+                settled = True
+                raise self._abort_turn(session_id, user_message, self._translate(exc)) from exc
 
-        collected.append(first)
-        yield first
+            collected.append(first)
+            yield first
 
-        try:
-            async for delta in stream:
-                collected.append(delta)
-                yield delta
-        except ProviderError as exc:
-            # Mid-stream death. The deltas already sent stay sent -- they were true when they
-            # left -- but the turn must not be closed as if it had finished, and the partial
-            # exchange must not enter history as though it were a complete one.
-            raise self._abort_turn(session_id, user_message, self._translate(exc)) from exc
+            try:
+                async for delta in stream:
+                    collected.append(delta)
+                    yield delta
+            except ProviderError as exc:
+                # Mid-stream death. The deltas already sent stay sent -- they were true when
+                # they left -- but the turn must not be closed as if it had finished, and the
+                # partial exchange must not enter history as though it were a complete one.
+                settled = True
+                raise self._abort_turn(session_id, user_message, self._translate(exc)) from exc
 
-        history.append(Message(role="model", text="".join(collected)))
-        log("turn.reply", chars=chars("".join(collected)), deltas=len(collected))
+            history.append(Message(role="model", text="".join(collected)))
+            settled = True
+            log("turn.reply", chars=chars("".join(collected)), deltas=len(collected))
+        finally:
+            if not settled:
+                self._abort_turn(
+                    session_id,
+                    user_message,
+                    TurnAborted("the turn was abandoned before it finished", ErrorCode.INTERNAL),
+                )
+                await _close_quietly(stream)
 
     def _abort_turn(
         self,
@@ -165,3 +192,17 @@ class Orchestrator:
         retry policy chosen for a reason that was never true.
         """
         return TurnAborted(str(exc), exc.code if exc.code is not None else ErrorCode.LLM_FAILED)
+
+
+async def _close_quietly(stream: AsyncIterator[str]) -> None:
+    """Close a provider stream, swallowing whatever it says on the way out.
+
+    Cleanup runs on the failure path, which is exactly where a second exception would replace
+    the first and lose the reason the turn ended. A provider that objects to being closed is
+    not worth telling anyone about.
+    """
+    closer = getattr(stream, "aclose", None)
+    if closer is None:
+        return
+    with suppress(Exception):
+        await closer()

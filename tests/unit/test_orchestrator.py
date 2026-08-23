@@ -333,3 +333,144 @@ async def test_rollback_removes_this_turns_message_not_merely_the_last_one() -> 
     assert [message.text for message in history] == ["перше", "ok"]
     assert history[0].role == "user"
     assert history[1].role == "model"
+
+
+# ---------------------------------------------------------------------------------------
+# The invariant is total (code review #4)
+# ---------------------------------------------------------------------------------------
+
+
+class _ClosableProvider:
+    """Records whether its stream was closed — what a real adapter's HTTP response needs."""
+
+    def __init__(self, deltas: list[str]) -> None:
+        self.deltas = deltas
+        self.closed = False
+
+    def stream(self, system: str, messages: object) -> object:
+        return self._stream()
+
+    async def _stream(self):  # type: ignore[no-untyped-def]
+        try:
+            for delta in self.deltas:
+                yield delta
+        finally:
+            self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_turn_rolls_back_rather_than_stranding_the_question() -> None:
+    """The third ending a turn should not have.
+
+    Unreachable through today's router, which tears the connection down. Reachable in v3.4,
+    where barge-in cancels a turn while the session continues — at which point the next turn
+    would show the model a question it never answered, which is exactly what the rollback in
+    RF-009 exists to prevent.
+    """
+    orchestrator = _orchestrator(MockLLMProvider(deltas=["a", "b", "c", "d"]))
+
+    stream = orchestrator.respond("s", "питання")
+    seen = []
+    async for delta in stream:
+        seen.append(delta)
+        if len(seen) == 2:
+            break
+    await stream.aclose()
+
+    assert seen == ["a", "b"]
+    assert orchestrator.history("s") == (), "the abandoned turn's question was left in history"
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_turn_closes_the_provider_stream() -> None:
+    # In the real adapter that generator holds an open HTTP response. Leaving it to garbage
+    # collection means leaking one per abandoned turn, on the path that abandons turns.
+    provider = _ClosableProvider(["a", "b", "c"])
+    orchestrator = _orchestrator(provider)
+
+    stream = orchestrator.respond("s", "hi")
+    async for _delta in stream:
+        break
+    await stream.aclose()
+
+    assert provider.closed
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_turn_leaves_earlier_turns_intact() -> None:
+    orchestrator = _orchestrator(MockLLMProvider(deltas=["ok"]))
+    [delta async for delta in orchestrator.respond("s", "перше")]
+
+    stream = orchestrator.respond("s", "друге")
+    async for _delta in stream:
+        break
+    await stream.aclose()
+
+    assert [message.text for message in orchestrator.history("s")] == ["перше", "ok"]
+
+
+@pytest.mark.asyncio
+async def test_a_completed_turn_is_not_treated_as_abandoned() -> None:
+    # The finally runs on every path; only the unhandled ending must trigger a rollback.
+    orchestrator = _orchestrator(MockLLMProvider(deltas=["ві", "таю"]))
+
+    [delta async for delta in orchestrator.respond("s", "привіт")]
+
+    assert [message.text for message in orchestrator.history("s")] == ["привіт", "вітаю"]
+
+
+@pytest.mark.asyncio
+async def test_a_silent_turn_is_not_treated_as_abandoned() -> None:
+    # It ends without a reply *and* keeps its user message — the one ending where both are
+    # correct. The abandonment branch must not undo it.
+    orchestrator = _orchestrator(SilentLLMProvider())
+
+    [delta async for delta in orchestrator.respond("s", "тиша")]
+
+    assert [message.text for message in orchestrator.history("s")] == ["тиша"]
+
+
+@pytest.mark.asyncio
+async def test_every_ending_leaves_history_in_one_of_two_states() -> None:
+    """The invariant itself, over every ending a turn has.
+
+    Either the exchange is recorded whole, or the question is gone. Never a question with no
+    answer, and never half an answer recorded as a whole one.
+    """
+    # 1. completes
+    completing = _orchestrator(MockLLMProvider(deltas=["ok"]))
+    [delta async for delta in completing.respond("s", "q")]
+    assert [m.text for m in completing.history("s")] == ["q", "ok"]
+
+    # 2. aborts before the first delta
+    failing = _orchestrator(MockLLMProvider(fail_at_index=0))
+    with pytest.raises(TurnAborted):
+        [delta async for delta in failing.respond("s", "q")]
+    assert failing.history("s") == ()
+
+    # 3. aborts mid-stream
+    midway = _orchestrator(MockLLMProvider(deltas=["a", "b"], fail_at_index=1))
+    with pytest.raises(TurnAborted):
+        [delta async for delta in midway.respond("s", "q")]
+    assert midway.history("s") == ()
+
+    # 4. times out
+    stalled = _orchestrator(
+        MockLLMProvider(delay_s=5.0, delay_before_index=0), first_token_budget_s=0.05
+    )
+    with pytest.raises(TurnAborted):
+        [delta async for delta in stalled.respond("s", "q")]
+    assert stalled.history("s") == ()
+
+    # 5. is abandoned
+    abandoned = _orchestrator(MockLLMProvider(deltas=["a", "b", "c"]))
+    stream = abandoned.respond("s", "q")
+    async for _delta in stream:
+        break
+    await stream.aclose()
+    assert abandoned.history("s") == ()
+
+    # 6. is silent — the sole ending with a question and no answer, and correct
+    silent = _orchestrator(SilentLLMProvider())
+    [delta async for delta in silent.respond("s", "q")]
+    assert [m.text for m in silent.history("s")] == ["q"]
