@@ -17,6 +17,7 @@ from fastapi import FastAPI, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from roboface_server.config import Settings, load_settings
+from roboface_server.logging import configure
 from roboface_server.router import (
     WS_CLOSE_NORMAL,
     ConnectionRegistry,
@@ -117,6 +118,7 @@ def create_app(
 def main(settings: Settings | None = None) -> None:
     """Run the server on the configured host and port (``ROBOFACE_WS_*``)."""
     resolved = settings if settings is not None else load_settings()
+    configure(resolved.log_level)
     uvicorn.run(
         create_app(),
         host=resolved.ws_host,

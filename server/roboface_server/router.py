@@ -24,6 +24,7 @@ from enum import StrEnum
 from typing import Protocol, runtime_checkable
 from uuid import uuid4
 
+from roboface_server.logging import bind_device, chars, connection_context, log
 from roboface_server.protocol import (
     FRAME_TYPES,
     Accepted,
@@ -151,30 +152,44 @@ class Router:
         A server that leaks connection state survives its own tests and dies in a week.
         """
         connection = Connection(session_id=self.session_id_factory())
-        self.registry.add(connection)
-        try:
-            while connection.phase is not ConnectionPhase.CLOSING:
-                try:
-                    message = await transport.receive()
-                except Disconnected:
-                    break
-                await self._handle(message, connection, transport)
-        finally:
-            self.registry.remove(connection)
+        with connection_context(connection.session_id):
+            self.registry.add(connection)
+            reason = "closed"
+            try:
+                log("connection.accepted", active=len(self.registry))
+                while connection.phase is not ConnectionPhase.CLOSING:
+                    try:
+                        message = await transport.receive()
+                    except Disconnected:
+                        reason = "client_disconnected"
+                        break
+                    await self._handle(message, connection, transport)
+                else:
+                    reason = "rejected"
+            except BaseException as exc:
+                reason = f"error:{type(exc).__name__}"
+                raise
+            finally:
+                self.registry.remove(connection)
+                log("connection.closed", reason=reason, active=len(self.registry))
 
     async def _handle(self, message: str | bytes, conn: Connection, transport: Transport) -> None:
         if isinstance(message, bytes | bytearray):
+            log("frame.received", kind="binary", bytes=len(message), level="debug")
             await self._handle_binary(conn, transport)
             return
 
         try:
             frame = decode(message)
         except ProtocolError as exc:
+            log("frame.rejected", code=str(exc.code), problem=type(exc).__name__, level="warning")
             # One branch for all three of MalformedFrame / UnknownMessage /
             # UnsupportedMessage: each already carries its own enumerated code, and the
             # router's job is to relay it rather than to re-classify it.
             await self._send_error(transport, exc.code, str(exc))
             return
+
+        log("frame.received", kind=str(FRAME_TYPES[type(frame)]), level="debug")
 
         if not _is_from_device(frame):
             await self._send_error(
@@ -214,6 +229,12 @@ class Router:
 
         outcome = negotiate(frame)
         if not isinstance(outcome, Accepted):
+            log(
+                "hello.rejected",
+                proto_ver=frame.proto_ver,
+                code=str(outcome.code),
+                level="warning",
+            )
             # Tell the device *why*, then close. Leaving it connected to a server that
             # cannot speak to it is the one outcome worse than refusing it.
             await self._send_error(transport, outcome.code, outcome.reason)
@@ -222,14 +243,24 @@ class Router:
             return
 
         conn.accept(outcome.hello)
+        bind_device(outcome.hello.device_id)
+        log(
+            "hello.negotiated",
+            proto_ver=outcome.hello.proto_ver,
+            caps=sorted(str(cap) for cap in outcome.hello.caps),
+            audio_fmt=outcome.hello.audio_fmt,
+        )
 
     async def _dispatch(self, frame: Frame, conn: Connection, transport: Transport) -> None:
         match frame:
             case Ping():
                 await transport.send(encode(Pong()))
             case TextIn():
+                # chars(), never the text: a log has to stay safe to paste into an issue.
+                log("turn.text_in", chars=chars(frame.text))
                 reply = await self.responder.respond(frame.text)
                 await transport.send(encode(Reply(text=reply, final=True)))
+                log("turn.reply", chars=chars(reply), final=True)
             case Hello():
                 await self._send_error(
                     transport, ErrorCode.INTERNAL, "'hello' was already negotiated"
@@ -240,6 +271,7 @@ class Router:
                 )
 
     async def _send_error(self, transport: Transport, code: ErrorCode, msg: str) -> None:
+        log("error.sent", code=str(code), level="warning")
         await transport.send(encode(ErrorFrame(code=code, msg=msg)))
 
 
