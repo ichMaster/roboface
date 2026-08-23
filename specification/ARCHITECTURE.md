@@ -320,6 +320,7 @@ Parsing, decisions and math never live behind an `M5` include; hardware access n
 /server         # Python: FastAPI + websockets — protocol, router, orchestrator, providers, emotion engine
 /assets         # face skin packs (stackchan/, ghost/, flame/, jelly/, cloud/) + manifest
 /tests          # pytest: unit, contract, integration — fake device + mocked providers
+/tools          # dev utilities — the terminal chat client that stands in for the device until v0.3
 /specification  # MISSION.md, ARCHITECTURE.md, ROADMAP.md, features/DEVICE_UI.md,
                 #   face-prototype.html, device-ui-prototype.html,
                 #   the original CONCEPT*.md, roadmap/implementation/

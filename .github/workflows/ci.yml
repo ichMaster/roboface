@@ -31,10 +31,10 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Lint
-        run: ruff check server tests
+        run: ruff check server tests tools
 
       - name: Types
-        run: mypy server
+        run: mypy server tools
 
       - name: Tests
         run: pytest

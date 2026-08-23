@@ -2,9 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Current state: spec-first, no product code yet
+## Current state: server through v0.2, released; no firmware yet
 
-`server/`, `firmware/`, `assets/` and `tests/` do not exist — they are the output the SDLC skills generate from the specification. What exists is the specification, the imported skill pipeline, and the generation tracker. There is therefore **no product build/test command yet**; the only working suite is `codegen/`'s own (below).
+`server/`, `tests/` and `tools/` exist and are released through **v0.2.1** — the wire contract, the
+router, the streaming orchestrator and the Gemini provider. `firmware/` and `assets/` do not exist
+yet; they are v0.3 and v0.4, and both need the real Core S3 for their DoD checks. See the Toolchain
+section below for how to run and test what is there.
 
 ```
 specification/   MISSION.md · ARCHITECTURE.md · ROADMAP.md   ← the source of truth, English only
@@ -14,6 +17,9 @@ specification/   MISSION.md · ARCHITECTURE.md · ROADMAP.md   ← the source of
   device-ui-prototype.html     the interactive UI mock-up (every screen and state)
   roadmap/implementation/      issues files + execution/review reports the skills write
 .claude/skills/  eleven SDLC skills that generate this repo from the specification
+server/          the product: protocol · router · orchestrator · providers · config · logging
+tests/           contract · unit · integration (fake device) · live (opt-in, paid)
+tools/           chat.py — a terminal stand-in for the device, until v0.3
 codegen/         generation tracking: event log, hooks, reducer, dashboard (:8420)
 ```
 
@@ -91,8 +97,40 @@ Port 8420, never 8000 — the RoboFace server will own 8000. Run its pytest **fr
 
 `~/development/lumi` is the source of this repo's documentation shape and versioning standard.
 
-## Toolchain (once the product directories exist)
+## Toolchain
 
-- **Server:** Python, FastAPI + websockets, SQLite from v4; `pytest`, `ruff check server tests`, `mypy server` (strict).
-- **Firmware:** C++ / PlatformIO for the Core S3 — M5Unified + M5GFX sprites, PSRAM for audio buffers, the face framebuffer and JPEG frames; esp-sr for the AFE in v3.4. `pio run -e cores3`, `pio test -e native`, `pio device monitor`.
-- Add the concrete commands to this file when the first server or firmware directory lands.
+**Server** — Python, FastAPI + websockets, SQLite from v4. Run everything from the repo root:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt   # once
+.venv/bin/pytest                          # the product suite (no key, no network)
+.venv/bin/ruff check server tests tools
+.venv/bin/mypy server tools               # strict
+```
+
+`pytest` from the root collects `tests/` only — `codegen/` has its own suite, run from inside
+`codegen/`, and `tests/test_repo_scaffold.py` asserts the two never merge.
+
+**Running it, and talking to it.** There is no device until v0.3, so `tools/chat.py` stands in
+for one — it speaks the protocol through `protocol.py`, so a contract change breaks it loudly
+rather than letting it drift:
+
+```bash
+set -a && . ./server/.env && set +a
+PYTHONPATH=server .venv/bin/python -m roboface_server.app     # terminal 1
+.venv/bin/python tools/chat.py                                # terminal 2
+```
+
+Type a line to say it; `/help` lists the rest (`/ping`, `/bad`, `/raw`, `/binary`, `/hello 99`,
+`/stats`). It prints reply deltas as they arrive and reports time-to-first-delta, which is the
+number the whole architecture exists to keep small. `--proto-ver 99` exercises the rejection
+path and exits non-zero.
+
+**The one paid test** is opt-in and guarded twice — excluded from default collection *and*
+skipped unless the variable is exactly `1`:
+
+```bash
+ROBOFACE_LIVE_TESTS=1 .venv/bin/pytest tests/live
+```
+
+- **Firmware:** C++ / PlatformIO for the Core S3 — M5Unified + M5GFX sprites, PSRAM for audio buffers, the face framebuffer and JPEG frames; esp-sr for the AFE in v3.4. `pio run -e cores3`, `pio test -e native`, `pio device monitor`. Add these once `firmware/` lands in v0.3.
