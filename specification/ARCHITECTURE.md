@@ -59,7 +59,9 @@ Text frames are JSON objects with a `type`. Binary frames carry raw payloads wit
 
 **server → device:** `asr_partial{text}` · `asr{text}` · `reply{text, final}` · `emotion{...EmotionFrame}` · `tts_audio`(binary PCM16) · `tts_end` · `config_updated{face_set?, brightness?, presence?}` · `error{code, msg}` · `restart` · `pong`
 
-Audio is **PCM16, 16 kHz, mono** in both directions (the device down-mixes its two channels before sending — the uplink is never stereo). Images are **JPEG** from the camera, announced by the `image_in` control frame that immediately precedes the binary frame.
+Audio is **PCM16, 16 kHz, mono** in both directions (the device down-mixes its two channels before sending — the uplink is never stereo). `hello.audio_fmt` spells that as `format/rate/channels` — **`pcm16/16000/1`** — and `protocol.py` owns the constant the ASR and TTS adapters must agree with. Images are **JPEG** from the camera, announced by the `image_in` control frame that immediately precedes the binary frame.
+
+`hello.proto_ver` is the wire version, currently **1**. There is no compatibility window: a device announcing any other version is rejected with `proto_unsupported` and the socket closes. One server serves one household's devices and they are flashed together.
 
 `hello.caps` is the capability set (§Hardware variants) — `touch`, `camera`, `dual_mic`, `halo`, `buttons` — and the server tailors what it sends to it.
 
