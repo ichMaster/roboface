@@ -222,6 +222,11 @@ __marimo__/
 codegen/runs/
 codegen/var/
 
+# server secrets — the Gemini/Deepgram/ElevenLabs keys (also matched by the generic
+# `.env` rule above; named explicitly so it is never lost to a reshuffle)
+server/.env
+server/.env.local
+
 # firmware secrets and build output (WiFi credentials + server URL live here)
 firmware/src/config.h
 .pio/

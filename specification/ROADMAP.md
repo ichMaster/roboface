@@ -2,11 +2,15 @@
 
 Seven self-contained versions, built in order: **v0** Skeleton (server + device + the wire contract) → **v1** Voice (the full loop, hands-free) → **v2** The living face (procedural face, emotion channel, lip-sync, touch/motion, skins) → **v3** Vision (look-and-tell, presence, the background emotion channel, AEC) → **v4** The simple mind (canon, memory, one tool, world context) → **v5** Bottom3, optional (the emotion halo) → **v6** FIRE compatibility (a second board behind capability flags).
 
-Versions are numbered from 0; phases inside a version are numbered `vA.B` (A = version, B = phase), e.g. `v2.3`. Each phase lists a **Goal**, a short description, a **Tasks** list, a **Definition of Done (DoD)** and the **Tests** that encode it (see [ARCHITECTURE.md](ARCHITECTURE.md) §Testing and CI).
+Versions are numbered from 0; phases inside a version are numbered `vA.B` (A = version, B = phase), e.g. `v2.3`. Each phase lists a **Goal**, a short description, a **Tasks** list, a **Definition of Done (DoD)** and the **Tests** that encode it (see [ARCHITECTURE.md](ARCHITECTURE.md) §Testing and CI). Phases that draw on the screen or handle input implement [features/DEVICE_UI.md](features/DEVICE_UI.md).
 
 **Versioning (`A.B.C`).** `A` = roadmap version (v0→0 … v6→6), `B` = phase within it (`v2.3` → `2.3.0`), `C` = a post-release fix on that phase. Roadmap phase `vA.B` → release `A.B.0`, tagged `vA.B.0`; a fix after it bumps `C`. Releases are cut per phase. **Never bump the version without explicit confirmation.**
 
 Arc of the two axes: the **device** grows screen → speaker → microphone → touch/IMU/proximity → camera → halo/second board; the **server** grows protocol → orchestrator → emotion engine → vision → mind. The device stays thin throughout — every capability added to it is I/O, never a decision. Complexity is added only by version, never all at once.
+
+**The device UI is specified once and referenced from the phases that build it:** [features/DEVICE_UI.md](features/DEVICE_UI.md) — indicators, the input map for both boards, the four notification ranks and the six full-screen states — with [device-ui-prototype.html](device-ui-prototype.html) as its interactive mock-up.
+
+**Streaming is built in from the first stage that has one, never retrofitted.** v0.2 streams the model's token deltas; v1.1 splits those deltas into phrases and streams synthesis and playback so speech starts before the reply exists; v1.2 streams the microphone while you are still speaking; v1.3 streams recognition over a WebSocket so the transcript is ready the moment you stop, and pins the per-stage budgets; v3.4 makes the whole thing interruptible. Each phase's DoD asserts the streaming property (interleaved frames, not two bursts), because a pipeline that only streams "later" never does. See [ARCHITECTURE.md](ARCHITECTURE.md) §Turn lifecycle.
 
 ---
 
@@ -41,12 +45,13 @@ Add the **`LLMProvider` seam** and its single real implementation: **Gemini 2.5 
 - `providers/base.py`: `LLMProvider` as an async-iterator Protocol (`stream(system, messages) -> AsyncIterator[str]`), plus `ProviderError` carrying an optional `error.code` hint.
 - `providers/gemini.py`: the Gemini 2.5 Flash adapter — streaming, `thinkingBudget: 0`, safety settings, key from `GEMINI_API_KEY`.
 - `providers/mock.py`: canned deterministic streams (the default everywhere in tests).
-- `orchestrator.py`: run a text turn, stream deltas as `reply{text, final}`, map failures to `llm_timeout` / `llm_failed` / `rate_limited`.
+- `orchestrator.py`: run a text turn and **stream it** — each token delta leaves as its own `reply{text, final}` frame the moment it arrives; the reply is **never accumulated and sent whole**. A separate **first-token budget** (~8 s) is awaited on `__anext__()` before the loop, so a stalled model fails fast while a slow-but-flowing one is not cut off mid-reply.
+- Failure and abort semantics: map provider failures to `llm_timeout` / `llm_failed` / `rate_limited`; an aborted turn rolls the user message back out of history so the next turn starts consistent.
 - `prompt.py`: assemble a minimal system prompt (a placeholder character until v4.1).
 
-**DoD:** a `text_in` from the fake device returns a real Gemini answer, streamed in deltas, with a per-stage timeout; every provider failure surfaces as an enumerated `error`; no test makes a paid call.
+**DoD:** a `text_in` from the fake device returns a real Gemini answer **arriving as a stream of deltas, first delta well before the reply is complete**, with the first-token budget enforced; every provider failure surfaces as an enumerated `error` and leaves history consistent; no test makes a paid call.
 
-**Tests:** contract — the `LLMProvider` interface and the `reply` delta shape; unit — prompt assembly, error mapping, timeout handling; integration — a full `text_in → reply` turn against the mock.
+**Tests:** contract — the `LLMProvider` interface and the `reply` delta shape (a delta stream, not one final message); unit — prompt assembly, error mapping, the first-token timeout, history rollback on abort; integration — a full `text_in → reply` turn against the mock asserting **multiple** `reply` frames.
 
 ### v0.3 — Firmware skeleton: Core S3 as a WSS client
 
@@ -75,11 +80,12 @@ Introduce `IFaceRenderer` and a **stub renderer**: a static face per device stat
 - `IFaceRenderer` in pure/glue split form; a `StubRenderer` mapping each device state to a simple drawn face.
 - Basic M5GFX sprite plumbing: a full-screen sprite in PSRAM, DMA push, no tearing.
 - Wire the state machine to `show()`; keep a tiny corner debug line (toggleable) for diagnosis.
-- Screen brightness from config; the screen never shows raw error text — an error maps to the error face plus a code in the serial log.
+- The first **chrome**, per [features/DEVICE_UI.md](features/DEVICE_UI.md): the top-band status cluster (link arcs, battery pill) with the settle-and-fade rule, and the fault toast carrying the enumerated `error.code`. Chrome lives in the outer 28 px band and never overlaps the face.
+- Screen brightness from config; the screen never shows a state as a word — a state is the face, a fault is the error face plus its code.
 
-**DoD:** the board shows a distinct face for `idle`, `listening`, `thinking`, `replying`, `offline` and `error`; the renderer interface is the only way the app draws a face; v0 is a complete, self-contained skeleton.
+**DoD:** the board shows a distinct face for `idle`, `listening`, `thinking`, `replying`, `offline` and `error`; link and battery appear when they matter and fade when they settle; a fault shows the error face plus its code; the renderer interface is the only way the app draws a face; v0 is a complete, self-contained skeleton.
 
-**Tests:** host — the state → face-recipe mapping is total over the state enum; manual DoD check on hardware (each state visibly distinct, no tearing).
+**Tests:** host — the state → face-recipe mapping is total over the state enum, and the chrome visibility rules (fade after settle; a fault never auto-dismisses); manual DoD check on hardware (each state visibly distinct, no tearing, chrome clear of the face area).
 
 ---
 
@@ -91,32 +97,34 @@ The complete voice loop through the server, hands-free by the end. Output is bui
 
 **Goal:** typed text comes back as a voice.
 
-Add the **`TTSProvider` seam** and the ElevenLabs streaming adapter (`pcm_16000`), the server-side sentence buffering that hands completed clauses to TTS, and device-side playback: `tts_audio` binary frames into a PSRAM ring buffer feeding the AW88298 amp, closed by `tts_end`.
+Add the **`TTSProvider` seam** and the ElevenLabs **stream** endpoint (`pcm_16000` — straight into the device's playback format, no decode), the **phrase splitter** that hands completed clauses to TTS while the model is still generating, and device-side streaming playback. This is the phase where the pipeline stops being request/response: **the mouth opens before the sentence exists**.
 
 **Tasks:**
-- `providers/base.py`: `TTSProvider.synthesize(text) -> AsyncIterator[bytes]` (PCM16 16 kHz mono) + a mock.
-- `providers/elevenlabs.py`: streaming synthesis, the character's voice id from config, `tts_failed` mapping.
-- `sentence.py`: buffer LLM deltas to clause/sentence boundaries; hand each phrase to TTS as it completes.
-- Firmware `audio_io`: a PSRAM ring buffer, I2S playback, underrun handling, `tts_end` completion.
-- Volume from config; playback cleanly interruptible by a `restart`/error.
+- `providers/base.py`: `TTSProvider.synthesize(text) -> AsyncIterator[bytes]` (PCM16 16 kHz mono) + a mock that yields several chunks.
+- `providers/elevenlabs.py`: the streaming endpoint (`/stream`, `output_format=pcm_16000`), voice id and model id from config, chunks yielded as they generate, `tts_failed` mapping.
+- `sentence.py` — the **`PhraseSplitter`** (pure, no I/O): consume LLM deltas, emit a phrase at each sentence (`. ! ? …`) or clause (`;`) boundary **only when followed by whitespace** (so `3.5` and a boundary sitting at the end of the buffer don't split early), skip Ukrainian abbreviations (`напр.`, `т.д.`, `вул.` …), force-flush a runaway clause at `max_chars` on a word boundary, and `flush()` the tail for short replies.
+- Orchestrator: for each completed phrase, synthesize and forward chunks immediately, with a **first-audio budget** (~3 s) on the phrase's first chunk; a failure mid-phrase aborts the turn with a mapped error.
+- Firmware `audio_io` — **early/streaming playback**: switch the shared bus mic→speaker once on the first chunk, play each `tts_audio` frame as it arrives, drain and switch back on `tts_end`. The buffer is **lossless** — consume exactly what plays; never truncate in a callback.
+- Underrun policy: a starved buffer waits rather than emitting silence into the middle of speech; volume from config; playback cleanly interruptible by `restart`/error.
 
-**DoD:** a line typed over serial is answered **out loud** on the device, with speech starting before the model finishes generating; an interrupted or failed synthesis ends the turn cleanly and returns to `idle`.
+**DoD:** a line typed over serial is answered **out loud**, and **speech starts before the model has finished generating** (verified by log timestamps: first `tts_audio` precedes the final `reply` delta); the first spoken phrase is never a half-word; an interrupted or failed synthesis ends the turn cleanly and returns to `idle`.
 
-**Tests:** contract — `TTSProvider` and the `tts_audio`/`tts_end` framing; unit — clause boundary splitting (including abbreviations and numerals), ring-buffer underrun; integration — `text_in → tts_end` against mocks with a fake device asserting frame order.
+**Tests:** contract — `TTSProvider` and the `tts_audio`/`tts_end` framing; unit — the `PhraseSplitter` against a delta-by-delta fixture set (boundaries, decimals, abbreviations, runaway clause, tail flush) and the ring buffer's underrun/lossless behaviour; integration — `text_in → tts_end` against mocks with the fake device asserting **interleaved** `reply` and `tts_audio` frames, not two separate bursts.
 
 ### v1.2 — Microphone capture and push-to-talk
 
 **Goal:** the device can send what it hears.
 
-ES7210 capture at 16 kHz PCM16, one channel for now, streamed as binary `audio` frames between `listen_start` and `listen_stop`. Touch-and-hold on the face is the trigger — the backup PTT that survives all later versions.
+ES7210 capture at 16 kHz PCM16, one channel for now, **streamed chunk by chunk** as binary `audio` frames between `listen_start` and `listen_stop` — never buffered whole and uploaded at the end, because v1.3's streaming recognition depends on audio arriving during speech. Touch-and-hold on the face is the trigger — the backup PTT that survives all later versions.
 
 **Tasks:**
-- Firmware `audio_io` capture path: I2S in, 16 kHz mono PCM16, PSRAM buffering, mic/speaker mode switching.
-- Touch (FT6336U): press-and-hold starts `listen_start` + streaming, release sends `listen_stop`.
+- Firmware `audio_io` capture path: I2S in, 16 kHz mono PCM16, a small PSRAM chunk buffer sent as soon as it fills (target ~20–40 ms per frame), mic/speaker mode switching.
+- Touch (FT6336U): press-and-hold starts `listen_start` + streaming from ~120 ms, release sends `listen_stop`.
+- The **input-level meter** in the bottom band while listening (DEVICE_UI.md §Indicators) — the only "listening" signal; the word is never printed.
 - Server `router`: accept binary `audio` frames only in the `listening` state; enforce a maximum utterance length.
 - Loopback diagnostic: capture N seconds and play it back locally (a hardware smoke check, not a shipped feature).
 
-**DoD:** holding the face records speech and streams it to the server, which reports the received duration and byte count; releasing ends the utterance; oversize utterances are cut with a clean error.
+**DoD:** holding the face streams speech to the server **while you are still speaking** (the server logs frames arriving before `listen_stop`, not after); releasing ends the utterance; oversize utterances are cut with a clean error.
 
 **Tests:** host — the capture buffer math and the PTT state transitions; contract — binary `audio` frames only valid inside `listen_start`/`listen_stop`; integration — the fake device streams a canned PCM file and the server assembles it intact.
 
@@ -124,28 +132,30 @@ ES7210 capture at 16 kHz PCM16, one channel for now, streamed as binary `audio` 
 
 **Goal:** speak, and be answered by voice.
 
-Add the **`ASRProvider` seam** with the Deepgram nova-2 adapter (Ukrainian, PCM16 16 kHz), interims as `asr_partial` and one final `asr`, and wire the orchestrator so a single turn streams end to end: ASR → LLM → TTS.
+Add the **`ASRProvider` seam** with Deepgram **over a WebSocket, not batch REST** — audio is recognised **during** speech, so at the endpointing decision the transcript is already in hand and the ASR stage collapses to nearly zero. (Batch recognition pays ~1.4 s *after* the utterance ends; that single choice is most of the latency budget.) With this phase all three stages stream and the loop closes.
 
 **Tasks:**
-- `providers/base.py`: `ASRProvider.transcribe(audio) -> AsyncIterator[ASRChunk{text, is_final}]` + a mock.
-- `providers/deepgram.py`: streaming recognition, Ukrainian, `asr_failed` mapping.
-- Orchestrator: the full pipeline with per-stage timeouts and cancellation on device disconnect.
+- `providers/base.py`: `ASRProvider.stream() -> AsyncIterator[ASRChunk{text, is_final}]` fed by pushed audio frames, + a mock that replays scripted events.
+- `providers/deepgram.py`: the `wss://` listen URL — `linear16`, 16 kHz, mono, Ukrainian, `interim_results=true`, `smart_format=true`, **server-side `endpointing`** (~500 ms) and an `utterance_end_ms` (~1000 ms) backstop for when endpointing never fires. The connector is injectable so tests drive a fake socket.
+- **Phrase-hold** in the utterance tracker: an un-punctuated `speech_final` (a breathing pause mid-sentence) is **held** for the continuation or the `UtteranceEnd` backstop — the character must never answer half a phrase.
+- Interims out as `asr_partial`, the assembled utterance as `asr`; the LLM stage starts the moment the final lands.
+- Orchestrator: the full streaming pipeline with **per-stage budgets** (ASR ≤ ~5 s, LLM first token ≤ ~8 s, TTS first audio ≤ ~3 s) and cancellation on device disconnect; a stage breach aborts to its enumerated error and returns the device to `idle`.
 - Firmware: render `asr_partial`/`asr`/`reply` to the serial debug channel; the screen still shows states.
-- Latency instrumentation: log `listen_stop → first tts_audio`.
+- Latency instrumentation: log `listen_stop → asr final`, `→ first reply delta`, `→ first tts_audio`, each as its own number.
 
-**DoD:** press and hold, speak Ukrainian, and hear a spoken answer; the measured first-audio latency after `listen_stop` is **< ~1.5 s** on the development network; each stage's failure maps to its own error code.
+**DoD:** speaking Ukrainian yields a spoken answer, with the transcript already resolved when the utterance ends; **first audio < ~1.5 s after `listen_stop`** on the development network, and the logged breakdown shows the ASR leg as the *smallest* of the three, not the largest; a breathing pause mid-sentence does not trigger an early answer; each stage's failure maps to its own error code.
 
-**Tests:** contract — `ASRProvider` and the `asr_partial`/`asr` frames; unit — stage timeout and cancellation; integration — `audio → tts_end` end to end against mocks, plus the three failure paths (ASR, LLM, TTS).
+**Tests:** contract — `ASRProvider` and the `asr_partial`/`asr` frames; unit — the utterance tracker against scripted Deepgram events (interims, punctuated final, un-punctuated final held then continued, `UtteranceEnd` backstop), the URL builder, and each stage budget; integration — `audio → tts_end` end to end against mocks with **interleaved** stage frames, plus the three failure paths (ASR, LLM, TTS).
 
 ### v1.4 — Active listening (VAD)
 
 **Goal:** hands-free — no button at all.
 
-Make **active listening the default**: the mic is always open and an on-device VAD endpointer marks speech start and end-of-utterance by pause. Half-duplex is enforced (listening pauses while the device speaks) until AEC arrives in v3.4; touch-and-hold remains as the backup PTT.
+Make **active listening the default**: the mic is always open, and an on-device VAD decides when to *open the uplink stream* — speech start opens it, and the recogniser's endpointing (v1.3) closes the utterance, with the local end-pause as the backstop when the link or the recogniser is unavailable. Half-duplex is enforced (listening pauses while the device speaks) until AEC arrives in v3.4; touch-and-hold remains as the backup PTT.
 
 **Tasks:**
 - Pure-logic VAD endpointer: energy/zero-crossing based, with a configurable pre-roll, minimum-speech and end-pause; entirely host-testable.
-- Wire it to the turn state machine: speech start → `listen_start`, endpoint → `listen_stop`.
+- Wire it to the turn state machine: speech start → `listen_start` and the audio stream opens immediately (pre-roll included so the first syllable is never lost); the utterance ends on the server's endpointing decision, or on the local end-pause as the backstop.
 - Half-duplex guard: capture is suspended for the duration of playback and resumes after `tts_end`.
 - Config: sensitivity, end-pause, and an on/off switch (falling back to PTT-only).
 - False-trigger handling: an utterance below the minimum length is discarded without a turn.
@@ -217,12 +227,12 @@ Compute a short-window RMS envelope of the audio being played and map it to mout
 Implement both levels: **local reflexes** in under 100 ms (never interrupting speech or listening) and the `event{}` report that lets the character answer with an emotion change or a line. Proximity wakes the face and pulls its gaze.
 
 **Tasks:**
-- Touch zones over the face (cheek/forehead/eyes) and gesture recognition: tap, multi-tap, stroke, poke, long press.
+- Touch zones over the face (cheek/forehead/eyes) and gesture recognition per [features/DEVICE_UI.md](features/DEVICE_UI.md) §Input: tap, multi-tap, stroke, poke, hold.
 - IMU (BMI270) gestures: tilt, shake, picked up, upside down, free fall — all pure logic over the raw stream.
 - Proximity (LTR-553): approach wakes the face and biases `gaze`; leave relaxes it.
 - The reflex layer: a short animation composited over the current expression, bounded and non-blocking.
 - `event{type, kind, meta}` to the server; server-side handling that may answer with an `emotion` frame and/or a spoken line.
-- Long press reserved for the v2.6 carousel; press-and-hold remains the backup PTT.
+- The hold is layered, not split (DEVICE_UI.md §Input): PTT from ~120 ms, converting to the v2.6 carousel only past 1.2 s without speech. **Affection** gestures emit `event{}`; **control** gestures (carousel, sheet, mute) are local UI and are deliberately not reported.
 
 **DoD:** a tap, a stroke, a tilt, a shake and an approaching hand each produce a visible local reaction within ~100 ms without disturbing an ongoing turn; the same inputs reach the server and can produce a spoken reaction; with the server offline, every reflex still works.
 
@@ -254,7 +264,8 @@ Add the four sprite skins — **ghost, flame, jellyfish, cloud** — over the sa
 - The **skin manifest** schema: layer keys, palette, per-emotion recipe overrides, element behaviour; one directory per skin under `assets/`.
 - Load a pack into PSRAM at `begin()`; fall back to the procedural face when a pack is missing or invalid.
 - The four packs authored against the shared expression grammar (`specification/face-prototype.html` is the reference).
-- `config_updated{face_set}` handling server-side and on the device; long-press carousel; the active skin reported in the next `hello`.
+- `config_updated{face_set}` handling server-side and on the device; the **carousel UI** — a hold that passes 1.2 s without speech converts to the dot strip, slide to choose, release to confirm, whisper toast on change (DEVICE_UI.md §Input); the active skin reported in the next `hello`.
+- Bottom-band arbitration: carousel > toast > level meter, one tenant at a time.
 
 **DoD:** all five faces (Stack-chan + four spirits) render the same `EmotionFrame` correctly and are switchable both ways; adding a skin requires no renderer code change; a corrupt or missing pack degrades to the procedural face instead of failing; v2 is the complete living face.
 
@@ -277,7 +288,7 @@ Capture a JPEG from the GC0308 on demand, announce it with `image_in` and send i
 - Protocol: `image_in{reason, w, h}` followed by the binary JPEG; size limits and rejection rules.
 - Server: attach the image to the LLM call as multimodal input; map failures to `vision_failed`.
 - Trigger: an explicit request in the turn (recognised server-side) asks the device for a frame.
-- Privacy: the frame lives in memory only, and is dropped as soon as the turn ends.
+- Privacy: the frame lives in memory only and is dropped as soon as the turn ends — and the **lens indicator is lit for as long as the camera is powered**, with no fade timer and no way to hide it (DEVICE_UI.md §Indicators).
 
 **DoD:** asking what it sees produces a spoken description of what is actually in front of the camera; no frame is ever written to disk; an oversized or failed capture ends the turn with `vision_failed` and a visible error face.
 
@@ -291,7 +302,7 @@ Cheap local motion/brightness detection on the camera, combined with the proximi
 
 **Tasks:**
 - Low-cost on-device presence detection (frame difference / brightness change) with hysteresis and a cooldown.
-- Presence state feeds the face (wake, gaze toward the person) and is reported to the server.
+- Presence state feeds the face (wake, gaze toward the person) and is reported to the server; the **lens indicator is lit the whole time presence keeps the camera powered** (DEVICE_UI.md §Indicators) — presence is not an exemption from the privacy rule.
 - Server-side greeting policy: at most one greeting per arrival, quiet-hours aware, never during a turn.
 - Config gate: presence mode is off by default and enabled explicitly.
 
@@ -325,13 +336,13 @@ Integrate the Espressif audio front end (esp-sr AFE: AEC + noise suppression + V
 **Tasks:**
 - Bring esp-sr into the build; wire the playback reference channel into the AFE.
 - Replace the v1.4 endpointer's front end with the AFE's VAD while keeping the same pure-logic turn semantics.
-- Barge-in policy: detected speech during playback pauses TTS output, cancels the remaining synthesis, and starts a new utterance.
-- Server-side cancellation: an in-flight turn is cancelled cleanly on barge-in, with no orphaned audio frames.
+- Barge-in policy — **a pause and a queue, not a discard**: detected speech pauses playback and holds what is queued; the in-flight phrase is requeued whole so it can replay intact rather than resuming mid-word. Playback resumes when the interrupting utterance commits, or on an empty final / a nothing-to-flush `UtteranceEnd` (the noise case), with a watchdog (~4 s) so silence can never leave the character permanently muted. One barge-in per burst — the pause itself is the debounce.
+- Server-side cancellation: an in-flight turn is cancelled cleanly on a committed barge-in, with **no orphaned `tts_audio` frames after cancellation** (an epoch/turn id on audio frames, so late chunks from the abandoned turn are dropped rather than played); a failed turn still resets the pipeline.
 - Remove the half-duplex guard behind a capability flag (boards without AEC keep it).
 
 **DoD:** speaking while the device is talking interrupts it and starts a new turn; the device does not trigger on its own voice; on a board without AEC the half-duplex behaviour is unchanged; v3 is complete.
 
-**Tests:** host — the barge-in decision logic against fixtures with playback bleed; integration — a barge-in cancels the in-flight turn server-side and no `tts_audio` arrives after cancellation; manual DoD check on hardware.
+**Tests:** host — the barge-in decision logic against fixtures with playback bleed, the queue/requeue semantics (nothing queued is lost, the in-flight phrase replays whole) and the resume watchdog under an injected clock; integration — a committed barge-in cancels the in-flight turn server-side and no `tts_audio` from the abandoned turn is played; manual DoD check on hardware.
 
 ---
 
@@ -455,7 +466,7 @@ Formalise `caps` end to end: the firmware detects what the board has, reports it
 **Tasks:**
 - A board profile layer: display, input, audio, camera, halo capabilities resolved at boot.
 - `hello.caps` extended and pinned; server-side tailoring (never send `image_in` requests to a camera-less board).
-- Guard every subsystem entry point behind its flag; a missing capability is a documented degradation, not an error.
+- Guard every subsystem entry point behind its flag; a missing capability is a documented degradation, not an error. `caps` also selects the **input map** — `touch` → the gesture table, `buttons` → the A/B/C table (DEVICE_UI.md §Input).
 - Build profile for the FIRE in `platformio.ini` alongside the Core S3.
 
 **DoD:** the Core S3 build behaves exactly as before; a simulated capability-reduced profile disables the right subsystems with no errors; the server never asks a board for something it lacks.
@@ -469,7 +480,7 @@ Formalise `caps` end to end: the firmware detects what the board has, reports it
 Port and validate on real FIRE hardware: three buttons instead of touch (A = PTT/carousel, B/C = navigation), a single microphone (half-duplex active listening, dual-mic features off), no camera (all of v3's vision unavailable), and the built-in SK6812 ring driven by the v5.1 halo logic.
 
 **Tasks:**
-- Button input mapping replacing the touch gestures, including the carousel and the backup PTT.
+- Button input mapping replacing the touch gestures, including the carousel and the backup PTT, plus the **button bar** in the bottom band — three labels aligned to A/B/C, shown for 2 s after a press (DEVICE_UI.md §Input — FIRE).
 - Single-mic audio path; the half-duplex guard stays on this board.
 - Face, skins, lip-sync and IMU reactions verified on the FIRE's screen and IMU.
 - Halo on the built-in SK6812s through the v5.1 pattern logic.

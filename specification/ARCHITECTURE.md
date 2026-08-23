@@ -14,6 +14,8 @@ Gemini 2.5 Flash (chat + vision, thinkingBudget: 0) · Deepgram nova-2 (ASR, uk)
 
 The split is the whole design: **no intelligence on the device, no rendering decisions on the server.** The server never sends pixels; the device never chooses an emotion.
 
+Two companion documents carry detail this one only summarises: **[features/DEVICE_UI.md](features/DEVICE_UI.md)** — everything on the screen that is not the face (indicators, input map per board, notification ranks, full-screen states), prototyped in [device-ui-prototype.html](device-ui-prototype.html); and [face-prototype.html](face-prototype.html) — the executable reference for the face renderer itself.
+
 ## Components
 
 - **Firmware (`firmware/`).** C++ on the Core S3 (PlatformIO, M5Unified/M5GFX). Owns the WSS client, the device state machine, audio capture and playback, the camera, the sensors, and the face renderer with its skins. Split in two layers (§Firmware architecture): Arduino-free **pure logic** that is host-tested, and **glue** that touches hardware.
@@ -98,20 +100,46 @@ Enumerated, never free text: `wifi_lost · server_unreachable · proto_unsupport
 Half-duplex until v3.4 (barge-in needs AEC).
 
 ```
-VAD speech start → listen_start → audio(bin)… → VAD endpoint → listen_stop
-  → ASR → asr_partial* / asr → LLM (stream) → reply deltas + emotion frame
-  → TTS (stream) → tts_audio(bin)… → tts_end → back to idle
+VAD speech start → listen_start → audio(bin) chunks streaming while you speak
+  → recogniser endpointing → listen_stop
+  → asr_partial* / asr → LLM deltas → reply deltas + emotion frame
+  → phrase boundary → TTS chunks → tts_audio(bin)… → tts_end → idle
 ```
 
 Text path (v0, serial/debug): `text_in` → LLM → `reply`. Vision path (v3): `image_in` + JPEG ride into the same LLM call as multimodal input.
 
-**Streaming is the latency design.** ASR emits interims and one final. The LLM streams token deltas; the orchestrator buffers them to **clause/sentence boundaries** and hands each completed phrase to TTS, so speech begins before the model has finished. TTS returns audio incrementally as `tts_audio` frames closed by `tts_end`. Target: first audio **< ~1.5 s** after `listen_stop`.
+### Streaming is the architecture, not an optimisation
+
+Every stage streams, and each stage starts on the *first* output of the one before it. Nothing in this pipeline waits for a stage to finish:
+
+- **Capture streams.** The device sends ~20–40 ms `audio` chunks *while the person is speaking*, never one blob after they stop.
+- **Recognition streams over a WebSocket.** Deepgram receives audio live with `interim_results` on and **server-side endpointing** (~500 ms silence) plus an `utterance_end_ms` (~1000 ms) backstop. Because recognition happens *during* speech, the transcript is already in hand when the utterance ends and the ASR leg costs almost nothing — batch recognition instead pays for the whole utterance *after* it ends, which is most of a latency budget. An un-punctuated `speech_final` (a breathing pause) is **held** for the continuation or the backstop, so the character never answers half a phrase.
+- **Generation streams.** Gemini token deltas leave as individual `reply` frames as they arrive; the reply is never accumulated and sent whole.
+- **Synthesis streams per phrase.** A pure **`PhraseSplitter`** consumes the deltas and emits a phrase at each sentence (`. ! ? …`) or clause (`;`) boundary — but only when followed by whitespace, so `3.5` and a boundary at the end of the buffer don't split early — skipping Ukrainian abbreviations (`напр.`, `т.д.`, `вул.` …), force-flushing a runaway clause at `max_chars` on a word boundary, and flushing the tail for short replies. Each completed phrase is synthesized immediately through ElevenLabs' stream endpoint at `pcm_16000` — the device's exact playback format, so there is no decode step.
+- **Playback streams.** The device switches the shared bus mic→speaker on the first chunk, plays each `tts_audio` frame as it arrives, and drains on `tts_end`. The buffer is **lossless — consume exactly what plays**; a truncating callback garbles the voice. The same buffer feeds the lip-sync envelope, so the mouth is driven by audio that is still arriving.
+
+The observable consequence, and the thing to test: **the first audio leaves before the reply is finished** — `tts_audio` frames interleave with `reply` deltas rather than following them in two bursts.
+
+### Budgets and abort semantics
+
+Each stage has its own budget, awaited on the stage's *first* output so a stalled provider fails fast while a slow-but-flowing one is never cut off mid-reply:
+
+| Stage | Budget | On breach |
+|---|---|---|
+| ASR (final transcript) | ~5 s | `asr_failed` |
+| LLM (first token) | ~8 s | `llm_timeout` |
+| TTS (first audio of a phrase) | ~3 s | `tts_failed` |
+| End to end (`listen_stop` → first audio) | **< ~1.5 s target** | measured, logged per leg |
+
+A breach or provider failure aborts the turn to an enumerated `error{code}`, returns the device to `idle`, and **rolls the user message back out of history** so the next turn starts consistent. The session stays connected. Silence that transcribes to nothing ends the turn cleanly with `tts_end` — not an error.
+
+From v3.4, audio frames carry the turn they belong to, so a barge-in that cancels a turn can drop late chunks from the abandoned one instead of playing them. Barge-in **pauses and queues rather than discarding**: the in-flight phrase is requeued whole and replays intact, and a watchdog resumes playback so silence can never leave the character permanently muted.
 
 **Server-initiated frames.** The emotion engine may push an `emotion` frame outside a turn (a state change, a reaction to an `event{}`, a mirroring of the user's read emotion). The device plays whatever arrives whenever it arrives.
 
 ## Device states
 
-`boot → wifi_connecting → idle → listening → thinking → replying → idle`, with `offline` (no WiFi/server) and `error` reachable from anywhere. The state drives the face; the device holds no persona logic, and transitions come from local input plus server messages.
+`boot → wifi_connecting → idle → listening → thinking → replying → idle`, with `offline` (no WiFi/server) and `error` reachable from anywhere. The state drives the face; the device holds no persona logic, and transitions come from local input plus server messages. What each state actually looks like — face plus chrome, including the boot, not-configured, offline, fault and updating screens — is [features/DEVICE_UI.md](features/DEVICE_UI.md) §Screens.
 
 ## The face
 
@@ -140,7 +168,7 @@ The face is composed from a small layer bank at render time, never stored as one
 
 ### Skins
 
-All five faces are **skins over the same `EmotionFrame`**. A skin is a manifest entry plus shapes and a palette — if a skin needs renderer logic, the design is wrong. Switching happens two ways: `config_updated{face_set}` from the server, or a **long press** on the device (the carousel). The active skin is reported back in the next `hello`.
+All five faces are **skins over the same `EmotionFrame`**. A skin is a manifest entry plus shapes and a palette — if a skin needs renderer logic, the design is wrong. Switching happens two ways: `config_updated{face_set}` from the server, or the **carousel** on the device — a hold that passes 1.2 s without speech, specified in [features/DEVICE_UI.md](features/DEVICE_UI.md) §Input. The active skin is reported back in the next `hello`.
 
 ### Lip-sync
 
@@ -151,6 +179,10 @@ level < 0.10 → closed    < 0.35 → small    < 0.65 → mid    else → wide
 ```
 
 ~15–20 FPS over the layered sprites. **No server data is involved** — the server only sets `speaking`.
+
+### Chrome around the face
+
+Indicators, notifications and input affordances are specified in **[features/DEVICE_UI.md](features/DEVICE_UI.md)** and prototyped in [device-ui-prototype.html](device-ui-prototype.html). The rules that matter architecturally: the face expresses *state* and chrome expresses only *facts a face cannot say*; chrome lives in the outer 28 px band and never overlaps the central 264×184; everything fades ~3 s after it settles except an unresolved fault, a muted mic and the **camera lens indicator, which is lit whenever the camera is powered and has no way to hide** — the visible half of the privacy rule. Chrome is driven by device-local facts and `error{code}`, never by `EmotionFrame`.
 
 ### Gaze
 
@@ -163,7 +195,7 @@ Every physical input is handled twice, and the two levels never block each other
 1. **Reflex (device, <100 ms).** Pure animation over the current state. It never interrupts speech or listening and never waits for the network. Tap → wink and a small smile; repeated taps → growing joy and blush; stroke → contented arc eyes; poke in the eye → surprise and a recoil; tilt → eyes roll against it; shake → dizzy spirals; picked up → wide alert eyes; upside down → the face flips and frowns; free fall → full-screen fright.
 2. **Report (`event{}` → server).** The same input is sent up, and the character may answer with an emotion change or a spoken line (prolonged shaking → offence and a remark). If the server is unreachable, level 1 still works — the face never depends on the network to feel alive.
 
-The long press is reserved: it runs the **skin carousel**, and press-and-hold is the **backup PTT**.
+The hold is layered rather than split: a press is **PTT** from the first ~120 ms, and only a hold that passes **1.2 s with no speech detected** converts into the **skin carousel** (announced by the carousel dots appearing). Control gestures — carousel, status sheet, mute — are local UI and are deliberately *not* reported as `event{}`: the character has no opinion about your volume. The full input map, per board, is in [features/DEVICE_UI.md](features/DEVICE_UI.md).
 
 ## Audio pipeline
 
@@ -208,7 +240,7 @@ Five seams carry the whole system. Each is pinned by a contract test, and each h
 | WS protocol | `server/…/protocol.py` + `firmware/…/ws_protocol.h` | message set, binary-frame rules, error codes |
 | `EmotionFrame` | protocol + `IFaceRenderer` | the entire face channel |
 | `LLMProvider` | `server/…/providers/` | Gemini (the only real impl) — streams reply deltas |
-| `ASRProvider` / `TTSProvider` | `server/…/providers/` | Deepgram / ElevenLabs — stream chunks |
+| `ASRProvider` / `TTSProvider` | `server/…/providers/` | Deepgram (WS, interims + endpointing) / ElevenLabs (stream endpoint, `pcm_16000`) — both yield chunks as they arrive |
 | `IFaceRenderer` + skin manifest | `firmware/` + `assets/` | which skin draws the frame |
 
 ## Data model
@@ -222,7 +254,30 @@ Nothing is persisted before v4 beyond a device record and config. From v4, SQLit
 
 ## Configuration and secrets
 
-Server config and keys live in `server/.env` (gitignored; `server/.env.example` is committed): `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, the location for world context, the default `face_set`, and the WS bind address. **The firmware never holds a model key** — it holds only the WiFi credentials and the server URL, in a gitignored `firmware/src/config.h` generated from `config.example.h`.
+Server configuration and keys live in `server/.env` (gitignored); `server/.env.example` carries the same shape with the secrets blank and is committed. **The firmware never holds a model key** — it holds only the WiFi credentials and the server URL, in a gitignored `firmware/src/config.h` generated from `config.example.h`.
+
+| Variable | Purpose | From |
+|---|---|---|
+| `GEMINI_API_KEY` | the only chat/vision vendor | v0.2 |
+| `GEMINI_MODEL` = `gemini-2.5-flash` | chat and the multimodal vision turn | v0.2 |
+| `GEMINI_THINKING_BUDGET` = `0` | thinking off — lowest time-to-first-token | v0.2 |
+| `GEMINI_EMOTION_MODEL` | the background emotion read, a separate call | v3.3 |
+| `GEMINI_GROUNDING` / `GEMINI_GROUNDING_MODEL` | `google_search` grounding, the one tool | v4.3 |
+| `ELEVENLABS_API_KEY` | TTS | v1.1 |
+| `ELEVENLABS_VOICE_ID` | the voice RoboFace speaks in | v1.1 |
+| `ELEVENLABS_MODEL` = `eleven_turbo_v2_5` | multilingual, handles Ukrainian | v1.1 |
+| `ELEVENLABS_OUTPUT_FORMAT` = `pcm_16000` | matches the device's playback format exactly | v1.1 |
+| `DEEPGRAM_API_KEY` | ASR | v1.3 |
+| `DEEPGRAM_MODEL` = `nova-2`, `DEEPGRAM_LANGUAGE` = `uk` | recognition model and language | v1.3 |
+| `DEEPGRAM_ENCODING` = `linear16`, `DEEPGRAM_SAMPLE_RATE` = `16000` | the uplink audio format | v1.3 |
+| `DEEPGRAM_ENDPOINT_MS` | end-of-utterance pause | v1.3 |
+| `ROBOFACE_WS_HOST` / `ROBOFACE_WS_PORT` = `8000` | the WSS bind (codegen's dashboard owns 8420) | v0.1 |
+| `ROBOFACE_FACE_SET` = `stackchan` | the default skin | v0.4 |
+| `ROBOFACE_CANON_PATH` | the character file | v4.1 |
+| `ROBOFACE_LOG_LEVEL` | logging | v0.1 |
+| `LOCATION`, `WEATHER_URL`, `NEWS_API_KEY` | world context; each source individually optional | v4.4 |
+
+The audio format is fixed in three places at once — `ELEVENLABS_OUTPUT_FORMAT`, `DEEPGRAM_ENCODING`/`SAMPLE_RATE`, and the protocol's PCM16/16 kHz/mono constant. They must agree; the contract test asserts the protocol constant, and the provider adapters read theirs from here.
 
 ## Error handling and resilience
 
@@ -238,6 +293,8 @@ One firmware, several boards. `hello.caps` tells the server what exists, and the
 
 - **Core S3 (v0–v5)** — the full set. With the optional **Bottom3** (v5): `halo`.
 - **FIRE v2.7 (v6)** — classic ESP32, same 320×240 screen, **no touch, no camera, one mic**, built-in 10× SK6812. Degradation: three buttons replace touch (A = PTT/carousel, B/C = navigation), the dual-mic features are off and listening stays half-duplex, all of Vision is unavailable, the halo works immediately with the v5 logic. The face, the skins, lip-sync and IMU reactions work fully.
+
+The `caps` flags also select the **input map**: `touch` activates the gesture table, `buttons` the FIRE's A/B/C table — both in [features/DEVICE_UI.md](features/DEVICE_UI.md) §Input.
 
 Until v6 the firmware is written purely for the Core S3; the port is a one-off job inside that version, not a constraint on earlier ones.
 
@@ -257,8 +314,9 @@ Parsing, decisions and math never live behind an `M5` include; hardware access n
 /server         # Python: FastAPI + websockets — protocol, router, orchestrator, providers, emotion engine
 /assets         # face skin packs (stackchan/, ghost/, flame/, jelly/, cloud/) + manifest
 /tests          # pytest: unit, contract, integration — fake device + mocked providers
-/specification  # MISSION.md, ARCHITECTURE.md, ROADMAP.md, the original CONCEPT*.md,
-                #   face-prototype.html, roadmap/implementation/
+/specification  # MISSION.md, ARCHITECTURE.md, ROADMAP.md, features/DEVICE_UI.md,
+                #   face-prototype.html, device-ui-prototype.html,
+                #   the original CONCEPT*.md, roadmap/implementation/
 /codegen        # code-generation tracking + dashboard (never imported by the product)
 .github/workflows/ci.yml   # lint + tests on every push/PR
 ```
@@ -272,7 +330,7 @@ Tests ship with each phase — they encode its DoD, and `main` stays green.
 - **Unit** — pure logic on both sides: prompt assembly, history windowing, error mapping, emotion recipes, VAD, framing, the lip-sync envelope, gaze math.
 - **Contract** — the five seams above. The WS message set, `EmotionFrame`, the provider interfaces and the skin manifest each have a test that must change when the contract does.
 - **Fakes, not hardware or paid APIs** — a **fake device** speaks the WS protocol in tests, and **mock Gemini/Deepgram/ElevenLabs** return canned streams. CI never makes a paid call; a live call is opt-in and manual.
-- **Integration** — a full turn end-to-end against the fakes: `text_in → reply` (v0), `audio → tts_end` (v1+), `image_in → reply` (v3), asserting state transitions and the error paths.
+- **Integration** — a full turn end-to-end against the fakes: `text_in → reply` (v0), `audio → tts_end` (v1+), `image_in → reply` (v3), asserting state transitions and the error paths. These also **assert the streaming property**: `reply` deltas arrive as many frames, `tts_audio` interleaves with them rather than following in a second burst, and an aborted turn leaves history consistent.
 - **Firmware** — host-testable logic under `pio test -e native`; hardware I/O is covered by the manual DoD checks in the roadmap.
 - **CI** — `ruff` + `pytest` (and `mypy server`, strict) on every push/PR.
 

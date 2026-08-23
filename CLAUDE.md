@@ -8,8 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```
 specification/   MISSION.md · ARCHITECTURE.md · ROADMAP.md   ← the source of truth, English only
+  features/DEVICE_UI.md        the on-device UI: chrome, input map, notifications, screens
   CONCEPT.md / CONCEPT-en.md   the original concept it was derived from
   face-prototype.html          the executable face-renderer reference
+  device-ui-prototype.html     the interactive UI mock-up (every screen and state)
   roadmap/implementation/      issues files + execution/review reports the skills write
 .claude/skills/  eleven SDLC skills that generate this repo from the specification
 codegen/         generation tracking: event log, hooks, reducer, dashboard (:8420)
@@ -20,6 +22,7 @@ codegen/         generation tracking: event log, hooks, reducer, dashboard (:842
 - [specification/MISSION.md](specification/MISSION.md) — what RoboFace is, the principles, the non-goals, the glossary.
 - [specification/ARCHITECTURE.md](specification/ARCHITECTURE.md) — components, contracts, turn lifecycle, the face, interaction, audio, vision, the mind, seams, data model, testing, repo layout.
 - [specification/ROADMAP.md](specification/ROADMAP.md) — v0–v6 as dotted phases `vA.B`, each with Goal / Tasks / DoD / Tests.
+- [specification/features/DEVICE_UI.md](specification/features/DEVICE_UI.md) — what surrounds the face on the 320×240 screen: indicators and their fade rules, the gesture/button map for both boards, the four notification ranks, the six full-screen states. Its mock-up is [device-ui-prototype.html](specification/device-ui-prototype.html) — open it in a browser; the geometry there is the geometry on the device.
 - [specification/face-prototype.html](specification/face-prototype.html) — the executable reference for the face renderer: `renderFace(skin, frame)` is pure, five skins share one expression grammar, and the JSON under the screen is exactly what the server sends. Port that structure to M5GFX sprites; don't invent a second one.
 
 **All specification documents are English.** `specification/CONCEPT.md` (Ukrainian) and its English twin are the original concept, kept as history; where they and the three specs disagree, the specs win.
@@ -42,6 +45,7 @@ Gemini 2.5 Flash (chat + vision) · Deepgram nova-2 (ASR, uk) · ElevenLabs (TTS
 
 - **Chat is Gemini, and only Gemini.** `LLMProvider` has exactly one real implementation — Gemini 2.5 Flash with `thinkingBudget: 0` — covering chat, the vision turn and the background emotion read. A second chat vendor is a non-goal, not a backlog item. ASR (Deepgram) and TTS (ElevenLabs) are separate seams; speech is not chat.
 - **No emotion decision on the device.** The server decides; the device renders. Turn states are expressed as faces, never as text labels on the screen.
+- **The face expresses state; chrome expresses facts.** A device state is never a word on the screen. Chrome carries only what a face cannot say — link, charge, a live camera, what a gesture just did — lives in the outer 28 px band, and fades ~3 s after it settles. The exceptions that never fade: an unresolved fault, a muted mic, and the camera lens indicator.
 - **Skins are asset swaps.** All five faces (procedural Stack-chan + ghost/flame/jelly/cloud) render the same `EmotionFrame`. If a skin needs renderer logic, the design is wrong.
 - **Firmware layering.** Arduino-free pure logic (framing, state machine, VAD, lip-sync envelope, gaze math, recipes) is host-tested under `pio test -e native`; glue modules own the hardware. Parsing and decisions never sit behind an `M5` include.
 - **Five seams, each pinned by a contract test:** the WS protocol, `EmotionFrame`, the provider seams, `IFaceRenderer` + the skin manifest, and the `caps` capability flags. A seam change updates `specification/ARCHITECTURE.md` **and** its contract test in the same commit.

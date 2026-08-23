@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RoboFace — Device UI Prototype</title>
+<!--
+  RoboFace device-UI prototype — the chrome around the face on the Core S3's
+  320x240 screen: indicators, input affordances, notifications, screens.
+
+  Companion to face-prototype.html (which prototypes the face itself) and to
+  features/DEVICE_UI.md (which specifies what is drawn here).
+
+  Everything is one 320x240 SVG per screen, so the geometry in this file is the
+  geometry on the device: the face keeps the central 264x184, chrome lives in the
+  outer 28px band, and the bottom band is single-tenant (level | toast | carousel).
+-->
+<style>
+  :root { --bg:#12121a; --card:#1c1c28; --line:#2c2c3e; --text:#e8e8f0; --muted:#9a9ab0; --accent:#5fe8ff; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); padding:26px 20px 56px;
+         font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  h1 { font-size:22px; margin-bottom:4px; }
+  h2 { font-size:15px; margin:26px 0 10px; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); }
+  .sub { color:var(--muted); font-size:14px; max-width:80ch; margin-bottom:16px; }
+  .wrap { max-width:1180px; margin:0 auto; }
+  .cols { display:flex; gap:26px; flex-wrap:wrap; align-items:flex-start; }
+  .stage { flex:0 0 auto; }
+  .panel { flex:1 1 340px; min-width:300px; }
+  .screen { width:560px; max-width:100%; aspect-ratio:4/3; display:block;
+            border:5px solid #34344a; border-radius:12px; background:#000; }
+  .hint { color:var(--muted); font-size:13px; margin-top:8px; }
+  .row { display:flex; flex-wrap:wrap; gap:7px; align-items:center; margin:0 0 9px; }
+  .lbl { color:var(--muted); font-size:12.5px; width:82px; flex:0 0 82px; text-transform:uppercase; letter-spacing:.04em; }
+  button { background:#2e2e44; color:var(--text); border:1px solid #44445e; border-radius:7px;
+           padding:6px 11px; font-size:13px; cursor:pointer; font-family:inherit; }
+  button:hover { background:#3a3a55; }
+  button.active { background:#3f6fae; border-color:#7fb0ea; }
+  button.hold { background:#8a5a2e; border-color:#c58a4a; }
+  .gal { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:16px; }
+  .gal figure { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px; }
+  .gal svg { width:100%; aspect-ratio:4/3; display:block; border-radius:5px; background:#000; }
+  .gal figcaption { color:var(--muted); font-size:12.5px; margin-top:7px; }
+  .gal b { color:var(--text); font-weight:600; display:block; font-size:13px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; margin-top:6px; }
+  th,td { text-align:left; padding:6px 9px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  code { font:12.5px ui-monospace,Menlo,Consolas,monospace; color:#9fd4a5; }
+  .note { background:var(--card); border:1px solid var(--line); border-left:3px solid var(--accent);
+          border-radius:6px; padding:10px 13px; font-size:13.5px; color:#cfcfe0; margin-top:12px; }
+  .state { font:12.5px ui-monospace,Menlo,Consolas,monospace; color:#9fd4a5; background:#16161f;
+           border:1px solid var(--line); border-radius:7px; padding:9px 11px; margin-top:10px; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>RoboFace — device UI prototype</h1>
+<p class="sub">The chrome around the face on the Core S3's 320&times;240 screen. The face expresses state; chrome expresses only facts a face cannot say — signal, charge, a live camera, what a gesture just did. Geometry here is device geometry: face 264&times;184 in the centre, chrome in the outer 28&nbsp;px, and a single-tenant bottom band. Spec: <code>features/DEVICE_UI.md</code>.</p>
+
+<div class="cols">
+  <div class="stage">
+    <div id="screen"></div>
+    <p class="hint">Press and hold on the screen to try PTT &rarr; hold past 1.2&nbsp;s in silence and it becomes the skin carousel. Drag while the carousel is open, release to confirm.</p>
+    <div class="state" id="stateout"></div>
+  </div>
+
+  <div class="panel">
+    <div class="row"><span class="lbl">board</span><span id="boardBtns"></span></div>
+    <div class="row"><span class="lbl">state</span><span id="stateBtns"></span></div>
+    <div class="row"><span class="lbl">link</span><span id="linkBtns"></span></div>
+    <div class="row"><span class="lbl">battery</span><span id="battBtns"></span></div>
+    <div class="row"><span class="lbl">camera</span><span id="camBtns"></span></div>
+    <div class="row"><span class="lbl">mic</span><span id="micBtns"></span></div>
+    <div class="row"><span class="lbl">notify</span><span id="noteBtns"></span></div>
+    <div class="row"><span class="lbl">overlay</span><span id="ovBtns"></span></div>
+
+    <h2>Bottom band is single-tenant</h2>
+    <p class="sub" style="margin-bottom:0">Level meter, toast and carousel never share it. When two want it: <b>carousel &gt; toast &gt; level</b>. The band is 28&nbsp;px; nothing ever draws over the face.</p>
+
+    <h2>Notification ranks</h2>
+    <table>
+      <tr><th>Kind</th><th>Form</th><th>Lifetime</th></tr>
+      <tr><td>Whisper</td><td>glyph only</td><td>1.2 s</td></tr>
+      <tr><td>Info</td><td>glyph + one line</td><td>2.5 s</td></tr>
+      <tr><td>Warning</td><td>amber, one line</td><td>5 s &rarr; collapses to its indicator</td></tr>
+      <tr><td>Fault</td><td>red, line + <code>error.code</code></td><td>until resolved</td></tr>
+    </table>
+    <div class="note">Never notify what the character can <em>say</em> (a greeting, an answer, a result), and never notify a state the face already shows. A toast is for facts the face has no way to express.</div>
+  </div>
+</div>
+
+<h2>Screens</h2>
+<p class="sub">Every full-screen state is still a face plus chrome — no splash art, no logo, no wordmark.</p>
+<div class="gal" id="gallery"></div>
+
+<h2>Input map</h2>
+<div class="cols">
+  <div class="panel"><b style="font-size:13px">Core S3 — the face is the button</b>
+    <table>
+      <tr><th>Gesture</th><th>Family</th><th>Result</th></tr>
+      <tr><td>Tap cheek / forehead</td><td>affection</td><td>tickle reflex; repeats build joy</td></tr>
+      <tr><td>Slow stroke</td><td>affection</td><td>arc eyes, blush</td></tr>
+      <tr><td>Poke an eye</td><td>affection</td><td>surprise + recoil</td></tr>
+      <tr><td>Press and hold</td><td>control</td><td><b>PTT</b> — level meter while held</td></tr>
+      <tr><td>&hellip; past 1.2 s, silent</td><td>control</td><td>becomes the <b>skin carousel</b></td></tr>
+      <tr><td>Swipe down from top</td><td>control</td><td>status sheet</td></tr>
+      <tr><td>Two-finger tap</td><td>control</td><td>mute / unmute</td></tr>
+    </table>
+  </div>
+  <div class="panel"><b style="font-size:13px">FIRE (v6) — three buttons, no touch</b>
+    <table>
+      <tr><th>Button</th><th>Press</th><th>Hold</th></tr>
+      <tr><td>A</td><td>mute / unmute</td><td>PTT &rarr; carousel</td></tr>
+      <tr><td>B</td><td>previous skin</td><td>status sheet</td></tr>
+      <tr><td>C</td><td>next skin</td><td>volume</td></tr>
+    </table>
+    <div class="note">Affection gestures have no equivalent on this board and are simply absent — the IMU reactions carry that weight. The button bar appears for 2&nbsp;s after any press.</div>
+  </div>
+</div>
+</div>
+
+<script>
+"use strict";
+/* ============================ model ==================================== */
+const SKINS = ["stackchan","ghost","flame","jelly","cloud"];
+const ui = {
+  board:"cores3", state:"idle", link:"ok", batt:"ok", cam:"off", mic:"live",
+  overlay:"none",            // none | zones | sheet | carousel
+  toast:null,                // {kind, glyph, text, code}
+  level:0.0, skin:0, holdMs:0, chromeAge:0
+};
+
+/* ============================ face ===================================== */
+/* The stackchan tier-1 face, procedural primitives only — same geometry as
+   face-prototype.html, redrawn here so this file stands alone. */
+function face(emotion, opts={}){
+  const L=105,R=215,Y=100, gx=(opts.gaze||0)*10, dim=opts.dim?' opacity=".6"':'';
+  const lid = opts.closed ? 1 : 0;
+  const eyes = lid ? `<rect x="${L-28}" y="${Y-5}" width="56" height="10" rx="5" fill="#fff"/>
+                      <rect x="${R-28}" y="${Y-5}" width="56" height="10" rx="5" fill="#fff"/>`
+   : ({
+      joy:`<path d="M${L-30} ${Y+8} Q${L} ${Y-28} ${L+30} ${Y+8}" stroke="#fff" stroke-width="11" fill="none" stroke-linecap="round"/>
+           <path d="M${R-30} ${Y+8} Q${R} ${Y-28} ${R+30} ${Y+8}" stroke="#fff" stroke-width="11" fill="none" stroke-linecap="round"/>`,
+      thinking:`<rect x="${L-24}" y="${Y-8}" width="48" height="16" rx="8" fill="#fff"/>
+                <rect x="${R-24}" y="${Y-8}" width="48" height="16" rx="8" fill="#fff"/>`,
+      surprised:`<circle cx="${L}" cy="${Y}" r="32" fill="#fff"/><circle cx="${L}" cy="${Y}" r="12" fill="#000"/>
+                 <circle cx="${R}" cy="${Y}" r="32" fill="#fff"/><circle cx="${R}" cy="${Y}" r="12" fill="#000"/>`,
+      sad:`<path d="M${L-28} ${Y-14} Q${L} ${Y+18} ${L+28} ${Y+2}" stroke="#fff" stroke-width="11" fill="none" stroke-linecap="round"/>
+           <path d="M${R+28} ${Y-14} Q${R} ${Y+18} ${R-28} ${Y+2}" stroke="#fff" stroke-width="11" fill="none" stroke-linecap="round"/>`,
+      error:`<g stroke="#fff" stroke-width="10" stroke-linecap="round">
+             <line x1="${L-19}" y1="${Y-19}" x2="${L+19}" y2="${Y+19}"/><line x1="${L+19}" y1="${Y-19}" x2="${L-19}" y2="${Y+19}"/>
+             <line x1="${R-19}" y1="${Y-19}" x2="${R+19}" y2="${Y+19}"/><line x1="${R+19}" y1="${Y-19}" x2="${R-19}" y2="${Y+19}"/></g>`
+     }[emotion] || `<circle cx="${L}" cy="${Y}" r="25" fill="#fff"/><circle cx="${R}" cy="${Y}" r="25" fill="#fff"/>`);
+  const X=160, MY=165, open = opts.speak ? 6+22*opts.level : 0;
+  const mouth = lid ? "" : ({
+      joy:`<path d="M${X-34} ${MY-12} Q${X} ${MY+22} ${X+34} ${MY-12}" stroke="#fff" stroke-width="10" fill="none" stroke-linecap="round"/>`,
+      sad:`<path d="M${X-30} ${MY+8} Q${X} ${MY-18} ${X+30} ${MY+8}" stroke="#fff" stroke-width="10" fill="none" stroke-linecap="round"/>`,
+      surprised:`<circle cx="${X}" cy="${MY}" r="15" fill="#fff"/>`,
+      error:`<polyline points="${X-30},${MY} ${X-15},${MY-8} ${X},${MY} ${X+15},${MY-8} ${X+30},${MY}" stroke="#fff" stroke-width="8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`,
+      thinking:`<rect x="${X+2}" y="${MY-4}" width="24" height="8" rx="4" fill="#fff"/>`
+     }[emotion] || (opts.speak
+        ? `<rect x="${X-20}" y="${MY-open/2}" width="40" height="${Math.max(8,open)}" rx="${Math.min(9,open/2+4)}" fill="#fff"/>`
+        : `<rect x="${X-22}" y="${MY-5}" width="44" height="10" rx="5" fill="#fff"/>`));
+  return `<g${dim} transform="translate(${gx},0)">${eyes}${mouth}</g>`;
+}
+
+/* ============================ chrome =================================== */
+const g = {                                   // 12px glyphs, top band
+  link(x,y,mode){
+    if (mode==="hidden") return "";
+    const c = mode==="ok" ? "#8fa0b8" : "#ffb02e", bars=[4,7,10];
+    let s = bars.map((h,i)=>{
+      const lit = mode==="ok" ? true : mode==="weak" ? i===0 : mode==="connecting";
+      const cls = mode==="connecting" ? ` class="cyc" style="animation-delay:${i*.22}s"` : "";
+      return `<rect${cls} x="${x+i*5}" y="${y+10-h}" width="3.4" height="${h}" rx="1.2" fill="${c}" opacity="${lit?1:.22}"/>`;
+    }).join("");
+    if (mode==="offline") s += `<line x1="${x-1}" y1="${y+11}" x2="${x+15}" y2="${y-1}" stroke="#ffb02e" stroke-width="2"/>`;
+    return s;
+  },
+  batt(x,y,mode){
+    if (mode==="ok") return "";
+    const c = mode==="low" ? "#ffb02e" : mode==="crit" ? "#ff4d5e" : "#5fffc4";
+    const fill = mode==="low" ? 5 : mode==="crit" ? 2.5 : 9;
+    return `<rect x="${x}" y="${y}" width="19" height="10" rx="2.6" fill="none" stroke="${c}" stroke-width="1.6"/>
+            <rect x="${x+20}" y="${y+3}" width="2.4" height="4" rx="1" fill="${c}"/>
+            <rect x="${x+1.8}" y="${y+1.8}" width="${fill}" height="6.4" rx="1.4" fill="${c}"${mode==="chg"?' class="pulse"':''}/>
+            ${mode==="chg"?`<path d="M${x+9} ${y+1} l-3 5 h3 l-1.6 4 4-5.4h-3z" fill="#0d0d12"/>`:""}`;
+  },
+  lens(x,y,on){ return on ? `<circle cx="${x+5}" cy="${y+5}" r="5" fill="#5fe8ff"/>
+            <circle class="pulse" cx="${x+5}" cy="${y+5}" r="8.5" fill="none" stroke="#5fe8ff" stroke-width="1.4" opacity=".5"/>` : ""; },
+  mute(x,y,on){ return on ? `<g stroke="#ff6a78" stroke-width="1.8" fill="none">
+            <rect x="${x+3}" y="${y}" width="6" height="10" rx="3" fill="#ff6a78" stroke="none"/>
+            <path d="M${x} ${y+7} a6 6 0 0 0 12 0"/><line x1="${x-1}" y1="${y+12}" x2="${x+13}" y2="${y-2}"/></g>` : ""; },
+  working(cx,cy,on){ return on ? `<g class="orbit" style="transform-origin:${cx}px ${cy}px">
+            <circle cx="${cx}" cy="${cy-16}" r="3.2" fill="#5fe8ff"/></g>` : ""; }
+};
+
+function levelMeter(lv){                       // bottom band tenant 1
+  const n=21, W=200, x0=(320-W)/2;
+  return `<g>` + Array.from({length:n},(_,i)=>{
+    const d=Math.abs(i-(n-1)/2)/((n-1)/2), h=Math.max(2.5, (1-d*d)*20*lv+2.5);
+    return `<rect x="${x0+i*(W/n)}" y="${226-h}" width="${W/n-2.6}" height="${h}" rx="1.4"
+            fill="#5fe8ff" opacity="${.35+.65*lv}"/>`;
+  }).join("") + `</g>`;
+}
+
+const TOAST = {
+  whisper:{bg:"#1b1b28", fg:"#cfd3e6", bd:"#3a3a55"},
+  info:   {bg:"#12263a", fg:"#bfe2ff", bd:"#2f6ea8"},
+  warning:{bg:"#33260c", fg:"#ffd694", bd:"#a97b22"},
+  fault:  {bg:"#3a1218", fg:"#ffb3bb", bd:"#b03444"}
+};
+function toast(t){                             // bottom band tenant 2
+  if(!t) return "";
+  const s=TOAST[t.kind], txt=t.text||"", code=t.code?`  ${t.code}`:"";
+  const w = txt ? Math.min(300, 46 + (txt.length+ (t.code?t.code.length+2:0))*5.6) : 34;
+  const x=(320-w)/2;
+  return `<g><rect x="${x}" y="206" width="${w}" height="26" rx="9" fill="${s.bg}" stroke="${s.bd}" stroke-width="1.2"/>
+    <text x="${x+13}" y="223" font-size="13" fill="${s.fg}" font-family="system-ui,sans-serif">${t.glyph}</text>
+    ${txt?`<text x="${x+30}" y="223" font-size="11.5" fill="${s.fg}" font-family="system-ui,sans-serif">${txt}</text>`:""}
+    ${code?`<text x="${x+30+txt.length*5.6+8}" y="223" font-size="10.5" fill="${s.fg}" opacity=".75"
+       font-family="ui-monospace,Menlo,monospace">${t.code}</text>`:""}</g>`;
+}
+function carousel(i,holding){                  // bottom band tenant 3 (wins)
+  const n=SKINS.length, gap=30, x0=160-(n-1)*gap/2;
+  const dots = SKINS.map((s,k)=>{
+    const on=k===i, r=on?7:4;
+    return `<circle cx="${x0+k*gap}" cy="219" r="${r}" fill="${on?"#5fe8ff":"#5b5b78"}"/>` +
+           (on?`<circle cx="${x0+k*gap}" cy="219" r="11" fill="none" stroke="#5fe8ff" stroke-width="1.4" opacity=".55"/>`:"");
+  }).join("");
+  return `<g>${dots}<text x="160" y="203" text-anchor="middle" font-size="11" fill="#8fa0b8"
+      font-family="system-ui,sans-serif">${SKINS[i]}${holding?" · release to keep":""}</text></g>`;
+}
+function buttonBar(labels){                    // FIRE only
+  const xs=[80,160,240];
+  return `<g>` + labels.map((t,i)=>`<text x="${xs[i]}" y="228" text-anchor="middle" font-size="11"
+      fill="#8fa0b8" font-family="system-ui,sans-serif">${t}</text>
+      <rect x="${xs[i]-30}" y="214" width="60" height="18" rx="6" fill="none" stroke="#3a3a55"/>`).join("") + `</g>`;
+}
+function touchZones(){
+  const z=(x,y,w,h,t)=>`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="#5fe8ff" fill-opacity=".07"
+      stroke="#5fe8ff" stroke-dasharray="4 4" stroke-width="1" stroke-opacity=".55"/>
+      <text x="${x+w/2}" y="${y+h/2+4}" text-anchor="middle" font-size="10" fill="#5fe8ff"
+      font-family="system-ui,sans-serif" opacity=".8">${t}</text>`;
+  return z(96,34,128,30,"forehead") + z(64,70,74,62,"eye L") + z(182,70,74,62,"eye R") +
+         z(28,140,86,42,"cheek L") + z(206,140,86,42,"cheek R") + z(124,150,72,40,"chin");
+}
+function statusSheet(){
+  const rows=[["skin",SKINS[ui.skin]],["link","roboface.local · 192.168.1.42"],
+              ["battery","78 %"],["mic",ui.mic==="live"?"live":"muted"],
+              ["camera",ui.cam==="off"?"off":"live"],["volume","70 %"],["firmware","1.2.0"]];
+  return `<rect x="0" y="0" width="320" height="240" fill="#05060b" opacity=".72"/>
+    <rect x="18" y="52" width="284" height="176" rx="14" fill="#12141f" stroke="#2c2c3e"/>
+    <rect x="140" y="60" width="40" height="4" rx="2" fill="#3a3a55"/>
+    ${rows.map((r,i)=>`<text x="36" y="${88+i*21}" font-size="11" fill="#8fa0b8" font-family="system-ui,sans-serif">${r[0]}</text>
+      <text x="284" y="${88+i*21}" font-size="11.5" fill="#e8e8f0" text-anchor="end"
+      font-family="system-ui,sans-serif">${r[1]}</text>`).join("")}`;
+}
+
+/* ============================ compose ================================== */
+function render(o){
+  const st=o.state;
+  const emotion = st==="error"||st==="fault" ? "error" : st==="offline" ? "sad"
+                : st==="thinking" ? "thinking" : st==="replying" ? "joy"
+                : st==="listening" ? "neutral" : "neutral";
+  const closed = st==="boot" || st==="updating";
+  let band = "";
+  if (o.overlay==="carousel")        band = carousel(o.skin, o.holding);
+  else if (o.toast)                  band = toast(o.toast);
+  else if (st==="listening")         band = levelMeter(o.level);
+  else if (o.board==="fire" && o.bar) band = buttonBar(["mute","skin −","skin +"]);
+  if (st==="updating") band = `<rect x="60" y="218" width="200" height="4" rx="2" fill="#23233a"/>
+                               <rect x="60" y="218" width="126" height="4" rx="2" fill="#5fe8ff"/>`;
+
+  return `<svg class="screen" viewBox="0 0 320 240" xmlns="http://www.w3.org/2000/svg">
+    <rect width="320" height="240" fill="#000"/>
+    ${o.overlay==="zones" ? touchZones() : ""}
+    ${face(emotion,{gaze:o.gaze||0, dim:st==="offline", closed, speak:st==="replying", level:o.level})}
+    ${g.working(160,34, st==="thinking")}
+    ${g.lens(14,12, o.cam!=="off")}
+    ${g.link(266,12,o.link)}
+    ${g.batt(238,12,o.batt)}
+    ${g.mute(220,12,o.mic==="muted")}
+    ${band}
+    ${o.overlay==="sheet" ? statusSheet() : ""}
+  </svg>`;
+}
+
+/* ============================ interaction ============================== */
+const NOTES = {
+  skin:    {kind:"whisper", glyph:"🎭"},
+  muted:   {kind:"whisper", glyph:"🔇"},
+  wifi:    {kind:"info",    glyph:"📶", text:"Wi-Fi connected"},
+  presence:{kind:"info",    glyph:"👁", text:"Presence on"},
+  batt:    {kind:"warning", glyph:"🔋", text:"Battery 15 %"},
+  weak:    {kind:"warning", glyph:"📶", text:"Weak signal"},
+  server:  {kind:"fault",   glyph:"⚠", text:"No server", code:"server_unreachable"},
+  asr:     {kind:"fault",   glyph:"⚠", text:"Speech failed", code:"asr_failed"}
+};
+let toastTimer=null;
+function notify(key){
+  const n = NOTES[key]; if(!n) return;
+  ui.toast = {...n};
+  clearTimeout(toastTimer);
+  const life = {whisper:1200, info:2500, warning:5000, fault:0}[n.kind];
+  if (life) toastTimer = setTimeout(()=>{ ui.toast=null; draw(); }, life);
+  draw();
+}
+
+let holdStart=0, holdTimer=null, dragX=0;
+function onDown(ev){
+  ev.preventDefault();
+  holdStart = performance.now(); dragX = ev.clientX ?? 0;
+  ui.state = "listening"; ui.holding = true;
+  holdTimer = setInterval(()=>{
+    const held = performance.now()-holdStart;
+    ui.level = 0.15 + 0.25*Math.abs(Math.sin(held/220));      // idle-ish input, "no speech"
+    if (held > 1200 && ui.overlay!=="carousel") { ui.overlay="carousel"; ui.state="idle"; }
+    draw();
+  }, 60);
+  draw();
+}
+function onMove(ev){
+  if (!ui.holding || ui.overlay!=="carousel") return;
+  const dx = (ev.clientX ?? 0) - dragX;
+  if (Math.abs(dx) > 44) { ui.skin = (ui.skin + (dx>0?1:SKINS.length-1)) % SKINS.length; dragX = ev.clientX; draw(); }
+}
+function onUp(){
+  clearInterval(holdTimer); holdTimer=null;
+  const held = performance.now()-holdStart;
+  ui.holding=false; ui.level=0;
+  if (ui.overlay==="carousel") { ui.overlay="none"; notify("skin"); }
+  else if (held > 120) { ui.state="thinking"; draw();
+    setTimeout(()=>{ ui.state="replying"; speak(); }, 900); }
+  else ui.state="idle";
+  draw();
+}
+let speakTimer=null;
+function speak(){
+  let t=0; clearInterval(speakTimer);
+  speakTimer = setInterval(()=>{
+    t+=0.09; ui.level = Math.max(0, Math.abs(Math.sin(t*3.1))*Math.abs(Math.sin(t*0.9)));
+    if (t>3.4) { clearInterval(speakTimer); ui.level=0; ui.state="idle"; }
+    draw();
+  }, 60);
+}
+
+/* ============================ wiring =================================== */
+function draw(){
+  document.getElementById("screen").innerHTML = render(ui);
+  const el = document.querySelector("#screen svg");
+  el.addEventListener("pointerdown", onDown);
+  document.getElementById("stateout").textContent =
+    `board ${ui.board}   state ${ui.state}   skin ${SKINS[ui.skin]}\n` +
+    `chrome: link=${ui.link} batt=${ui.batt} lens=${ui.cam} mic=${ui.mic}\n` +
+    `band:   ${ui.overlay==="carousel"?"carousel":ui.toast?`toast(${ui.toast.kind})`:ui.state==="listening"?"level meter":"—"}` +
+    (ui.overlay!=="none"&&ui.overlay!=="carousel"?`\noverlay: ${ui.overlay}`:"");
+}
+window.addEventListener("pointerup", onUp);
+window.addEventListener("pointermove", onMove);
+
+function btns(holder, items, get, set){
+  const el=document.getElementById(holder);
+  items.forEach(([label,val])=>{
+    const b=document.createElement("button"); b.textContent=label;
+    if (get()===val) b.classList.add("active");
+    b.onclick=()=>{ set(val);
+      [...el.children].forEach(c=>c.classList.remove("active")); b.classList.add("active"); draw(); };
+    el.appendChild(b);
+  });
+}
+btns("boardBtns", [["Core S3","cores3"],["FIRE","fire"]], ()=>ui.board, v=>{ ui.board=v; ui.bar=(v==="fire"); });
+btns("stateBtns", [["boot","boot"],["idle","idle"],["listening","listening"],["thinking","thinking"],
+                   ["replying","replying"],["offline","offline"],["fault","fault"],["updating","updating"]],
+     ()=>ui.state, v=>{ ui.state=v; ui.level=v==="listening"?0.55:0;
+       if(v==="offline"){ui.link="offline"; notify("server");} if(v==="fault") notify("asr"); if(v==="replying") speak(); });
+btns("linkBtns", [["ok","ok"],["connecting","connecting"],["weak","weak"],["offline","offline"]], ()=>ui.link, v=>ui.link=v);
+btns("battBtns", [["ok","ok"],["low 15%","low"],["critical","crit"],["charging","chg"]], ()=>ui.batt, v=>ui.batt=v);
+btns("camBtns", [["off","off"],["live","live"]], ()=>ui.cam, v=>ui.cam=v);
+btns("micBtns", [["live","live"],["muted","muted"]], ()=>ui.mic, v=>ui.mic=v);
+btns("ovBtns", [["none","none"],["touch zones","zones"],["status sheet","sheet"]], ()=>ui.overlay, v=>ui.overlay=v);
+
+const noteEl=document.getElementById("noteBtns");
+[["skin ▸ whisper","skin"],["wi-fi ▸ info","wifi"],["presence ▸ info","presence"],
+ ["battery ▸ warn","batt"],["signal ▸ warn","weak"],["server ▸ fault","server"]].forEach(([t,k])=>{
+  const b=document.createElement("button"); b.textContent=t; b.onclick=()=>notify(k); noteEl.appendChild(b);
+});
+
+/* ============================ gallery ================================== */
+const SCREENS = [
+  ["Boot", "eyes closed, opening — no chrome at all",
+    {state:"boot", link:"hidden", batt:"ok", cam:"off", mic:"live"}],
+  ["Wi-Fi connecting", "link arcs cycle; the face waits, calm",
+    {state:"idle", link:"connecting", batt:"ok", cam:"off", mic:"live"}],
+  ["Idle, settled", "everything fades: chrome-free is the normal screen",
+    {state:"idle", link:"ok", batt:"ok", cam:"off", mic:"live"}],
+  ["Listening", "level meter follows the envelope — no word 'listening'",
+    {state:"listening", level:0.75, link:"ok", batt:"ok", cam:"off", mic:"live"}],
+  ["Thinking", "orbiting dot only after ~1.2 s of waiting",
+    {state:"thinking", link:"ok", batt:"ok", cam:"off", mic:"live"}],
+  ["Replying", "lip-sync from the playback envelope; nothing else",
+    {state:"replying", level:0.8, link:"ok", batt:"ok", cam:"off", mic:"live"}],
+  ["Camera live", "the lens dot has no fade timer and cannot be hidden",
+    {state:"idle", link:"ok", batt:"ok", cam:"live", mic:"live"}],
+  ["Muted + low battery", "two facts the face cannot say",
+    {state:"idle", link:"ok", batt:"low", cam:"off", mic:"muted",
+     toast:{kind:"warning", glyph:"🔋", text:"Battery 15 %"}}],
+  ["Skin carousel", "the hold converted at 1.2 s; slide, release to keep",
+    {state:"idle", link:"ok", batt:"ok", cam:"off", mic:"live", overlay:"carousel", skin:2, holding:true}],
+  ["Whisper", "a glyph alone — the skin changed, and that is all",
+    {state:"idle", link:"ok", batt:"ok", cam:"off", mic:"live", toast:{kind:"whisper", glyph:"🎭"}}],
+  ["Offline", "face dimmed and sad; the code is there when you walk up",
+    {state:"offline", link:"offline", batt:"ok", cam:"off", mic:"live",
+     toast:{kind:"fault", glyph:"⚠", text:"No server", code:"server_unreachable"}}],
+  ["Fault", "error face across the room, error code up close",
+    {state:"fault", link:"ok", batt:"ok", cam:"off", mic:"live",
+     toast:{kind:"fault", glyph:"⚠", text:"Speech failed", code:"asr_failed"}}],
+  ["Status sheet", "the one surface with words — read-mostly, 8 s to dismiss",
+    {state:"idle", link:"ok", batt:"ok", cam:"off", mic:"live", overlay:"sheet"}],
+  ["Touch zones (debug)", "invisible in normal use; the face is the button",
+    {state:"idle", link:"ok", batt:"ok", cam:"off", mic:"live", overlay:"zones"}],
+  ["FIRE button bar", "v6: three labels aligned to A / B / C, 2 s after a press",
+    {state:"idle", board:"fire", bar:true, link:"ok", batt:"ok", cam:"off", mic:"live"}],
+  ["Updating", "eyes closed, a thin progress arc in the bottom band",
+    {state:"updating", link:"ok", batt:"chg", cam:"off", mic:"live"}]
+];
+document.getElementById("gallery").innerHTML = SCREENS.map(([title,cap,o])=>
+  `<figure>${render({board:"cores3", overlay:"none", toast:null, level:0, skin:0, ...o})}
+   <figcaption><b>${title}</b>${cap}</figcaption></figure>`).join("");
+
+draw();
+</script>
+<style>
+  @keyframes cyc { 0%,100%{opacity:.22} 40%{opacity:1} }
+  .cyc { animation: cyc 1.1s infinite; }
+  @keyframes puls { 0%,100%{opacity:.45} 50%{opacity:1} }
+  .pulse { animation: puls 1.8s infinite ease-in-out; }
+  @keyframes orb { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
+  .orbit { animation: orb 1.6s linear infinite; }
+</style>
+</body>
+</html>
