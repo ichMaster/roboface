@@ -1,6 +1,55 @@
 RoboFace -- release notes
 =========================
 
+Version 0.3.0 (2026-08-24)
+---------------------------
+Roadmap phase v0.3 -- Firmware skeleton: Core S3 as a WSS client. The first C++
+in this repository, and the first code that runs on the hardware.
+
+- firmware/: a PlatformIO project with two environments, and the split between
+  them is the architecture. `native` compiles only src/pure/ -- header-only,
+  Arduino-free -- so an #include <M5Unified.h> reaching pure code fails the host
+  build. 64 host tests now run on a laptop with no board attached.
+- pure/ws_protocol.h: the device half of the WS protocol seam, mirrored from the
+  released protocol.py. Both vocabularies, all twelve error codes including
+  bad_frame, proto_ver 1, pcm16/16000/1, the frame cap. A declared-but-unhandled
+  type parses as unsupported rather than malformed, and an unrecognised error code
+  still parses -- a device that cannot parse an error cannot report one.
+- pure/state.h: the specified state machine, with a transition function that is
+  total over (state, event). pure/backoff.h: exponential, capped, jittered.
+  pure/line_reader.h: bounded, CRLF-aware. pure/ws_url.h: the SERVER_URL parser.
+- app/net.cpp and app/ws.cpp: WiFi bring-up with a reconnect supervisor, and the
+  WebSocket client. Glue owns the hardware and decides nothing; every schedule
+  comes from the tested pure half.
+- main.cpp: the serial debug channel. A typed line becomes a text_in and reply
+  deltas print as they arrive, inside the receive path -- a buffered version would
+  satisfy the wording and lose the property v0.2 exists to provide.
+- tests/contract/test_firmware_mirror.py: reads the C++ header and compares it to
+  protocol.py in the Python CI job, so a drift between the two languages is caught
+  by someone who never runs pio.
+
+The transport is ws://, not wss://. The server runs uvicorn with no TLS, so
+ARCHITECTURE now records the gap rather than promising a transport the product
+does not offer. Closing it is one line in config.h plus a certificate.
+
+Four bugs were found by the tests and the hardware: a state machine that claimed
+`idle` while unable to reach the server; two build environments compiling the same
+headers under different C++ standards; a URL parser accepting port 0 and 70000;
+and `Serial` writing to the UART pins instead of USB, which made the debug channel
+-- this version's only turn source -- silent while the board ran perfectly.
+
+Code review fixed three more: the first connection attempt was aborted and
+restarted microseconds later, the reconnect log described a delay it never waited,
+and the device had inherited the server's 64 KiB frame cap, which is a fifth of
+this board's RAM.
+
+Definition of Done: `pio test -e native` passes and `pio run -e cores3` compiles
+clean. On hardware, the board joins WiFi, parses its server URL, holds
+`wifi_connecting` correctly and backs off with jitter exactly as the host tests
+predict. The end-to-end turn is NOT yet verified: the macOS firewall drops inbound
+connections to the Python app bundle before they reach the server. The board is
+behaving correctly; the host is refusing it. CLAUDE.md carries the one-line fix.
+
 Version 0.2.1 (2026-08-23)
 ---------------------------
 Post-release hardening on phase v0.2. The end-of-phase sweep over the v0.1 and
