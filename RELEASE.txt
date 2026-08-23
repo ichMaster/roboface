@@ -1,6 +1,51 @@
 RoboFace -- release notes
 =========================
 
+Version 0.2.0 (2026-08-23)
+---------------------------
+Roadmap phase v0.2 -- Gemini and the orchestrator. The echo becomes a
+conversation: a real answer from the model, streamed.
+
+- providers: the LLMProvider seam, with the streaming guarantee written into the
+  type -- stream() returns an async iterator and is not itself a coroutine
+  function, so the first delta can be awaited under its own budget rather than
+  the whole call. A deterministic mock ships with it and is what every test uses.
+- providers/gemini: Gemini 2.5 Flash with thinkingBudget 0, the documented reason
+  the model was chosen. Deltas are forwarded as they arrive; safety settings are
+  explicit rather than inherited; every vendor exception is translated, so the
+  orchestrator never sees a google.genai type.
+- orchestrator: runs a turn and streams it. Each delta leaves as its own reply
+  frame the moment it exists -- the reply is never accumulated and sent whole.
+  The first-token budget (~8 s) is awaited on the first delta only, so a stalled
+  model fails fast while a slow-but-flowing one is never cut off mid-reply.
+  Per-session history, in memory.
+- prompt: a minimal system prompt -- a placeholder character until v4.1,
+  Ukrainian, and the brevity rule that matters for a character who is heard
+  rather than read.
+- protocol: ErrorCode gains a twelfth value, bad_frame. It and internal split by
+  whose fault it is -- the device sent something unparseable, versus the server
+  broke. From v0.4 the device renders the error face for whatever code arrives,
+  so the attribution decides which side a person is shown as being at fault.
+- router: the Responder seam is now a stream of deltas, and a turn's reply is
+  many frames closed by one final frame. A turn that fails sends an enumerated
+  error and no terminal reply, and the connection stays open.
+- config: the three Gemini variables. Loading never needs a key; only selecting
+  the real provider does, so the suite runs on a machine with none and a server
+  about to hold a conversation fails at startup rather than on its first turn.
+- tests: 327 passing, no paid call. The streaming property is asserted by
+  interleaving rather than by counting frames, and was verified against a
+  deliberately buffering implementation. One live test exists, guarded twice.
+
+Code review of the phase fixed four findings: the API key no longer renders in
+repr(Settings); a bug in a responder now produces an error frame instead of
+dropping the device; provider status codes no longer tell the device the server
+is unreachable when it is Gemini that is down; and a turn now always either
+completes or rolls back, with no third ending.
+
+Deferred to v4.2: session history is unbounded and resent whole every turn. The
+rolling 40-message window is that phase's specified design and writing a lesser
+one here would pre-empt it.
+
 Version 0.1.0 (2026-08-23)
 ---------------------------
 Roadmap phase v0.1 -- Server skeleton and the wire contract. The first release:
