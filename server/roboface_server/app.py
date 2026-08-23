@@ -83,10 +83,30 @@ class WebSocketTransport:
             await self._websocket.close(code)
 
 
+def build_responder(settings: Settings) -> Responder:
+    """The real responder: the orchestrator, over Gemini.
+
+    Imported here rather than at module scope so ``app.py`` stays importable — and the whole
+    suite stays runnable — with ``google-genai`` absent. The key is demanded at **this**
+    moment, which is the last one before a conversation could start and the first one at which
+    its absence is unambiguous.
+    """
+    from roboface_server.orchestrator import Orchestrator
+    from roboface_server.providers.gemini import GeminiProvider
+
+    provider = GeminiProvider(
+        settings.require_gemini_api_key(),
+        model=settings.gemini_model,
+        thinking_budget=settings.gemini_thinking_budget,
+    )
+    return Orchestrator(provider=provider)
+
+
 def create_app(
     *,
     responder: Responder | None = None,
     registry: ConnectionRegistry | None = None,
+    settings: Settings | None = None,
 ) -> FastAPI:
     """Build the application.
 
@@ -94,12 +114,19 @@ def create_app(
     ``server/.env`` or bind anything, and every test needs its own registry so two of them
     cannot see each other's connections.
 
-    ``responder`` is the seam v0.2 replaces with the orchestrator; it defaults to the echo.
+    **An injected ``responder`` always wins**, and that is what keeps the suite free: tests
+    pass a mock-backed orchestrator or the echo and never construct a real provider, so no key
+    is needed and no network is reachable. Only when nothing is injected does this reach for
+    configuration -- and then only if ``settings`` was supplied, because reaching for the
+    environment on a bare ``create_app()`` would make an accidental call a paid one.
     """
+    if responder is None:
+        responder = build_responder(settings) if settings is not None else EchoResponder()
+
     application = FastAPI(title="RoboFace", version="0.1.0")
     router = Router(
         registry=registry if registry is not None else ConnectionRegistry(),
-        responder=responder if responder is not None else EchoResponder(),
+        responder=responder,
     )
     application.state.router = router
 
@@ -116,11 +143,16 @@ def create_app(
 
 
 def main(settings: Settings | None = None) -> None:
-    """Run the server on the configured host and port (``ROBOFACE_WS_*``)."""
+    """Run the server on the configured host and port (``ROBOFACE_WS_*``).
+
+    This is the entrypoint that actually talks to Gemini: it passes the loaded settings into
+    the factory, so a missing ``GEMINI_API_KEY`` stops the process here with a clear message
+    rather than surfacing as a failed turn once a device is already connected.
+    """
     resolved = settings if settings is not None else load_settings()
     configure(resolved.log_level)
     uvicorn.run(
-        create_app(),
+        create_app(settings=resolved),
         host=resolved.ws_host,
         port=resolved.ws_port,
         log_level=resolved.log_level,

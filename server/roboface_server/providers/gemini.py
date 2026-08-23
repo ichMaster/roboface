@@ -82,6 +82,10 @@ class GeminiProvider:
             # Thinking off: the documented reason this model was chosen (lowest
             # time-to-first-token). See ARCHITECTURE §Model policy.
             thinking_config=types.ThinkingConfig(thinking_budget=self.thinking_budget),
+            # No tools are passed, so automatic function calling has nothing to do -- and
+            # leaving it on makes the SDK print a recommendation to stderr on *every* turn,
+            # which would fill a production log with advice about a feature we do not use.
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             # Set explicitly rather than left to a default that may change under us. A
             # desktop companion that abruptly starts refusing ordinary conversation because a
             # vendor default moved is a failure with no error message attached.

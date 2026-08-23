@@ -5,13 +5,15 @@ the defaults below. A missing ``.env`` is not an error: a fresh checkout and the
 suite both run on defaults, and only a *deployment* needs the file.
 
 ARCHITECTURE.md §Configuration and secrets assigns every variable to the phase that
-introduces it. This module deliberately reads only the three marked **v0.1** --
-``ROBOFACE_WS_HOST``, ``ROBOFACE_WS_PORT``, ``ROBOFACE_LOG_LEVEL``. Reading a key ahead
-of the phase that owns it would let an unset future variable look configured; each later
-phase adds its own here when it lands.
+introduces it, and this module reads **only** the ones whose phase has landed -- the three
+marked v0.1 (``ROBOFACE_WS_*``, ``ROBOFACE_LOG_LEVEL``) and, from v0.2, the three Gemini keys.
+Reading a key ahead of the phase that owns it would let an unset future variable look
+configured; each later phase adds its own here when it lands.
 
-Secrets are never read here and never logged: the provider keys arrive with their
-provider seams from v0.2 onward, and they live in ``server/.env`` only.
+``GEMINI_API_KEY`` is read but **never logged and never carried into an error message**. It is
+also not required to *load* settings -- only to select the real provider. That split is the
+point: the test suite must run with no key present, while a server started to actually talk to
+someone must fail at startup rather than on its first turn.
 """
 
 from __future__ import annotations
@@ -33,6 +35,12 @@ DEFAULT_WS_HOST = "0.0.0.0"
 DEFAULT_WS_PORT = 8000
 DEFAULT_LOG_LEVEL = "info"
 
+#: Gemini defaults, per ARCHITECTURE §Configuration and secrets. The model is the only chat
+#: vendor this project has (MISSION §Principles); ``thinking_budget`` is 0 because
+#: time-to-first-token is the reason this model was chosen at all.
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_THINKING_BUDGET = 0
+
 #: The accepted values of ``ROBOFACE_LOG_LEVEL``. Lower-case on the wire and in the
 #: file; the logging module maps them upward when it configures itself (RF-005).
 LOG_LEVELS = frozenset({"debug", "info", "warning", "error", "critical"})
@@ -53,11 +61,29 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    """The resolved v0.1 configuration. Frozen -- read once at startup, never mutated."""
+    """The resolved configuration. Frozen -- read once at startup, never mutated."""
 
     ws_host: str
     ws_port: int
     log_level: str
+    gemini_api_key: str
+    gemini_model: str
+    gemini_thinking_budget: int
+
+    def require_gemini_api_key(self) -> str:
+        """The key, or a clear failure.
+
+        Called where the **real** provider is selected, not at load time. A suite must run
+        with no key present; a server about to hold a conversation must not start without one
+        and then fail on its first turn, which is the same outage discovered later and with
+        less information attached.
+        """
+        if not self.gemini_api_key:
+            raise ConfigError(
+                "GEMINI_API_KEY is not set. Put it in server/.env "
+                "(see server/.env.example), or inject a responder for tests."
+            )
+        return self.gemini_api_key
 
 
 def _read_env_file(env_file: Path) -> dict[str, str]:
@@ -98,6 +124,16 @@ def _parse_port(raw: str) -> int:
     return port
 
 
+def _parse_thinking_budget(raw: str) -> int:
+    try:
+        budget = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"GEMINI_THINKING_BUDGET must be an integer, got {raw!r}") from exc
+    if budget < 0:
+        raise ConfigError(f"GEMINI_THINKING_BUDGET cannot be negative, got {budget}")
+    return budget
+
+
 def _parse_log_level(raw: str) -> str:
     level = raw.lower()
     if level not in LOG_LEVELS:
@@ -125,8 +161,20 @@ def load_settings(
     raw_port = _resolve("ROBOFACE_WS_PORT", resolved_environ, file_values)
     raw_level = _resolve("ROBOFACE_LOG_LEVEL", resolved_environ, file_values)
 
+    api_key = _resolve("GEMINI_API_KEY", resolved_environ, file_values)
+    model = _resolve("GEMINI_MODEL", resolved_environ, file_values)
+    raw_budget = _resolve("GEMINI_THINKING_BUDGET", resolved_environ, file_values)
+
     return Settings(
         ws_host=host,
         ws_port=DEFAULT_WS_PORT if raw_port is None else _parse_port(raw_port),
         log_level=DEFAULT_LOG_LEVEL if raw_level is None else _parse_log_level(raw_level),
+        # Absent, not an error: loading settings must work with no key, so the suite does.
+        gemini_api_key=api_key or "",
+        gemini_model=model or DEFAULT_GEMINI_MODEL,
+        gemini_thinking_budget=(
+            DEFAULT_GEMINI_THINKING_BUDGET
+            if raw_budget is None
+            else _parse_thinking_budget(raw_budget)
+        ),
     )

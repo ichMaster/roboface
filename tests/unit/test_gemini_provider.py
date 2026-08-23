@@ -324,3 +324,16 @@ async def test_stream_returns_an_async_iterator() -> None:
 
     assert isinstance(stream, AsyncIterator)
     assert [delta async for delta in stream] == ["ok"]
+
+
+@pytest.mark.asyncio
+async def test_automatic_function_calling_is_disabled() -> None:
+    # No tools are passed, so AFC has nothing to do -- and leaving it on makes the SDK print a
+    # recommendation to stderr on every single turn. Observed during the v0.2 DoD check.
+    models = _FakeModels(_FakeStream([_Chunk("ok")]))
+
+    [delta async for delta in _provider(models).stream("s", [])]
+
+    afc = models.calls[0]["config"].automatic_function_calling
+    assert afc is not None
+    assert afc.disable is True
