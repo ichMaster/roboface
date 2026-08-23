@@ -1,0 +1,299 @@
+// Contract test for the device side of the WS protocol seam.
+//
+// The authority is server/roboface_server/protocol.py, and this file is deliberately literal: every
+// expectation is spelled out rather than derived from the header under test, because a test that
+// reads its answers from the implementation cannot notice the implementation moving. Its Python
+// counterpart (tests/contract/test_ws_protocol.py) pins the same values from the other side, and
+// tests/contract/test_firmware_mirror.py pins the exact bytes this builds.
+//
+// This file changes only when the contract changes.
+
+#include <unity.h>
+
+#include <set>
+#include <string>
+
+#include "pure/ws_protocol.h"
+
+using namespace roboface;
+
+void setUp() {}
+void tearDown() {}
+
+// ---------------------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------------------
+
+static void test_proto_version_is_pinned() {
+    TEST_ASSERT_EQUAL_INT(1, kProtoVersion);
+}
+
+static void test_audio_is_pcm16_16khz_mono() {
+    TEST_ASSERT_EQUAL_STRING("pcm16/16000/1", kAudioFmt);
+    TEST_ASSERT_EQUAL_INT(16000, kAudioSampleRate);
+    TEST_ASSERT_EQUAL_INT(1, kAudioChannels);
+}
+
+static void test_the_text_frame_cap_matches_the_server() {
+    TEST_ASSERT_EQUAL_UINT32(65536u, static_cast<uint32_t>(kMaxTextFrameBytes));
+}
+
+// ---------------------------------------------------------------------------------------
+// The vocabulary, both directions
+// ---------------------------------------------------------------------------------------
+
+static void test_device_to_server_vocabulary_is_exactly_the_contract() {
+    const std::set<std::string> expected{"hello",    "listen_start", "audio", "listen_stop",
+                                         "text_in",  "event",        "image_in", "image",
+                                         "ping"};
+    std::set<std::string> actual;
+    for (const auto message :
+         {DeviceMessage::kHello, DeviceMessage::kListenStart, DeviceMessage::kAudio,
+          DeviceMessage::kListenStop, DeviceMessage::kTextIn, DeviceMessage::kEvent,
+          DeviceMessage::kImageIn, DeviceMessage::kImage, DeviceMessage::kPing}) {
+        actual.insert(toString(message));
+    }
+    TEST_ASSERT_TRUE(actual == expected);
+}
+
+static void test_server_to_device_vocabulary_is_exactly_the_contract() {
+    const std::set<std::string> expected{"asr_partial", "asr",   "reply",   "emotion", "tts_audio",
+                                         "tts_end",     "config_updated", "error", "restart", "pong"};
+    std::set<std::string> actual;
+    for (const auto message :
+         {ServerMessage::kAsrPartial, ServerMessage::kAsr, ServerMessage::kReply,
+          ServerMessage::kEmotion, ServerMessage::kTtsAudio, ServerMessage::kTtsEnd,
+          ServerMessage::kConfigUpdated, ServerMessage::kError, ServerMessage::kRestart,
+          ServerMessage::kPong}) {
+        actual.insert(toString(message));
+    }
+    TEST_ASSERT_TRUE(actual == expected);
+}
+
+// ---------------------------------------------------------------------------------------
+// Error codes — all twelve
+// ---------------------------------------------------------------------------------------
+
+static void test_error_codes_are_exactly_the_twelve() {
+    const std::set<std::string> expected{
+        "wifi_lost",  "server_unreachable", "proto_unsupported", "unauthorized",
+        "rate_limited", "asr_failed",       "llm_timeout",       "llm_failed",
+        "tts_failed", "vision_failed",      "bad_frame",         "internal"};
+
+    std::set<std::string> actual;
+    for (int index = 0; index <= static_cast<int>(ErrorCode::kInternal); ++index) {
+        actual.insert(toString(static_cast<ErrorCode>(index)));
+    }
+    TEST_ASSERT_EQUAL_UINT(12u, static_cast<unsigned>(actual.size()));
+    TEST_ASSERT_TRUE(actual == expected);
+}
+
+static void test_bad_frame_and_internal_are_distinct() {
+    // Whose fault it is. From v0.4 the screen renders the code verbatim, so collapsing these
+    // would show a person the wrong side as being at fault.
+    TEST_ASSERT_EQUAL_STRING("bad_frame", toString(ErrorCode::kBadFrame));
+    TEST_ASSERT_EQUAL_STRING("internal", toString(ErrorCode::kInternal));
+}
+
+static void test_every_code_round_trips_through_its_name() {
+    for (int index = 0; index <= static_cast<int>(ErrorCode::kInternal); ++index) {
+        const auto code = static_cast<ErrorCode>(index);
+        TEST_ASSERT_EQUAL_INT(index, static_cast<int>(errorCodeFrom(toString(code))));
+    }
+}
+
+static void test_an_unrecognised_code_degrades_rather_than_failing() {
+    // A device that cannot parse an error is a device that cannot report one. A code added
+    // server-side after this build was flashed must still arrive as a fault.
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ErrorCode::kUnknown),
+                          static_cast<int>(errorCodeFrom("a_code_from_the_future")));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ErrorCode::kUnknown),
+                          static_cast<int>(errorCodeFrom(nullptr)));
+}
+
+// ---------------------------------------------------------------------------------------
+// hello
+// ---------------------------------------------------------------------------------------
+
+static void test_hello_is_exactly_what_the_server_accepts() {
+    // Byte for byte. tests/contract/test_firmware_mirror.py feeds this same literal to the
+    // server's own decode(), so a drift on either side fails on one of the two.
+    const std::string hello = buildHello("core-s3-01");
+
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"type\":\"hello\",\"device_id\":\"core-s3-01\",\"proto_ver\":1,"
+        "\"audio_fmt\":\"pcm16/16000/1\",\"caps\":[\"camera\",\"dual_mic\",\"touch\"]}",
+        hello.c_str());
+}
+
+static void test_the_core_s3_announces_its_real_hardware() {
+    // Not halo (the optional Bottom3, v5) and not buttons (the FIRE, v6). The server tailors what
+    // it sends to this, so overstating it means asking for frames this board cannot act on.
+    const Caps caps;
+    TEST_ASSERT_TRUE(caps.touch);
+    TEST_ASSERT_TRUE(caps.camera);
+    TEST_ASSERT_TRUE(caps.dual_mic);
+    TEST_ASSERT_FALSE(caps.halo);
+    TEST_ASSERT_FALSE(caps.buttons);
+}
+
+static void test_a_wrong_proto_version_can_be_announced_deliberately() {
+    // RF-017's DoD check needs this: announce 99 and the server must reject with
+    // proto_unsupported rather than the device silently retrying forever.
+    const std::string hello = buildHello("core-s3-01", Caps{}, 99);
+
+    TEST_ASSERT_TRUE(hello.find("\"proto_ver\":99") != std::string::npos);
+}
+
+static void test_text_in_and_ping_are_what_the_server_expects() {
+    TEST_ASSERT_EQUAL_STRING("{\"type\":\"text_in\",\"text\":\"привіт\"}",
+                             buildTextIn("привіт").c_str());
+    TEST_ASSERT_EQUAL_STRING("{\"type\":\"ping\"}", buildPing().c_str());
+}
+
+// ---------------------------------------------------------------------------------------
+// Parsing a streamed reply — the shape v0.2 introduced
+// ---------------------------------------------------------------------------------------
+
+static void test_a_streamed_reply_parses_delta_by_delta() {
+    // v0.2 changed `reply` cardinality: N deltas with final:false, closed by one final:true.
+    // A parser written from the v0.1-era design would take the first frame as the whole answer.
+    const char* stream[] = {"{\"type\":\"reply\",\"text\":\"При\",\"final\":false}",
+                            "{\"type\":\"reply\",\"text\":\"віт\",\"final\":false}",
+                            "{\"type\":\"reply\",\"text\":\"\",\"final\":true}"};
+
+    std::string assembled;
+    int deltas = 0;
+    bool ended = false;
+    for (const char* raw : stream) {
+        const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kReply), static_cast<int>(frame.result));
+        if (frame.final) {
+            ended = true;
+        } else {
+            assembled += frame.text;
+            ++deltas;
+        }
+    }
+
+    TEST_ASSERT_TRUE(ended);
+    TEST_ASSERT_EQUAL_INT(2, deltas);
+    TEST_ASSERT_EQUAL_STRING("Привіт", assembled.c_str());
+}
+
+static void test_a_reply_missing_final_is_malformed() {
+    const char* raw = "{\"type\":\"reply\",\"text\":\"hi\"}";
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kMalformed),
+                          static_cast<int>(parseServerFrame(raw, std::strlen(raw)).result));
+}
+
+// ---------------------------------------------------------------------------------------
+// The four failure modes, each distinct
+// ---------------------------------------------------------------------------------------
+
+static void test_malformed_json_is_malformed() {
+    const char* raw = "{not json at all";
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kMalformed),
+                          static_cast<int>(parseServerFrame(raw, std::strlen(raw)).result));
+}
+
+static void test_a_non_object_is_malformed() {
+    const char* raw = "[1,2,3]";
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kMalformed),
+                          static_cast<int>(parseServerFrame(raw, std::strlen(raw)).result));
+}
+
+static void test_an_unknown_type_is_malformed() {
+    const char* raw = "{\"type\":\"sing_a_song\"}";
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kMalformed),
+                          static_cast<int>(parseServerFrame(raw, std::strlen(raw)).result));
+}
+
+static void test_a_declared_but_unhandled_type_is_unsupported_not_malformed() {
+    // The distinction the server draws too. Every v1 and v2 frame arriving at a v0.3 build lands
+    // here, and calling them malformed would make a working server look broken.
+    for (const char* raw : {"{\"type\":\"asr_partial\",\"text\":\"…\"}", "{\"type\":\"emotion\"}",
+                            "{\"type\":\"tts_end\"}", "{\"type\":\"restart\"}",
+                            "{\"type\":\"config_updated\"}", "{\"type\":\"asr\",\"text\":\"x\"}"}) {
+        const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kUnsupported),
+                              static_cast<int>(frame.result));
+        TEST_ASSERT_TRUE(!frame.type.empty());
+    }
+}
+
+static void test_an_oversize_frame_is_refused_before_it_is_parsed() {
+    // Mirrors the server's rule, and matters more here: 320 KB of RAM, not gigabytes.
+    const std::string oversize(kMaxTextFrameBytes + 1, 'x');
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kOversize),
+                          static_cast<int>(parseServerFrame(oversize).result));
+}
+
+static void test_a_frame_at_the_limit_is_still_attempted() {
+    // Off-by-one guard: the boundary is inclusive on the server, so it must be here too.
+    std::string at_limit = "{\"type\":\"reply\",\"text\":\"";
+    at_limit.append(kMaxTextFrameBytes - at_limit.size() - std::strlen("\",\"final\":true}"), 'x');
+    at_limit += "\",\"final\":true}";
+    TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(kMaxTextFrameBytes),
+                             static_cast<uint32_t>(at_limit.size()));
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kReply),
+                          static_cast<int>(parseServerFrame(at_limit).result));
+}
+
+// ---------------------------------------------------------------------------------------
+// error and pong
+// ---------------------------------------------------------------------------------------
+
+static void test_an_error_frame_carries_its_code_and_message() {
+    const char* raw = "{\"type\":\"error\",\"code\":\"proto_unsupported\",\"msg\":\"nope\"}";
+    const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kError), static_cast<int>(frame.result));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ErrorCode::kProtoUnsupported),
+                          static_cast<int>(frame.code));
+    TEST_ASSERT_EQUAL_STRING("nope", frame.msg.c_str());
+}
+
+static void test_an_error_with_an_unknown_code_still_parses() {
+    const char* raw = "{\"type\":\"error\",\"code\":\"from_the_future\",\"msg\":\"x\"}";
+    const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kError), static_cast<int>(frame.result));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ErrorCode::kUnknown), static_cast<int>(frame.code));
+}
+
+static void test_pong_parses() {
+    const char* raw = "{\"type\":\"pong\"}";
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kPong),
+                          static_cast<int>(parseServerFrame(raw, std::strlen(raw)).result));
+}
+
+int main(int, char**) {
+    UNITY_BEGIN();
+    RUN_TEST(test_proto_version_is_pinned);
+    RUN_TEST(test_audio_is_pcm16_16khz_mono);
+    RUN_TEST(test_the_text_frame_cap_matches_the_server);
+    RUN_TEST(test_device_to_server_vocabulary_is_exactly_the_contract);
+    RUN_TEST(test_server_to_device_vocabulary_is_exactly_the_contract);
+    RUN_TEST(test_error_codes_are_exactly_the_twelve);
+    RUN_TEST(test_bad_frame_and_internal_are_distinct);
+    RUN_TEST(test_every_code_round_trips_through_its_name);
+    RUN_TEST(test_an_unrecognised_code_degrades_rather_than_failing);
+    RUN_TEST(test_hello_is_exactly_what_the_server_accepts);
+    RUN_TEST(test_the_core_s3_announces_its_real_hardware);
+    RUN_TEST(test_a_wrong_proto_version_can_be_announced_deliberately);
+    RUN_TEST(test_text_in_and_ping_are_what_the_server_expects);
+    RUN_TEST(test_a_streamed_reply_parses_delta_by_delta);
+    RUN_TEST(test_a_reply_missing_final_is_malformed);
+    RUN_TEST(test_malformed_json_is_malformed);
+    RUN_TEST(test_a_non_object_is_malformed);
+    RUN_TEST(test_an_unknown_type_is_malformed);
+    RUN_TEST(test_a_declared_but_unhandled_type_is_unsupported_not_malformed);
+    RUN_TEST(test_an_oversize_frame_is_refused_before_it_is_parsed);
+    RUN_TEST(test_a_frame_at_the_limit_is_still_attempted);
+    RUN_TEST(test_an_error_frame_carries_its_code_and_message);
+    RUN_TEST(test_an_error_with_an_unknown_code_still_parses);
+    RUN_TEST(test_pong_parses);
+    return UNITY_END();
+}
