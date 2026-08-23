@@ -84,7 +84,8 @@ class Orchestrator:
 
     async def _run_turn(self, session_id: str, text: str) -> AsyncIterator[str]:
         history = self._history.setdefault(session_id, [])
-        history.append(Message(role="user", text=text))
+        user_message = Message(role="user", text=text)
+        history.append(user_message)
 
         stream = self.provider.stream(self.system_prompt, tuple(history))
         collected: list[str] = []
@@ -92,19 +93,25 @@ class Orchestrator:
         try:
             first = await asyncio.wait_for(anext(stream), timeout=self.first_token_budget_s)
         except TimeoutError as exc:
-            log("turn.aborted", code=str(ErrorCode.LLM_TIMEOUT), level="warning")
-            raise TurnAborted(
-                f"the model produced no token within {self.first_token_budget_s}s",
-                ErrorCode.LLM_TIMEOUT,
+            raise self._abort_turn(
+                session_id,
+                user_message,
+                TurnAborted(
+                    f"the model produced no token within {self.first_token_budget_s}s",
+                    ErrorCode.LLM_TIMEOUT,
+                ),
             ) from exc
         except StopAsyncIteration:
             # The model declined to say anything. Not a failure: ARCHITECTURE treats silence
             # as a clean end to a turn, and a spurious llm_failed here would put an error face
             # on the device for a turn that simply had no answer worth giving.
+            #
+            # The user message *stays*: the person did speak, and the next turn should know
+            # it. This is the one place a turn ends without a reply and history is still right.
             log("turn.reply", chars=0, deltas=0, empty=True)
             return
         except ProviderError as exc:
-            raise self._abort(exc) from exc
+            raise self._abort_turn(session_id, user_message, self._translate(exc)) from exc
 
         collected.append(first)
         yield first
@@ -115,19 +122,46 @@ class Orchestrator:
                 yield delta
         except ProviderError as exc:
             # Mid-stream death. The deltas already sent stay sent -- they were true when they
-            # left -- but the turn must not be closed as if it had finished.
-            raise self._abort(exc) from exc
+            # left -- but the turn must not be closed as if it had finished, and the partial
+            # exchange must not enter history as though it were a complete one.
+            raise self._abort_turn(session_id, user_message, self._translate(exc)) from exc
 
         history.append(Message(role="model", text="".join(collected)))
         log("turn.reply", chars=chars("".join(collected)), deltas=len(collected))
 
-    def _abort(self, exc: ProviderError) -> TurnAborted:
+    def _abort_turn(
+        self,
+        session_id: str,
+        user_message: Message,
+        aborted: TurnAborted,
+    ) -> TurnAborted:
+        """Roll the failed turn out of history, then hand back the error to raise.
+
+        ARCHITECTURE §Budgets and abort semantics: an aborted turn "rolls the user message
+        back out of history so the next turn starts consistent". Without it the model would
+        see, on the next turn, a question it never answered -- and would often answer *that*
+        instead of what was just asked, which reads as the character ignoring you.
+
+        Nothing of the partial reply is kept either: half an answer recorded as a whole one is
+        a worse lie than no answer at all.
+        """
+        history = self._history.get(session_id)
+        if history:
+            # Remove *this* turn's message by identity, not by position: a concurrent turn on
+            # the same session would make "the last one" the wrong one.
+            for index in range(len(history) - 1, -1, -1):
+                if history[index] is user_message:
+                    del history[index]
+                    break
+
+        log("turn.aborted", code=str(aborted.code), level="warning")
+        return aborted
+
+    def _translate(self, exc: ProviderError) -> TurnAborted:
         """Translate a provider failure into the device's vocabulary.
 
         An unhinted failure becomes ``llm_failed`` **here, once**, rather than each adapter
         inventing a default -- a guessed ``rate_limited`` would send the device a face and a
         retry policy chosen for a reason that was never true.
         """
-        code = exc.code if exc.code is not None else ErrorCode.LLM_FAILED
-        log("turn.aborted", code=str(code), level="warning")
-        return TurnAborted(str(exc), code)
+        return TurnAborted(str(exc), exc.code if exc.code is not None else ErrorCode.LLM_FAILED)

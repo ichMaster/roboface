@@ -103,7 +103,7 @@ def test_text_and_binary_partition_each_vocabulary() -> None:
 # ---------------------------------------------------------------------------------------
 
 
-def test_error_codes_are_exactly_the_eleven_enumerated_values() -> None:
+def test_error_codes_are_exactly_the_twelve_enumerated_values() -> None:
     assert {member.value for member in ErrorCode} == {
         "wifi_lost",
         "server_unreachable",
@@ -115,8 +115,25 @@ def test_error_codes_are_exactly_the_eleven_enumerated_values() -> None:
         "llm_failed",
         "tts_failed",
         "vision_failed",
+        "bad_frame",
         "internal",
     }
+
+
+def test_bad_frame_and_internal_split_by_whose_fault_it_is() -> None:
+    """The reason the twelfth code exists (v0.1 code review, finding 9).
+
+    `bad_frame` is the device's fault, `internal` is the server's. The distinction matters at
+    the far end: from v0.4 the device renders the error face for whatever code it is sent, so
+    reporting a device's own malformed frame as `internal` would show a fault the server never
+    had, and would point any retry logic at the wrong side.
+    """
+    assert ErrorCode.BAD_FRAME.value == "bad_frame"
+    assert ErrorCode.INTERNAL.value == "internal"
+    assert ErrorCode.BAD_FRAME is not ErrorCode.INTERNAL
+
+    # Everything the codec raises is a judgement about what arrived, so that is its default.
+    assert protocol.ProtocolError("anything").code is ErrorCode.BAD_FRAME
 
 
 # ---------------------------------------------------------------------------------------

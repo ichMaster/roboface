@@ -9,11 +9,15 @@ It is written against a small :class:`Transport` protocol rather than against Fa
 teardown guarantees, which are the easiest thing in a server to believe without checking --
 is unit-testable with no ASGI stack, no event-loop plumbing and no real socket.
 
-``text_in`` is answered through an injected :class:`Responder`. In v0.1 that is
-:class:`EchoResponder`; **v0.2 replaces the injection with the orchestrator and the
-``LLMProvider`` seam and nothing else in this module moves.** There is deliberately no
-provider package, no streaming and no model call here -- the roadmap assigns those to v0.2,
-and building the socket layer against a one-method seam is what keeps that swap honest.
+``text_in`` is answered through an injected :class:`Responder`, which since v0.2 yields a
+**stream of deltas** rather than a finished string. The orchestrator is the real
+implementation and :class:`EchoResponder` is the router's own test double; this module knows
+about neither Gemini nor prompts nor history, which is what building the socket layer against
+a one-method seam bought.
+
+**Every enumerated code this module chooses is ``bad_frame``.** Everything the router rejects
+is a judgement about what the device sent; ``internal`` belongs to the server genuinely
+breaking, and the ``llm_*`` codes arrive already classified from the turn.
 """
 
 from __future__ import annotations
@@ -233,7 +237,7 @@ class Router:
         if not _is_from_device(frame):
             await self._send_error(
                 transport,
-                ErrorCode.INTERNAL,
+                ErrorCode.BAD_FRAME,
                 "that message type travels server -> device, not device -> server",
             )
             return
@@ -255,14 +259,14 @@ class Router:
         if meaning is None:
             await self._send_error(
                 transport,
-                ErrorCode.INTERNAL,
+                ErrorCode.BAD_FRAME,
                 "a binary frame carries no envelope and has no meaning in this state",
             )
 
     async def _handle_greeting(self, frame: Frame, conn: Connection, transport: Transport) -> None:
         if not isinstance(frame, Hello):
             await self._send_error(
-                transport, ErrorCode.INTERNAL, "the first frame must be 'hello'"
+                transport, ErrorCode.BAD_FRAME, "the first frame must be 'hello'"
             )
             return
 
@@ -300,11 +304,11 @@ class Router:
                 await self._stream_reply(frame.text, conn, transport)
             case Hello():
                 await self._send_error(
-                    transport, ErrorCode.INTERNAL, "'hello' was already negotiated"
+                    transport, ErrorCode.BAD_FRAME, "'hello' was already negotiated"
                 )
             case _:
                 await self._send_error(
-                    transport, ErrorCode.INTERNAL, "message type is not handled in this phase"
+                    transport, ErrorCode.BAD_FRAME, "message type is not handled in this phase"
                 )
 
     async def _stream_reply(self, text: str, conn: Connection, transport: Transport) -> None:
@@ -331,6 +335,9 @@ class Router:
         log("turn.streamed", deltas=deltas)
 
     async def _send_error(self, transport: Transport, code: ErrorCode, msg: str) -> None:
+        # Note every enumerated code this class chooses is `bad_frame`: everything the router
+        # rejects is a judgement about what the device sent. `internal` belongs to the server
+        # genuinely breaking, and `llm_*` codes arrive already classified from the turn.
         log("error.sent", code=str(code), level="warning")
         await transport.send(encode(ErrorFrame(code=code, msg=msg)))
 

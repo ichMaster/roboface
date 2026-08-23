@@ -20,11 +20,13 @@ What it owns (ARCHITECTURE.md §Contracts -> WS device<->server):
   from direction plus connection state, expressed here as a predicate rather than left as a
   convention each caller re-invents.
 
-**A known gap in the enum, deliberately not papered over.** ``ErrorCode`` has no code for
-"the device sent something this server cannot parse". A malformed or unknown frame is
-therefore reported as :attr:`ErrorCode.internal`, which misattributes a device-side fault to
-the server. Inventing a twelfth code here would be a unilateral change to a specified
-contract, so the mapping is documented, tested as-is, and raised for review instead.
+**Whose fault a frame is.** :attr:`ErrorCode.bad_frame` means *the device sent something this
+server cannot parse* — malformed JSON, an unknown message type, or one this version does not
+implement yet. :attr:`ErrorCode.internal` keeps its real meaning: the server broke. v0.1 had
+no code for the first case and reported all of them as ``internal``, which told the device the
+server had failed when the device's own frame was at fault — and from v0.4 would render the
+error face for a fault the device caused. The twelfth code was added deliberately in v0.2
+rather than assumed in v0.1, because changing an enumerated contract is a decision, not a fix.
 """
 
 from __future__ import annotations
@@ -139,6 +141,7 @@ class ErrorCode(StrEnum):
     LLM_FAILED = "llm_failed"
     TTS_FAILED = "tts_failed"
     VISION_FAILED = "vision_failed"
+    BAD_FRAME = "bad_frame"
     INTERNAL = "internal"
 
 
@@ -189,9 +192,14 @@ def server_binary_meaning(phase: BinaryPhase) -> ServerMessage | None:
 
 
 class ProtocolError(Exception):
-    """Base class for every codec failure. Always carries an enumerated code."""
+    """Base class for every codec failure. Always carries an enumerated code.
 
-    def __init__(self, message: str, code: ErrorCode = ErrorCode.INTERNAL) -> None:
+    Defaults to :attr:`ErrorCode.BAD_FRAME`, not ``INTERNAL``: everything raised from this
+    codec is a judgement about what *arrived*, and attributing that to the server would send
+    the device the wrong face and the wrong retry behaviour.
+    """
+
+    def __init__(self, message: str, code: ErrorCode = ErrorCode.BAD_FRAME) -> None:
         super().__init__(message)
         self.code = code
 

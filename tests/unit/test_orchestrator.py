@@ -218,3 +218,118 @@ async def test_a_silent_provider_ends_the_turn_cleanly() -> None:
     deltas = [delta async for delta in orchestrator.respond("s", "hi")]
 
     assert deltas == []
+
+
+# ---------------------------------------------------------------------------------------
+# History rollback on abort (RF-009)
+# ---------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_failure_before_the_first_delta_rolls_the_user_message_back() -> None:
+    """Otherwise the next turn shows the model a question it never answered.
+
+    ARCHITECTURE §Budgets and abort semantics requires this explicitly. The visible symptom of
+    getting it wrong is the character answering the *previous* question instead of the one it
+    was just asked.
+    """
+    orchestrator = _orchestrator(MockLLMProvider(fail_at_index=0))
+
+    with pytest.raises(TurnAborted):
+        [delta async for delta in orchestrator.respond("s", "питання без відповіді")]
+
+    assert orchestrator.history("s") == ()
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_rolls_the_user_message_back() -> None:
+    orchestrator = _orchestrator(
+        MockLLMProvider(delay_s=5.0, delay_before_index=0), first_token_budget_s=0.05
+    )
+
+    with pytest.raises(TurnAborted):
+        [delta async for delta in orchestrator.respond("s", "hi")]
+
+    assert orchestrator.history("s") == ()
+
+
+@pytest.mark.asyncio
+async def test_a_mid_stream_failure_rolls_back_and_keeps_no_partial_reply() -> None:
+    # Half an answer recorded as a whole one is a worse lie than no answer at all.
+    orchestrator = _orchestrator(MockLLMProvider(deltas=["почина", "ю"], fail_at_index=1))
+
+    seen: list[str] = []
+    with pytest.raises(TurnAborted):
+        async for delta in orchestrator.respond("s", "привіт"):
+            seen.append(delta)
+
+    assert seen == ["почина"], "the deltas that did arrive should still have arrived"
+    assert orchestrator.history("s") == ()
+
+
+@pytest.mark.asyncio
+async def test_the_next_turn_after_a_failure_sees_a_consistent_history() -> None:
+    provider = MockLLMProvider(deltas=["добре"], fail_at_index=0)
+    orchestrator = _orchestrator(provider)
+
+    with pytest.raises(TurnAborted):
+        [delta async for delta in orchestrator.respond("s", "цей провалиться")]
+
+    provider.fail_at_index = None
+    [delta async for delta in orchestrator.respond("s", "цей спрацює")]
+
+    _, messages = provider.calls[-1]
+    assert [message.text for message in messages] == ["цей спрацює"], (
+        "the failed turn's question was still in the history sent to the model"
+    )
+    assert [message.text for message in orchestrator.history("s")] == ["цей спрацює", "добре"]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_does_not_disturb_earlier_successful_turns() -> None:
+    provider = MockLLMProvider(deltas=["ok"])
+    orchestrator = _orchestrator(provider)
+    [delta async for delta in orchestrator.respond("s", "перше")]
+
+    provider.fail_at_index = 0
+    with pytest.raises(TurnAborted):
+        [delta async for delta in orchestrator.respond("s", "друге")]
+
+    assert [message.text for message in orchestrator.history("s")] == ["перше", "ok"]
+
+
+@pytest.mark.asyncio
+async def test_a_silent_reply_keeps_the_user_message() -> None:
+    """The one case where a turn ends with no reply and history is still right.
+
+    The person did speak. Rolling their message back would make the next turn behave as though
+    they had not, which is a different bug from the one rollback exists to prevent.
+    """
+    orchestrator = _orchestrator(SilentLLMProvider())
+
+    deltas = [delta async for delta in orchestrator.respond("s", "тиша")]
+
+    assert deltas == []
+    assert [message.text for message in orchestrator.history("s")] == ["тиша"]
+
+
+@pytest.mark.asyncio
+async def test_rollback_removes_this_turns_message_not_merely_the_last_one() -> None:
+    """Identity, not position.
+
+    Two turns interleaved on one session would make "the last message" the wrong one to
+    remove, and the rollback would silently delete a healthy turn's question.
+    """
+    provider = MockLLMProvider(deltas=["ok"])
+    orchestrator = _orchestrator(provider)
+    [delta async for delta in orchestrator.respond("s", "перше")]
+
+    failing = MockLLMProvider(fail_at_index=0)
+    orchestrator.provider = failing
+    with pytest.raises(TurnAborted):
+        [delta async for delta in orchestrator.respond("s", "друге")]
+
+    history = orchestrator.history("s")
+    assert [message.text for message in history] == ["перше", "ok"]
+    assert history[0].role == "user"
+    assert history[1].role == "model"

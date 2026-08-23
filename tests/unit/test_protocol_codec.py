@@ -212,11 +212,20 @@ def test_message_type_of_resolves_both_directions_and_nothing_else() -> None:
 
 def test_protocol_errors_carry_an_enumerated_code() -> None:
     # The router turns whatever the codec raises into `error{code}`; a code-less exception
-    # would leave it inventing one.
+    # would leave it inventing one. `bad_frame`, not `internal`: everything raised here is a
+    # judgement about what *arrived*, and blaming the server for the device's frame would show
+    # the wrong face on the device from v0.4.
     for raw in ("not json", json.dumps({"type": "nope"})):
         with pytest.raises((MalformedFrame, UnknownMessage)) as raised:
             decode(raw)
-        assert raised.value.code is ErrorCode.INTERNAL
+        assert raised.value.code is ErrorCode.BAD_FRAME
+
+
+def test_an_unimplemented_type_is_also_the_device_s_frame_not_the_server_s_fault() -> None:
+    with pytest.raises(UnsupportedMessage) as raised:
+        decode(json.dumps({"type": "emotion"}))
+
+    assert raised.value.code is ErrorCode.BAD_FRAME
 
 
 # ---------------------------------------------------------------------------------------

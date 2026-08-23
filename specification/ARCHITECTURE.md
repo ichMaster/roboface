@@ -97,7 +97,9 @@ The second level of the reaction model. The reflex already fired locally; this t
 
 ### Error codes
 
-Enumerated, never free text: `wifi_lost · server_unreachable · proto_unsupported · unauthorized · rate_limited · asr_failed · llm_timeout · llm_failed · tts_failed · vision_failed · internal`.
+Enumerated, never free text: `wifi_lost · server_unreachable · proto_unsupported · unauthorized · rate_limited · asr_failed · llm_timeout · llm_failed · tts_failed · vision_failed · bad_frame · internal`.
+
+`bad_frame` and `internal` split by **whose fault it is**: `bad_frame` means the device sent something the server cannot parse — malformed JSON, an unknown message type, or one this version does not implement — and `internal` means the server itself broke. The distinction matters at the far end: from v0.4 the device renders the error face for whatever code it is sent, and blaming the server for a device's own frame would send the wrong face and the wrong retry behaviour.
 
 ## Turn lifecycle
 

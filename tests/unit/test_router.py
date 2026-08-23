@@ -425,3 +425,55 @@ def test_each_app_gets_its_own_registry() -> None:
     second = create_app()
 
     assert first.state.router.registry is not second.state.router.registry
+
+
+# ---------------------------------------------------------------------------------------
+# Whose fault it is (RF-009)
+# ---------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("inbound", "what"),
+    [
+        (encode(TextIn(text="too early")), "a frame before hello"),
+        ("{not json", "malformed JSON"),
+        ('{"type": "sing_a_song"}', "an unknown type"),
+        ('{"type": "emotion"}', "a declared but unimplemented type"),
+        (encode(Reply(text="x", final=True)), "a server-to-device frame from a device"),
+    ],
+)
+async def test_everything_the_router_rejects_is_the_devices_fault(
+    inbound: str, what: str
+) -> None:
+    """`internal` would tell the device the server broke, which is a different thing.
+
+    From v0.4 the device renders the error face for whatever code arrives, so this decides
+    which side a person is shown as being at fault.
+    """
+    script = [_hello(), inbound] if "before hello" not in what else [inbound]
+    transport = ScriptedTransport(script)
+
+    await _router().serve(transport)
+
+    errors = transport.errors()
+    assert errors, f"{what} produced no error at all"
+    assert errors[0].code is ErrorCode.BAD_FRAME, what
+
+
+@pytest.mark.asyncio
+async def test_a_binary_frame_is_the_devices_fault_too() -> None:
+    transport = ScriptedTransport([_hello(), b"\x00\x01"])
+
+    await _router().serve(transport)
+
+    assert transport.errors()[0].code is ErrorCode.BAD_FRAME
+
+
+@pytest.mark.asyncio
+async def test_a_second_hello_is_the_devices_fault() -> None:
+    transport = ScriptedTransport([_hello(), _hello(device_id="impostor")])
+
+    await _router().serve(transport)
+
+    assert transport.errors()[0].code is ErrorCode.BAD_FRAME

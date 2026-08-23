@@ -200,3 +200,69 @@ def test_awkward_input_still_streams(text: str) -> None:
         device.send(TextIn(text=text))
 
         assert device.collect_reply().text == "ok"
+
+
+# ---------------------------------------------------------------------------------------
+# The device's view of a failure (RF-009)
+# ---------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "why"),
+    [
+        ("{not json at all", "malformed JSON"),
+        ('{"type": "sing_a_song"}', "an unknown message type"),
+        ('{"type": "emotion"}', "a declared type this version does not implement"),
+        ('{"type": "text_in"}', "a required field missing"),
+    ],
+)
+def test_a_devices_own_bad_frame_is_reported_as_bad_frame(raw: str, why: str) -> None:
+    """v0.1 reported all of these as `internal` — the server blaming itself for the device.
+
+    From v0.4 the device renders the error face for whatever code it is sent, so the
+    attribution is not cosmetic: it decides which side a person is told is at fault.
+    """
+    app = _app(MockLLMProvider(deltas=["ok"]))
+
+    with connect(app) as device:
+        device.hello()
+        device.send_raw(raw)
+
+        error = device.recv_until(ErrorFrame)
+
+    assert error.code is ErrorCode.BAD_FRAME, f"{why} should be the device's fault"
+
+
+def test_a_provider_failure_is_not_reported_as_bad_frame() -> None:
+    # The other direction of the same distinction: the device's frame was fine.
+    app = _app(MockLLMProvider(fail_at_index=0, error=ProviderError("model down")))
+
+    with connect(app) as device:
+        device.hello()
+        device.send(TextIn(text="a perfectly good question"))
+
+        error = device.recv_until(ErrorFrame)
+
+    assert error.code is ErrorCode.LLM_FAILED
+
+
+def test_a_failed_turn_does_not_poison_the_next_one() -> None:
+    """History rollback, observed from outside.
+
+    Without it the model sees, on the next turn, a question it never answered — and often
+    answers *that* instead of the one just asked, which reads as the character ignoring you.
+    """
+    provider = MockLLMProvider(deltas=["добре"], fail_at_index=0)
+    app = _app(provider)
+
+    with connect(app) as device:
+        device.hello()
+        device.send(TextIn(text="цей провалиться"))
+        device.recv_until(ErrorFrame)
+
+        provider.fail_at_index = None
+        device.send(TextIn(text="цей спрацює"))
+        device.collect_reply()
+
+    _, messages = provider.calls[-1]
+    assert [message.text for message in messages] == ["цей спрацює"]
