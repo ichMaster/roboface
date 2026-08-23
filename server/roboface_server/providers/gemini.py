@@ -32,14 +32,26 @@ if TYPE_CHECKING:  # pragma: no cover -- typing only; never imported at runtime
 #: has one place to live.
 _ROLES: Final[dict[str, str]] = {"user": "user", "model": "model"}
 
-#: HTTP statuses that mean something specific enough to tell the device about. Everything else
-#: becomes an unhinted ``ProviderError`` and the orchestrator maps it to ``llm_failed`` -- a
-#: guessed code would send the wrong face and the wrong retry behaviour.
+#: HTTP statuses whose meaning survives the trip to the device. Everything else is left
+#: **unhinted**, and the orchestrator maps it to ``llm_failed`` in the one place that exists
+#: for it.
+#:
+#: The test is not "do we know what happened" but "is this code true *at the device*".
+#: features/DEVICE_UI.md §Screens renders a fault as the enumerated code verbatim, with its
+#: line -- its own worked example is "No server · ``server_unreachable``". So mapping a Gemini
+#: 503 to ``server_unreachable`` would print "No server" on a device that is connected to its
+#: server and being told so over that very connection: the one fault message a person could
+#: act on, and it would be wrong. Likewise ``unauthorized`` for a 401: *our* key being bad is
+#: not the *device* being unauthorized, and the device can do nothing with that.
+#:
+#: The real cause is not lost -- it is logged server-side, where the person who can fix a bad
+#: key will actually look. This is the same "whose fault is it" split that produced
+#: ``bad_frame`` in RF-009, applied on the outbound side where it was first got wrong.
 _STATUS_HINTS: Final[dict[int, ErrorCode]] = {
-    401: ErrorCode.UNAUTHORIZED,
-    403: ErrorCode.UNAUTHORIZED,
+    # Rate limiting is rate limiting wherever it happened, and the device's response to it
+    # (back off, try again later) is the correct one.
     429: ErrorCode.RATE_LIMITED,
-    503: ErrorCode.SERVER_UNREACHABLE,
+    # A gateway timeout on the LLM leg *is* an LLM timeout.
     504: ErrorCode.LLM_TIMEOUT,
 }
 
@@ -154,4 +166,6 @@ class GeminiProvider:
         code = getattr(exc, "code", None)
         hint = _STATUS_HINTS.get(code) if isinstance(code, int) else None
         label = f"{type(exc).__name__} {code}" if code is not None else type(exc).__name__
+        # The status stays in the message, which is logged server-side, even when it is
+        # deliberately not turned into a device-facing code.
         return ProviderError(f"gemini request failed: {label}", hint)

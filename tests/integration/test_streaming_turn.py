@@ -266,3 +266,27 @@ def test_a_failed_turn_does_not_poison_the_next_one() -> None:
 
     _, messages = provider.calls[-1]
     assert [message.text for message in messages] == ["цей спрацює"]
+
+
+def test_a_provider_outage_does_not_tell_the_device_the_server_is_unreachable() -> None:
+    """Code review #3, from the device's side.
+
+    DEVICE_UI renders a fault as the enumerated code verbatim — "No server ·
+    `server_unreachable`". A Gemini outage must not produce that on a device that is
+    connected to its server and being told so over that connection.
+    """
+
+    class _Outage(Exception):
+        code = 503
+
+    app = _app(MockLLMProvider(fail_at_index=0, error=ProviderError("upstream 503")))
+
+    with connect(app) as device:
+        device.hello()
+        device.send(TextIn(text="привіт"))
+
+        error = device.recv_until(ErrorFrame)
+
+    assert error.code is ErrorCode.LLM_FAILED
+    assert error.code is not ErrorCode.SERVER_UNREACHABLE
+    assert error.code is not ErrorCode.UNAUTHORIZED

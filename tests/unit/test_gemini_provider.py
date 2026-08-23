@@ -194,13 +194,12 @@ class _VendorError(Exception):
     ("status", "expected"),
     [
         (429, ErrorCode.RATE_LIMITED),
-        (401, ErrorCode.UNAUTHORIZED),
-        (403, ErrorCode.UNAUTHORIZED),
-        (503, ErrorCode.SERVER_UNREACHABLE),
         (504, ErrorCode.LLM_TIMEOUT),
     ],
 )
-async def test_known_statuses_carry_a_code_hint(status: int, expected: ErrorCode) -> None:
+async def test_statuses_that_are_still_true_at_the_device_carry_a_hint(
+    status: int, expected: ErrorCode
+) -> None:
     models = _FakeModels(error=_VendorError(status))
 
     with pytest.raises(ProviderError) as raised:
@@ -210,11 +209,44 @@ async def test_known_statuses_carry_a_code_hint(status: int, expected: ErrorCode
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403, 500, 503])
+async def test_statuses_that_would_blame_the_device_are_left_unhinted(status: int) -> None:
+    """A code must be true *at the device*, not merely accurate about what happened.
+
+    DEVICE_UI renders a fault as the enumerated code verbatim — its worked example is
+    "No server · server_unreachable". Mapping a Gemini 503 there would print "No server" on a
+    device that is connected to its server and being told so over that connection. And *our*
+    key being rejected is not the *device* being unauthorized.
+
+    Unhinted, so the orchestrator maps it to llm_failed in the one place that exists for it.
+    """
+    models = _FakeModels(error=_VendorError(status))
+
+    with pytest.raises(ProviderError) as raised:
+        [delta async for delta in _provider(models).stream("s", [])]
+
+    assert raised.value.code is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403, 503])
+async def test_the_status_is_still_recorded_in_the_message(status: int) -> None:
+    # Not turning a status into a device-facing code must not mean losing it: the message is
+    # logged server-side, where the person who can fix a bad key will look.
+    models = _FakeModels(error=_VendorError(status))
+
+    with pytest.raises(ProviderError) as raised:
+        [delta async for delta in _provider(models).stream("s", [])]
+
+    assert str(status) in str(raised.value)
+
+
+@pytest.mark.asyncio
 async def test_an_unrecognised_failure_carries_no_hint() -> None:
     # Unhinted, so the orchestrator maps it to llm_failed in one place. A guessed
     # rate_limited would send the device a face and a retry policy chosen for a reason that
     # was never true.
-    models = _FakeModels(error=_VendorError(500))
+    models = _FakeModels(error=_VendorError(418))
 
     with pytest.raises(ProviderError) as raised:
         [delta async for delta in _provider(models).stream("s", [])]
