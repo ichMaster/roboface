@@ -1,0 +1,7 @@
+# RoboFace server -- runtime dependencies.
+# Each entry is pulled in by the phase that first needs it; nothing is added ahead of
+# the roadmap. v0.1 needs the websocket server and the .env reader, nothing more.
+fastapi>=0.115
+uvicorn[standard]>=0.32
+websockets>=13.0
+python-dotenv>=1.0
