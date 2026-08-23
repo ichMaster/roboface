@@ -1,0 +1,252 @@
+"""One connection state machine per device.
+
+The router is the only place that knows a connection has a *history*: it greeted, it was
+accepted, it is now exchanging frames, it is closing. ``protocol`` knows what a frame is;
+the router knows whether this frame is allowed *now* and what to answer.
+
+It is written against a small :class:`Transport` protocol rather than against FastAPI's
+``WebSocket`` directly. That is not ceremony: it means the state machine -- including the
+teardown guarantees, which are the easiest thing in a server to believe without checking --
+is unit-testable with no ASGI stack, no event-loop plumbing and no real socket.
+
+``text_in`` is answered through an injected :class:`Responder`. In v0.1 that is
+:class:`EchoResponder`; **v0.2 replaces the injection with the orchestrator and the
+``LLMProvider`` seam and nothing else in this module moves.** There is deliberately no
+provider package, no streaming and no model call here -- the roadmap assigns those to v0.2,
+and building the socket layer against a one-method seam is what keeps that swap honest.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Protocol, runtime_checkable
+from uuid import uuid4
+
+from roboface_server.protocol import (
+    FRAME_TYPES,
+    Accepted,
+    BinaryPhase,
+    Capability,
+    DeviceMessage,
+    ErrorCode,
+    ErrorFrame,
+    Frame,
+    Hello,
+    Ping,
+    Pong,
+    ProtocolError,
+    Reply,
+    TextIn,
+    decode,
+    device_binary_meaning,
+    encode,
+    negotiate,
+)
+
+#: Normal closure. A rejected ``hello`` still closes normally: the device is not broken, it
+#: is simply speaking a version this server does not, and it should back off rather than
+#: hammer a reconnect loop.
+WS_CLOSE_NORMAL = 1000
+
+
+class Disconnected(Exception):
+    """The peer is gone. Raised by a transport's ``receive``; never an error condition."""
+
+
+@runtime_checkable
+class Transport(Protocol):
+    """The socket, reduced to what the state machine actually needs."""
+
+    async def send(self, data: str) -> None: ...
+
+    async def receive(self) -> str | bytes: ...
+
+    async def close(self, code: int = WS_CLOSE_NORMAL) -> None: ...
+
+
+class Responder(Protocol):
+    """How a ``text_in`` becomes a reply.
+
+    One method, deliberately: v0.2 implements it with the orchestrator streaming Gemini
+    deltas, and the router will not need to know that happened.
+    """
+
+    async def respond(self, text: str) -> str: ...
+
+
+class EchoResponder:
+    """v0.1's responder: it echoes.
+
+    The roadmap's "``text_in`` echoes through a mock provider" -- enough to prove the wire
+    end to end without a model call, and no more.
+    """
+
+    async def respond(self, text: str) -> str:
+        return text
+
+
+class ConnectionPhase(StrEnum):
+    """Where a connection is in its life. Every inbound frame is judged against it."""
+
+    AWAITING_HELLO = "awaiting_hello"
+    READY = "ready"
+    CLOSING = "closing"
+
+
+@dataclass(slots=True)
+class Connection:
+    """Per-connection state. One of these exists for as long as one socket does."""
+
+    session_id: str
+    phase: ConnectionPhase = ConnectionPhase.AWAITING_HELLO
+    device_id: str | None = None
+    caps: frozenset[Capability] = frozenset()
+
+    def accept(self, hello: Hello) -> None:
+        self.device_id = hello.device_id
+        self.caps = hello.caps
+        self.phase = ConnectionPhase.READY
+
+
+class ConnectionRegistry:
+    """The live connections.
+
+    An instance, not module state: two tests running in one process must not be able to see
+    each other's connections, and neither must two apps in one deployment.
+    """
+
+    def __init__(self) -> None:
+        self._connections: dict[str, Connection] = {}
+
+    def add(self, connection: Connection) -> None:
+        self._connections[connection.session_id] = connection
+
+    def remove(self, connection: Connection) -> None:
+        # Discard rather than delete: teardown must be safe to reach twice, since it runs
+        # from a `finally` that a later failure could re-enter.
+        self._connections.pop(connection.session_id, None)
+
+    def active(self) -> tuple[Connection, ...]:
+        return tuple(self._connections.values())
+
+    def __len__(self) -> int:
+        return len(self._connections)
+
+
+@dataclass(slots=True)
+class Router:
+    """Serves one connection at a time; holds no per-connection state of its own."""
+
+    registry: ConnectionRegistry = field(default_factory=ConnectionRegistry)
+    responder: Responder = field(default_factory=EchoResponder)
+    session_id_factory: Callable[[], str] = field(default=lambda: uuid4().hex)
+
+    async def serve(self, transport: Transport) -> None:
+        """Run one connection to completion.
+
+        The ``finally`` is the point of this method: whatever happens -- a clean close, a
+        vanished client, an exception from a handler -- the connection leaves the registry.
+        A server that leaks connection state survives its own tests and dies in a week.
+        """
+        connection = Connection(session_id=self.session_id_factory())
+        self.registry.add(connection)
+        try:
+            while connection.phase is not ConnectionPhase.CLOSING:
+                try:
+                    message = await transport.receive()
+                except Disconnected:
+                    break
+                await self._handle(message, connection, transport)
+        finally:
+            self.registry.remove(connection)
+
+    async def _handle(self, message: str | bytes, conn: Connection, transport: Transport) -> None:
+        if isinstance(message, bytes | bytearray):
+            await self._handle_binary(conn, transport)
+            return
+
+        try:
+            frame = decode(message)
+        except ProtocolError as exc:
+            # One branch for all three of MalformedFrame / UnknownMessage /
+            # UnsupportedMessage: each already carries its own enumerated code, and the
+            # router's job is to relay it rather than to re-classify it.
+            await self._send_error(transport, exc.code, str(exc))
+            return
+
+        if not _is_from_device(frame):
+            await self._send_error(
+                transport,
+                ErrorCode.INTERNAL,
+                "that message type travels server -> device, not device -> server",
+            )
+            return
+
+        if conn.phase is ConnectionPhase.AWAITING_HELLO:
+            await self._handle_greeting(frame, conn, transport)
+            return
+
+        await self._dispatch(frame, conn, transport)
+
+    async def _handle_binary(self, conn: Connection, transport: Transport) -> None:
+        """A binary frame is meaningful only in a phase that gives it meaning.
+
+        v0.1 has no such phase -- no listening window, no announced image -- so every binary
+        frame is a violation. The predicate lives in ``protocol`` so v1 flips this on by
+        moving the connection into ``LISTENING`` rather than by editing this branch.
+        """
+        meaning = device_binary_meaning(BinaryPhase.IDLE)
+        if meaning is None:
+            await self._send_error(
+                transport,
+                ErrorCode.INTERNAL,
+                "a binary frame carries no envelope and has no meaning in this state",
+            )
+
+    async def _handle_greeting(self, frame: Frame, conn: Connection, transport: Transport) -> None:
+        if not isinstance(frame, Hello):
+            await self._send_error(
+                transport, ErrorCode.INTERNAL, "the first frame must be 'hello'"
+            )
+            return
+
+        outcome = negotiate(frame)
+        if not isinstance(outcome, Accepted):
+            # Tell the device *why*, then close. Leaving it connected to a server that
+            # cannot speak to it is the one outcome worse than refusing it.
+            await self._send_error(transport, outcome.code, outcome.reason)
+            conn.phase = ConnectionPhase.CLOSING
+            await transport.close(WS_CLOSE_NORMAL)
+            return
+
+        conn.accept(outcome.hello)
+
+    async def _dispatch(self, frame: Frame, conn: Connection, transport: Transport) -> None:
+        match frame:
+            case Ping():
+                await transport.send(encode(Pong()))
+            case TextIn():
+                reply = await self.responder.respond(frame.text)
+                await transport.send(encode(Reply(text=reply, final=True)))
+            case Hello():
+                await self._send_error(
+                    transport, ErrorCode.INTERNAL, "'hello' was already negotiated"
+                )
+            case _:
+                await self._send_error(
+                    transport, ErrorCode.INTERNAL, "message type is not handled in this phase"
+                )
+
+    async def _send_error(self, transport: Transport, code: ErrorCode, msg: str) -> None:
+        await transport.send(encode(ErrorFrame(code=code, msg=msg)))
+
+
+def _is_from_device(frame: Frame) -> bool:
+    """Whether this frame belongs to the device -> server vocabulary.
+
+    ``decode`` resolves against both directions so one codec serves both tiers; the router
+    is where direction is enforced. A device sending ``reply`` is not having a conversation.
+    """
+    return isinstance(FRAME_TYPES[type(frame)], DeviceMessage)
