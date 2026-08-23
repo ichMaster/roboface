@@ -126,8 +126,14 @@ class Chrome {
         return BandTenant::kNothing;
     }
 
+    // The facts, for the drawing code. Exposed deliberately rather than left for the caller to
+    // keep its own copy: two places holding the same facts is how a battery pill ends up showing a
+    // level the fade logic has already decided is stale.
     ErrorCode fault() const { return facts_.fault; }
     bool faultActive() const { return facts_.fault_active; }
+    LinkState link() const { return facts_.link; }
+    int batteryPercent() const { return facts_.battery_percent; }
+    bool charging() const { return facts_.charging; }
 
     // How long the current indicator state has been settled -- the drawing code uses this to place
     // itself within the 120 ms in / 400 ms out fade rather than tracking its own clock.

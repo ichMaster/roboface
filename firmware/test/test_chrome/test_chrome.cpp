@@ -206,8 +206,44 @@ static void test_the_fade_timings_are_the_documented_ones() {
     TEST_ASSERT_EQUAL_INT(20, kLowBatteryPercent);
 }
 
+// ---------------------------------------------------------------------------------------
+// The facts reach the drawing code
+// ---------------------------------------------------------------------------------------
+
+static void test_the_facts_are_readable_for_drawing() {
+    // Without these the chrome view had to invent values, and did: it drew "connected" arcs and an
+    // empty battery whatever the truth was. Two places holding the same facts is how a pill ends
+    // up showing a level the fade logic has already decided is stale.
+    Chrome chrome;
+    ChromeFacts facts = connectedAndHealthy();
+    facts.link = LinkState::kOffline;
+    facts.battery_percent = 7;
+    facts.charging = true;
+    chrome.update(0, facts);
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(LinkState::kOffline), static_cast<int>(chrome.link()));
+    TEST_ASSERT_EQUAL_INT(7, chrome.batteryPercent());
+    TEST_ASSERT_TRUE(chrome.charging());
+}
+
+static void test_the_reported_facts_track_updates() {
+    Chrome chrome;
+    ChromeFacts facts = connectedAndHealthy();
+    chrome.update(0, facts);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(LinkState::kConnected), static_cast<int>(chrome.link()));
+
+    facts.link = LinkState::kDegraded;
+    facts.battery_percent = 42;
+    chrome.update(100, facts);
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(LinkState::kDegraded), static_cast<int>(chrome.link()));
+    TEST_ASSERT_EQUAL_INT(42, chrome.batteryPercent());
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_the_facts_are_readable_for_drawing);
+    RUN_TEST(test_the_reported_facts_track_updates);
     RUN_TEST(test_link_is_visible_while_connecting);
     RUN_TEST(test_link_is_visible_while_offline_or_degraded);
     RUN_TEST(test_link_hides_about_three_seconds_after_it_settles_connected);
