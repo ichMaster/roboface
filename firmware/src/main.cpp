@@ -1,20 +1,22 @@
-// RoboFace firmware — entry point and the serial debug channel.
+// RoboFace firmware — entry point.
 //
-// v0.3's payoff: a line typed into `pio device monitor` becomes a `text_in`, and the model's reply
-// prints back **as it arrives**. USB serial is the debug channel and the only turn source until v1
-// brings the microphone (ROADMAP §v0.3) — the same trick that gets a testable loop before audio
-// exists.
+// v0.4 completes the v0 skeleton: a server, a wire, a board, and a face. A **device state is a
+// face**, never a word (MISSION, and ROADMAP §v0.4's DoD) — the only text this firmware puts on the
+// screen is an enumerated error code, which is an identifier rather than a state.
 //
 // This file is wiring and stays wiring. Every decision it appears to make is delegated: the state
-// machine says what a state change means, `roboface::LineReader` says where a line ends,
-// `roboface::ws_protocol` says what a frame is. What is left here is the order things happen in,
-// which is the one thing a host test cannot check and a person watching a serial monitor can.
+// machine says what a transition means, `roboface::recipeFor` says what a state looks like,
+// `roboface::Chrome` says what is visible, `roboface::LineReader` says where a line ends. What is
+// left here is the order things happen in — the one thing a host test cannot check.
 
 #include <M5Unified.h>
 
+#include "app/chrome_view.h"
 #include "app/net.h"
+#include "app/stub_renderer.h"
 #include "app/ws.h"
 #include "config.h"
+#include "pure/chrome.h"
 #include "pure/line_reader.h"
 #include "pure/state.h"
 #include "pure/version.h"
@@ -24,14 +26,45 @@ namespace {
 
 app::Net net;
 app::Ws ws;
+app::StubRenderer renderer;
+app::ChromeView chrome_view;
+roboface::Chrome chrome;
 roboface::LineReader lines;
 roboface::DeviceState state = roboface::DeviceState::kBoot;
 
-// A status line often enough to tell a wedged device from a quiet one, rarely enough that it does
-// not bury the conversation it is printed alongside.
 constexpr uint32_t kStatusIntervalMs = 10000;
 uint32_t last_status_ms = 0;
 bool reply_in_progress = false;
+bool debug_line = false;  // the tiny corner diagnostic; off by default
+
+// The self-test. Without a reachable server, idle/thinking/replying cannot be entered by any
+// natural route — and DEVICE_UI's whole point is that the screen never says which state it is in,
+// so a person checking the faces needs the *serial* to say what the screen should be showing.
+bool self_test_running = false;
+int self_test_index = 0;
+uint32_t self_test_next_ms = 0;
+// What the device was actually doing before the self-test borrowed the screen. Without this the
+// cycle ends leaving the device in `error` — it says "back to the real state" and is not, which is
+// worse than not saying it, because the status line then disagrees with the screen forever.
+roboface::DeviceState self_test_saved_state = roboface::DeviceState::kIdle;
+constexpr uint32_t kSelfTestHoldMs = 2500;
+constexpr roboface::DeviceState kSelfTestStates[] = {
+    roboface::DeviceState::kIdle,     roboface::DeviceState::kListening,
+    roboface::DeviceState::kThinking, roboface::DeviceState::kReplying,
+    roboface::DeviceState::kOffline,  roboface::DeviceState::kError,
+};
+
+void render() {
+    renderer.show(state);
+    chrome_view.draw(renderer.canvas(), chrome);
+    if (debug_line && renderer.canvas() != nullptr) {
+        renderer.canvas()->setTextColor(0x39E7, 0x0000);
+        renderer.canvas()->setTextSize(1);
+        renderer.canvas()->setTextDatum(top_left);
+        renderer.canvas()->drawString(roboface::toString(state), 4, 4);
+    }
+    renderer.push();
+}
 
 void apply(roboface::DeviceEvent event) {
     const roboface::Transition result = roboface::transition(state, event);
@@ -39,14 +72,34 @@ void apply(roboface::DeviceEvent event) {
 
     state = result.next;
     Serial.printf("\n[state] %s\n", roboface::toString(state));
+    render();
 }
+
+roboface::LinkState linkStateNow() {
+    if (ws.isConnected()) return roboface::LinkState::kConnected;
+    if (net.isUp()) return roboface::LinkState::kDegraded;  // link but no socket
+    return roboface::LinkState::kOffline;
+}
+
+void updateChrome(uint32_t now_ms, bool fault_active, roboface::ErrorCode fault) {
+    roboface::ChromeFacts facts;
+    facts.link = linkStateNow();
+    facts.battery_percent = M5.Power.getBatteryLevel();
+    facts.charging = M5.Power.isCharging();
+    facts.fault_active = fault_active;
+    facts.fault = fault;
+    chrome.update(now_ms, facts);
+}
+
+bool fault_active = false;
+roboface::ErrorCode fault_code = roboface::ErrorCode::kUnknown;
 
 void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
     switch (event) {
         case app::Ws::Event::kConnected:
+            fault_active = false;
             apply(roboface::DeviceEvent::kSocketUp);
             return;
-
         case app::Ws::Event::kDisconnected:
             if (reply_in_progress) {
                 Serial.println();
@@ -54,34 +107,36 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
             }
             apply(roboface::DeviceEvent::kSocketLost);
             return;
-
         case app::Ws::Event::kDropped:
-            // Already logged by `ws` with its reason. Not a device fault: a frame this build does
-            // not handle is the server being newer, not the server being broken.
             return;
-
         case app::Ws::Event::kFrame:
             break;
     }
 
     switch (frame.result) {
         case roboface::ParseResult::kReply:
+            // v0.3 code review, finding 5: a reply outside a turn used to print as though a turn
+            // were running, so the text and the device state disagreed. From this version state is
+            // on a screen a person is looking at, which is what makes the disagreement matter.
+            if (state != roboface::DeviceState::kThinking &&
+                state != roboface::DeviceState::kReplying) {
+                Serial.printf("\n[warn] reply outside a turn (%s) — ignored\n",
+                              roboface::toString(state));
+                return;
+            }
             if (frame.final) {
-                // The turn is over. The terminal frame carries no text -- it closes, it does not
-                // repeat.
                 if (reply_in_progress) Serial.println();
                 reply_in_progress = false;
                 apply(roboface::DeviceEvent::kTurnEnded);
                 return;
             }
-            // **Written inside the receive path, not accumulated.** A buffered implementation
-            // would satisfy the DoD's wording and throw away the property v0.2 exists to provide:
-            // the first words appear while the last are still being generated.
             if (!reply_in_progress) {
                 apply(roboface::DeviceEvent::kReplyStarted);
                 Serial.print("  ");
                 reply_in_progress = true;
             }
+            // Written inside the receive path, not accumulated: the first words appear while the
+            // last are still being generated, which is the property v0.2 exists to provide.
             Serial.print(frame.text.c_str());
             return;
 
@@ -90,23 +145,83 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
                 Serial.println();
                 reply_in_progress = false;
             }
-            // The enumerated code verbatim: it is the one string worth typing into a search, and
-            // features/DEVICE_UI.md applies the same reasoning to the fault screen v0.4 adds.
+            fault_active = true;
+            fault_code = frame.code;
             Serial.printf("\n[error] %s: %s\n", roboface::toString(frame.code), frame.msg.c_str());
             apply(roboface::DeviceEvent::kFault);
             return;
 
-        case roboface::ParseResult::kPong:
         default:
             return;
     }
 }
 
-void printStatus(uint32_t now_ms) {
-    Serial.printf("[status] %s · link %s %s · ws %s · up %lus\n", roboface::toString(state),
-                  net.isUp() ? "up" : "down", net.ipAddress(),
-                  ws.isConnected() ? "connected" : "disconnected",
-                  static_cast<unsigned long>(now_ms / 1000));
+void startSelfTest() {
+    self_test_running = true;
+    self_test_index = 0;
+    self_test_next_ms = 0;
+    self_test_saved_state = state;
+    Serial.println("\n[faces] cycling the six DoD states; the screen shows only the face.");
+}
+
+void stepSelfTest(uint32_t now_ms) {
+    if (!self_test_running || now_ms < self_test_next_ms) return;
+
+    constexpr int count = sizeof(kSelfTestStates) / sizeof(kSelfTestStates[0]);
+    if (self_test_index >= count) {
+        self_test_running = false;
+        state = self_test_saved_state;
+        Serial.printf("[faces] done — back to %s.\n", roboface::toString(state));
+        render();
+        return;
+    }
+
+    state = kSelfTestStates[self_test_index];
+    // Announced on serial because the screen deliberately never says which state it is in; this is
+    // how a person checks that what they are looking at is what it should be.
+    Serial.printf("[faces] %d/%d  %s\n", self_test_index + 1, count, roboface::toString(state));
+    render();
+
+    ++self_test_index;
+    self_test_next_ms = now_ms + kSelfTestHoldMs;
+}
+
+void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
+    if (line.truncated) {
+        Serial.printf("[warn] line truncated to %u characters\n",
+                      static_cast<unsigned>(line.text.size()));
+    }
+
+    if (line.text == "/faces") {
+        startSelfTest();
+        return;
+    }
+    if (line.text == "/debug") {
+        debug_line = !debug_line;
+        Serial.printf("[debug] corner line %s\n", debug_line ? "on" : "off");
+        render();
+        return;
+    }
+    if (line.text == "/help") {
+        Serial.println("  <text>   say something    /faces  cycle the six faces");
+        Serial.println("  /debug   corner state line /help   this");
+        return;
+    }
+
+    if (self_test_running) {
+        Serial.println("[busy] self-test running — line ignored");
+        return;
+    }
+    if (!roboface::canStartTurn(state)) {
+        Serial.printf("[busy] not idle (%s) — line ignored\n", roboface::toString(state));
+        return;
+    }
+    if (!ws.sendTextIn(line.text.c_str())) {
+        Serial.println("[error] no connection — line not sent");
+        return;
+    }
+    apply(roboface::DeviceEvent::kTurnStarted);
+    (void)now_ms;
 }
 
 }  // namespace
@@ -116,21 +231,27 @@ void setup() {
     M5.begin(config);
 
     Serial.begin(115200);
-    // The USB CDC port takes a moment to enumerate after a reset; without this the first lines go
-    // into a port nobody is attached to yet, which looks exactly like a board that failed to boot.
-    delay(300);
+    delay(300);  // the USB CDC port takes a moment to enumerate after a reset
 
     Serial.println();
     Serial.printf("RoboFace firmware %s on %s\n", roboface::kFirmwareVersion, roboface::kBoard);
-    Serial.println("type a line and press return; it becomes a text_in.");
+    Serial.println("type a line to say it; /faces to cycle the faces; /help for the rest.");
 
-    M5.Display.setTextSize(2);
-    M5.Display.setCursor(0, 0);
-    M5.Display.printf("RoboFace\n%s\n", roboface::kFirmwareVersion);
+    M5.Display.setBrightness(SCREEN_BRIGHTNESS);
+
+    // The renderer is the ONLY way this app draws a face (ROADMAP §v0.4 DoD). There is no
+    // M5.Display drawing call anywhere below — the v0.3 banner that used to be here is gone.
+    if (!renderer.begin()) {
+        // A blank screen presented as a working one is worse than an admission. PSRAM is the only
+        // thing that can fail here, and it fails silently otherwise.
+        Serial.println("[face] FAILED to allocate the sprite — the screen will stay blank");
+    }
 
     const uint32_t now_ms = millis();
-    apply(roboface::DeviceEvent::kBooted);
+    updateChrome(now_ms, false, roboface::ErrorCode::kUnknown);
+    render();
 
+    apply(roboface::DeviceEvent::kBooted);
     net.begin(WIFI_SSID, WIFI_PASSWORD, now_ms);
     ws.onEvent(onSocketEvent);
 }
@@ -142,8 +263,6 @@ void loop() {
     if (net.loop(now_ms)) {
         if (net.isUp()) {
             apply(roboface::DeviceEvent::kWifiUp);
-            // The socket is only worth opening once there is a link to open it over. Starting it
-            // in setup() would spend the whole association window failing to connect.
             static bool socket_started = false;
             if (!socket_started) {
                 ws.begin(SERVER_URL, DEVICE_ID, now_ms);
@@ -155,29 +274,27 @@ void loop() {
     }
 
     ws.loop(now_ms);
+    renderer.tick(now_ms);
+    stepSelfTest(now_ms);
 
     while (Serial.available() > 0) {
         const roboface::LineReader::Line line = lines.feed(static_cast<char>(Serial.read()));
-        if (!line.complete) continue;
-
-        if (line.truncated) {
-            Serial.printf("[warn] line truncated to %u characters\n",
-                          static_cast<unsigned>(line.text.size()));
-        }
-        if (!roboface::canStartTurn(state)) {
-            Serial.printf("[busy] not idle (%s) — line ignored\n", roboface::toString(state));
-            continue;
-        }
-        if (!ws.sendTextIn(line.text.c_str())) {
-            Serial.println("[error] no connection — line not sent");
-            continue;
-        }
-        apply(roboface::DeviceEvent::kTurnStarted);
+        if (line.complete) handleLine(line, now_ms);
     }
+
+    // Chrome is redrawn every loop so its fades advance; the face is redrawn only on a state
+    // change, which is why show() clears the face area alone.
+    updateChrome(now_ms, fault_active, fault_code);
+    chrome_view.draw(renderer.canvas(), chrome);
+    renderer.push();
 
     if (now_ms - last_status_ms >= kStatusIntervalMs) {
         last_status_ms = now_ms;
-        printStatus(now_ms);
+        Serial.printf("[status] %s · link %s %s · ws %s · batt %d%%%s · up %lus\n",
+                      roboface::toString(state), net.isUp() ? "up" : "down", net.ipAddress(),
+                      ws.isConnected() ? "connected" : "disconnected", M5.Power.getBatteryLevel(),
+                      M5.Power.isCharging() ? " (charging)" : "",
+                      static_cast<unsigned long>(now_ms / 1000));
     }
 
     delay(5);

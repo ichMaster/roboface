@@ -22,6 +22,11 @@
 // `localhost`, which on the board means the board.
 #define SERVER_URL "ws://192.168.1.64:8000/ws"
 
+// --- Screen ---------------------------------------------------------------------------
+// 0..255. The face is the product's whole presence, and a desk companion at full brightness in a
+// dark study is a lamp. 120 is legible in daylight without being one.
+#define SCREEN_BRIGHTNESS 120
+
 // --- Identity --------------------------------------------------------------------------
 // Announced in `hello.device_id` and used to key every server log line for this device.
 #define DEVICE_ID "core-s3-01"
