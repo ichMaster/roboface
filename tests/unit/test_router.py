@@ -9,8 +9,10 @@ demand where a real one cannot.
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 
 import pytest
+from roboface_server.orchestrator import TurnAborted
 from roboface_server.protocol import (
     AUDIO_FMT,
     PROTO_VERSION,
@@ -32,6 +34,19 @@ from roboface_server.router import (
     EchoResponder,
     Router,
 )
+
+
+class _NoHistoryResponder:
+    """A responder for tests that only care about frames, not about state."""
+
+    def respond(self, session_id: str, text: str) -> AsyncIterator[str]:
+        return self._stream(text)
+
+    async def _stream(self, text: str) -> AsyncIterator[str]:
+        yield text
+
+    def forget(self, session_id: str) -> None:
+        pass
 
 
 class ScriptedTransport:
@@ -168,25 +183,78 @@ async def test_ping_is_answered_with_pong() -> None:
 
 @pytest.mark.asyncio
 async def test_text_in_is_answered_through_the_injected_responder() -> None:
-    class Shouting:
-        async def respond(self, text: str) -> str:
-            return text.upper()
+    class Shouting(_NoHistoryResponder):
+        async def _stream(self, text: str) -> AsyncIterator[str]:
+            for word in text.split():
+                yield word.upper()
 
     router = Router(responder=Shouting(), session_id_factory=lambda: "s")
     transport = ScriptedTransport([_hello(), encode(TextIn(text="hello there"))])
 
     await router.serve(transport)
 
-    assert transport.frames() == [Reply(text="HELLO THERE", final=True)]
+    assert transport.frames() == [
+        Reply(text="HELLO", final=False),
+        Reply(text="THERE", final=False),
+        Reply(text="", final=True),
+    ]
 
 
 @pytest.mark.asyncio
-async def test_the_default_responder_echoes() -> None:
-    transport = ScriptedTransport([_hello(), encode(TextIn(text="привіт"))])
+async def test_the_default_responder_echoes_in_pieces() -> None:
+    transport = ScriptedTransport([_hello(), encode(TextIn(text="привіт як справи"))])
 
     await _router().serve(transport)
 
-    assert transport.frames() == [Reply(text="привіт", final=True)]
+    frames = transport.frames()
+    deltas = [frame.text for frame in frames if isinstance(frame, Reply) and not frame.final]
+
+    # More than one frame, and they reassemble exactly: the router forwarded each delta
+    # unmodified and in order, and buffered nothing.
+    assert len(deltas) > 1
+    assert "".join(deltas) == "привіт як справи"
+    assert frames[-1] == Reply(text="", final=True)
+
+
+@pytest.mark.asyncio
+async def test_the_responder_is_told_which_session_it_is_serving() -> None:
+    # The seam passes session_id, not the connection: the responder needs to know which
+    # conversation this is and nothing else about the socket.
+    seen: list[str] = []
+
+    class Recording(_NoHistoryResponder):
+        def respond(self, session_id: str, text: str) -> AsyncIterator[str]:
+            seen.append(session_id)
+            return self._stream(text)
+
+        async def _stream(self, text: str) -> AsyncIterator[str]:
+            yield "ok"
+
+    router = Router(responder=Recording(), session_id_factory=lambda: "session-under-test")
+    await router.serve(ScriptedTransport([_hello(), encode(TextIn(text="x"))]))
+
+    assert seen == ["session-under-test"]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_aborts_sends_an_error_and_no_terminal_reply() -> None:
+    """A `final: true` after a failure would present half a sentence as a finished answer."""
+
+    class Failing(_NoHistoryResponder):
+        async def _stream(self, text: str) -> AsyncIterator[str]:
+            yield "почина"
+            raise TurnAborted("provider died", ErrorCode.LLM_FAILED)
+
+    router = Router(responder=Failing(), session_id_factory=lambda: "s")
+    transport = ScriptedTransport([_hello(), encode(TextIn(text="x"))])
+
+    await router.serve(transport)
+
+    frames = transport.frames()
+    assert frames[0] == Reply(text="почина", final=False)
+    assert isinstance(frames[1], ErrorFrame)
+    assert frames[1].code is ErrorCode.LLM_FAILED
+    assert not any(isinstance(frame, Reply) and frame.final for frame in frames)
 
 
 @pytest.mark.asyncio
@@ -289,6 +357,37 @@ async def test_two_connections_are_tracked_separately_and_both_released() -> Non
     await router.serve(ScriptedTransport([_hello(device_id="b")]))
 
     assert len(registry) == 0
+
+
+@pytest.mark.asyncio
+async def test_teardown_tells_the_responder_to_forget_the_session() -> None:
+    """Otherwise every connection that ever happened stays in memory for the process's life."""
+    forgotten: list[str] = []
+
+    class Counting(_NoHistoryResponder):
+        def forget(self, session_id: str) -> None:
+            forgotten.append(session_id)
+
+    router = Router(responder=Counting(), session_id_factory=lambda: "session-under-test")
+    await router.serve(ScriptedTransport([_hello(), encode(TextIn(text="hi"))]))
+
+    assert forgotten == ["session-under-test"]
+
+
+@pytest.mark.asyncio
+async def test_the_session_is_forgotten_even_when_the_connection_errors() -> None:
+    # The leak is worst on the failure path, which is the one nobody exercises by hand.
+    forgotten: list[str] = []
+
+    class Counting(_NoHistoryResponder):
+        def forget(self, session_id: str) -> None:
+            forgotten.append(session_id)
+
+    router = Router(responder=Counting(), session_id_factory=lambda: "s")
+    with pytest.raises(RuntimeError):
+        await router.serve(ExplodingTransport())
+
+    assert forgotten == ["s"]
 
 
 def test_removing_a_connection_twice_is_safe() -> None:

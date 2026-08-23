@@ -18,13 +18,14 @@ and building the socket layer against a one-method seam is what keeps that swap 
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 from uuid import uuid4
 
 from roboface_server.logging import bind_device, chars, connection_context, log
+from roboface_server.orchestrator import TurnAborted
 from roboface_server.protocol import (
     FRAME_TYPES,
     Accepted,
@@ -68,24 +69,59 @@ class Transport(Protocol):
 
 
 class Responder(Protocol):
-    """How a ``text_in`` becomes a reply.
+    """How a ``text_in`` becomes a reply -- as a **stream of deltas**.
 
-    One method, deliberately: v0.2 implements it with the orchestrator streaming Gemini
-    deltas, and the router will not need to know that happened.
+    v0.1 defined this as ``async def respond(text) -> str``, and v0.2 changed it: the reply is
+    never accumulated and sent whole (ARCHITECTURE §Streaming is the architecture, not an
+    optimisation). Returning the iterator rather than awaiting it is what lets each delta leave
+    the moment it exists, which is the property v1's TTS stage depends on -- it synthesizes each
+    completed phrase while the model is still generating.
+
+    ``session_id`` rather than the whole connection: the responder needs to know *which*
+    conversation this is, and nothing else about the socket.
     """
 
-    async def respond(self, text: str) -> str: ...
+    def respond(self, session_id: str, text: str) -> AsyncIterator[str]: ...
+
+    def forget(self, session_id: str) -> None:
+        """Release whatever this session accumulated. Called once, at teardown.
+
+        Part of the seam rather than the orchestrator's private business: a responder that
+        keeps per-session state -- and from v0.2 the real one keeps conversation history --
+        needs a defined moment to let it go, or every connection that ever happened stays in
+        memory. The router owns that moment because it owns the connection's lifetime.
+        """
 
 
 class EchoResponder:
-    """v0.1's responder: it echoes.
+    """The router's own test double: it echoes, in pieces.
 
-    The roadmap's "``text_in`` echoes through a mock provider" -- enough to prove the wire
-    end to end without a model call, and no more.
+    Deliberately yields **several** deltas rather than one. A single-delta echo would let a
+    buffering router pass every test in this file, which is precisely the regression the seam
+    change exists to prevent.
     """
 
-    async def respond(self, text: str) -> str:
-        return text
+    def respond(self, session_id: str, text: str) -> AsyncIterator[str]:
+        return self._stream(text)
+
+    async def _stream(self, text: str) -> AsyncIterator[str]:
+        for delta in echo_deltas(text):
+            yield delta
+
+    def forget(self, session_id: str) -> None:
+        """Nothing to release -- an echo keeps no history."""
+
+
+def echo_deltas(text: str) -> tuple[str, ...]:
+    """Split ``text`` into the fragments the echo responder yields, preserving spacing.
+
+    Word-sized, so joining the deltas reproduces the input exactly -- a test that asserts the
+    round trip is then asserting the router forwarded every delta unmodified and in order.
+    """
+    if not text:
+        return ()
+    parts = text.split(" ")
+    return tuple(part + " " if index < len(parts) - 1 else part for index, part in enumerate(parts))
 
 
 class ConnectionPhase(StrEnum):
@@ -171,6 +207,9 @@ class Router:
                 raise
             finally:
                 self.registry.remove(connection)
+                # The responder holds this session's conversation; without this every
+                # connection that ever happened would stay in memory for the process's life.
+                self.responder.forget(connection.session_id)
                 log("connection.closed", reason=reason, active=len(self.registry))
 
     async def _handle(self, message: str | bytes, conn: Connection, transport: Transport) -> None:
@@ -258,9 +297,7 @@ class Router:
             case TextIn():
                 # chars(), never the text: a log has to stay safe to paste into an issue.
                 log("turn.text_in", chars=chars(frame.text))
-                reply = await self.responder.respond(frame.text)
-                await transport.send(encode(Reply(text=reply, final=True)))
-                log("turn.reply", chars=chars(reply), final=True)
+                await self._stream_reply(frame.text, conn, transport)
             case Hello():
                 await self._send_error(
                     transport, ErrorCode.INTERNAL, "'hello' was already negotiated"
@@ -269,6 +306,29 @@ class Router:
                 await self._send_error(
                     transport, ErrorCode.INTERNAL, "message type is not handled in this phase"
                 )
+
+    async def _stream_reply(self, text: str, conn: Connection, transport: Transport) -> None:
+        """Forward every delta as its own ``reply`` frame, then close the turn.
+
+        **Nothing is buffered.** Each delta is sent inside the loop, before the next is even
+        requested -- that is the difference between a streamed reply and a slow one, and it is
+        what v1's playback path is built on.
+
+        A turn that aborts sends ``error{code}`` and **no** terminal ``reply``: a
+        ``final: true`` after a mid-stream failure would present half a sentence as a finished
+        answer, and the device would have no way to know otherwise.
+        """
+        deltas = 0
+        try:
+            async for delta in self.responder.respond(conn.session_id, text):
+                await transport.send(encode(Reply(text=delta, final=False)))
+                deltas += 1
+        except TurnAborted as exc:
+            await self._send_error(transport, exc.code, str(exc))
+            return
+
+        await transport.send(encode(Reply(text="", final=True)))
+        log("turn.streamed", deltas=deltas)
 
     async def _send_error(self, transport: Transport, code: ErrorCode, msg: str) -> None:
         log("error.sent", code=str(code), level="warning")

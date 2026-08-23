@@ -264,7 +264,7 @@ async def test_a_bad_level_in_the_router_does_not_drop_the_connection() -> None:
     from fake_device import connect
     from roboface_server import router as router_module
     from roboface_server.app import create_app
-    from roboface_server.protocol import Reply, TextIn
+    from roboface_server.protocol import TextIn
 
     original = router_module.log
 
@@ -277,6 +277,6 @@ async def test_a_bad_level_in_the_router_does_not_drop_the_connection() -> None:
             fake.hello()
             fake.send(TextIn(text="does this survive?"))
 
-            assert fake.recv_until(Reply).text == "does this survive?"
+            assert fake.collect_reply().text == "does this survive?"
     finally:
         router_module.log = original

@@ -13,7 +13,7 @@ from typing import Any
 
 from fake_device import FakeDevice, connect
 from fastapi import FastAPI
-from roboface_server.protocol import PROTO_VERSION, Capability, ErrorFrame, Ping, Reply, TextIn
+from roboface_server.protocol import PROTO_VERSION, Capability, ErrorFrame, Ping, TextIn
 
 LogReader = Callable[[], list[dict[str, Any]]]
 
@@ -26,14 +26,17 @@ LogReader = Callable[[], list[dict[str, Any]]]
 def test_a_full_turn_logs_its_lifecycle(log_lines: LogReader, device: FakeDevice) -> None:
     device.hello(caps=frozenset({Capability.TOUCH}))
     device.send(TextIn(text="привіт"))
-    device.recv_until(Reply)
+    device.collect_reply()
 
     events = [line["event"] for line in log_lines()]
 
     assert "connection.accepted" in events
     assert "hello.negotiated" in events
     assert "turn.text_in" in events
-    assert "turn.reply" in events
+    # v0.2: the router logs how many deltas it forwarded; the orchestrator logs the reply
+    # itself. With the echo responder there is no orchestrator, so `turn.streamed` is the
+    # one that must appear.
+    assert "turn.streamed" in events
 
 
 def test_hello_is_logged_with_its_version_and_caps(
@@ -55,7 +58,7 @@ def test_every_line_of_a_connection_carries_its_session_id(
 ) -> None:
     device.hello()
     device.send(TextIn(text="anything"))
-    device.recv_until(Reply)
+    device.collect_reply()
 
     lines = log_lines()
     assert lines, "the connection produced no log at all"
@@ -65,7 +68,7 @@ def test_every_line_of_a_connection_carries_its_session_id(
 def test_pre_hello_lines_have_a_null_device_id(log_lines: LogReader, device: FakeDevice) -> None:
     device.hello()
     device.send(TextIn(text="x"))
-    device.recv_until(Reply)
+    device.collect_reply()
 
     accepted = next(line for line in log_lines() if line["event"] == "connection.accepted")
 
@@ -88,7 +91,7 @@ def test_teardown_is_logged_with_a_reason(app: FastAPI, log_lines: LogReader) ->
     with connect(app) as fake:
         fake.hello()
         fake.send(TextIn(text="bye"))
-        fake.recv_until(Reply)
+        fake.collect_reply()
 
     closed = next(line for line in log_lines() if line["event"] == "connection.closed")
 
@@ -100,7 +103,7 @@ def test_the_text_body_never_reaches_the_log(log_lines: LogReader, device: FakeD
 
     device.hello()
     device.send(TextIn(text=body))
-    device.recv_until(Reply)
+    device.collect_reply()
 
     lines = log_lines()
     rendered = str(lines)
@@ -117,11 +120,11 @@ def test_two_simultaneous_devices_do_not_contaminate_each_other(
     with connect(app, device_id="device-a") as first, connect(app, device_id="device-b") as second:
         first.hello()
         first.send(TextIn(text="from a"))
-        first.recv_until(Reply)
+        first.collect_reply()
 
         second.hello()
         second.send(TextIn(text="from b"))
-        second.recv_until(Reply)
+        second.collect_reply()
 
     lines = log_lines()
     sessions = {line["session_id"] for line in lines}

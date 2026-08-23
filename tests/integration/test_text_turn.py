@@ -19,27 +19,32 @@ from roboface_server.protocol import (
     ErrorFrame,
     Ping,
     Pong,
-    Reply,
     TextIn,
 )
 from roboface_server.router import ConnectionRegistry
 
 
 def test_a_greeted_device_gets_a_reply(device: FakeDevice) -> None:
-    """The DoD's first clause: connect -> hello -> text_in -> reply."""
+    """The DoD's first clause: connect -> hello -> text_in -> reply.
+
+    From v0.2 the reply is a **stream**: several `reply{final: false}` deltas closed by one
+    `final: true`. Asserting the reassembled text alone would pass against a buffered
+    implementation, so the delta count is asserted too.
+    """
     device.hello()
-    device.send(TextIn(text="привіт"))
+    device.send(TextIn(text="привіт як справи"))
 
-    reply = device.recv_until(Reply)
+    reply = device.collect_reply()
 
-    assert reply == Reply(text="привіт", final=True)
+    assert reply.text == "привіт як справи"
+    assert len(reply) > 1, "the reply arrived as one frame -- it was buffered, not streamed"
 
 
 def test_hello_carries_capabilities_through(app: FastAPI, registry: ConnectionRegistry) -> None:
     with connect(app) as fake:
         fake.hello(caps=frozenset({Capability.TOUCH, Capability.CAMERA}))
         fake.send(TextIn(text="ping the state machine"))
-        fake.recv_until(Reply)
+        fake.collect_reply()
 
         connection = registry.active()[0]
         assert connection.device_id == "fake-core-s3"
@@ -74,7 +79,7 @@ def test_a_malformed_frame_is_answered_and_the_connection_survives(device: FakeD
 
     # The connection is still usable -- a bad frame is not a fatal event.
     device.send(TextIn(text="still here"))
-    assert device.recv_until(Reply).text == "still here"
+    assert device.collect_reply().text == "still here"
 
 
 def test_a_binary_frame_is_refused_in_v0_1(device: FakeDevice) -> None:
@@ -92,7 +97,7 @@ def test_the_registry_is_empty_after_the_device_disconnects(
     with connect(app) as fake:
         fake.hello()
         fake.send(TextIn(text="hello"))
-        fake.recv_until(Reply)
+        fake.collect_reply()
         assert len(registry) == 1
 
     assert len(registry) == 0, "the connection outlived its socket"
@@ -104,12 +109,12 @@ def test_two_devices_are_served_independently(registry: ConnectionRegistry) -> N
     with connect(application, device_id="device-a") as first:
         first.hello()
         first.send(TextIn(text="from a"))
-        assert first.recv_until(Reply).text == "from a"
+        assert first.collect_reply().text == "from a"
 
         with connect(application, device_id="device-b") as second:
             second.hello()
             second.send(TextIn(text="from b"))
-            assert second.recv_until(Reply).text == "from b"
+            assert second.collect_reply().text == "from b"
 
             assert {conn.device_id for conn in registry.active()} == {"device-a", "device-b"}
 
@@ -121,7 +126,9 @@ def test_the_turn_survives_awkward_text(device: FakeDevice, text: str) -> None:
     device.hello()
     device.send(TextIn(text=text))
 
-    assert device.recv_until(Reply).text == text
+    # Reassembled from however many deltas it took: joining them must reproduce the input
+    # exactly, which is what proves the router forwarded each one unmodified and in order.
+    assert device.collect_reply().text == text
 
 
 def test_no_paid_provider_is_reachable_from_the_suite(app: FastAPI) -> None:

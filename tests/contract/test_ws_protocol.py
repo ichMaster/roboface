@@ -233,6 +233,51 @@ def test_a_binary_frame_outside_its_phase_means_nothing() -> None:
 
 
 # ---------------------------------------------------------------------------------------
+# The `reply` delta shape (v0.2)
+# ---------------------------------------------------------------------------------------
+
+
+def test_reply_carries_a_text_and_a_final_flag() -> None:
+    frame = protocol.Reply(text="привіт", final=False)
+
+    assert set(frame.__dataclass_fields__) == {"text", "final"}
+
+
+def test_a_turn_is_many_reply_frames_with_exactly_one_terminal() -> None:
+    """The streaming contract, stated as a property of a turn's frames.
+
+    ARCHITECTURE §Streaming is the architecture, not an optimisation: "token deltas leave as
+    individual `reply` frames as they arrive; the reply is never accumulated and sent whole."
+    A turn is therefore N deltas with `final: false` and exactly one closing `final: true` --
+    and `final` marks the last frame of a turn, not the only one.
+
+    Pinned here so a later change that quietly re-accumulates fails the contract test rather
+    than merely making the device feel slower.
+    """
+    turn = [
+        protocol.Reply(text="При", final=False),
+        protocol.Reply(text="віт", final=False),
+        protocol.Reply(text="", final=True),
+    ]
+
+    assert len(turn) > 2, "a streamed turn is more than a single frame plus its terminator"
+    assert [frame.final for frame in turn] == [False, False, True]
+    assert sum(frame.final for frame in turn) == 1
+    # The terminator closes the turn; it does not repeat the reply.
+    assert turn[-1].text == ""
+    assert "".join(frame.text for frame in turn) == "Привіт"
+
+
+def test_every_delta_is_an_ordinary_reply_frame_on_the_wire() -> None:
+    # A delta is not a new message type: v0.2 changes the *cardinality* of `reply`, not the
+    # vocabulary. The firmware's parser therefore needs no new branch.
+    encoded = protocol.encode(protocol.Reply(text="При", final=False))
+
+    assert protocol.decode(encoded) == protocol.Reply(text="При", final=False)
+    assert "reply" in encoded
+
+
+# ---------------------------------------------------------------------------------------
 # Purity -- the property that lets the firmware mirror this module
 # ---------------------------------------------------------------------------------------
 

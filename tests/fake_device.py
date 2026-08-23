@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from types import TracebackType
 from typing import TypeVar
 
@@ -28,13 +29,32 @@ from roboface_server.protocol import (
     AUDIO_FMT,
     PROTO_VERSION,
     Capability,
+    ErrorFrame,
     Frame,
     Hello,
+    Reply,
     decode,
     encode,
 )
 from starlette.testclient import TestClient, WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
+
+
+@dataclass(frozen=True, slots=True)
+class ReplyStream:
+    """One turn's worth of `reply` frames, reassembled.
+
+    `text` is what the person would hear; `deltas` is how it arrived. Assertions about
+    streaming need the second, and a test that only ever looks at the first cannot tell a
+    streamed reply from a buffered one.
+    """
+
+    text: str
+    deltas: tuple[str, ...]
+
+    def __len__(self) -> int:
+        return len(self.deltas)
+
 
 FrameT = TypeVar("FrameT", bound=Frame)
 
@@ -109,8 +129,31 @@ class FakeDevice:
         raise AssertionError(f"no {kind.__name__} within {limit} frames; got {seen}")
 
     def drain(self, count: int) -> list[Frame]:
-        """Exactly ``count`` frames, in order. For asserting a stream, from v0.2."""
+        """Exactly ``count`` frames, in order. For asserting a stream."""
         return [self.recv() for _ in range(count)]
+
+    def collect_reply(self, *, limit: int = 500) -> ReplyStream:
+        """Read `reply` deltas until the terminal frame, and report what arrived.
+
+        From v0.2 a turn is **many** `reply` frames -- deltas with `final: false`, closed by one
+        `final: true`. Tests want two different things from that: the reassembled text, and the
+        fact that it took more than one frame to say it. Returning both is what stops a test
+        from asserting the text and accidentally passing against a buffered implementation.
+
+        Raises if an `error` arrives instead: an aborted turn sends no terminal reply, so
+        waiting for one would hang until the suite timeout rather than failing with the code.
+        """
+        deltas: list[str] = []
+        for _ in range(limit):
+            frame = self.recv()
+            if isinstance(frame, ErrorFrame):
+                raise AssertionError(f"turn aborted with {frame.code}: {frame.msg}")
+            if not isinstance(frame, Reply):
+                raise AssertionError(f"expected a reply frame, got {frame}")
+            if frame.final:
+                return ReplyStream(text="".join(deltas), deltas=tuple(deltas))
+            deltas.append(frame.text)
+        raise AssertionError(f"no terminal reply within {limit} frames; got {len(deltas)} deltas")
 
     def expect_closed(self) -> None:
         """Assert the server has closed the socket.
