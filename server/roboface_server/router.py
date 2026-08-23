@@ -330,6 +330,28 @@ class Router:
         except TurnAborted as exc:
             await self._send_error(transport, exc.code, str(exc))
             return
+        except Exception as exc:
+            # A bug in a responder or an untranslated vendor type would otherwise propagate
+            # out of `serve` and drop the socket, giving the device nothing at all -- no
+            # deltas, no error, just a dead connection it has to notice, back off from and
+            # reconnect. ARCHITECTURE §Budgets and abort semantics is explicit that a failed
+            # turn returns the device to idle and "the session stays connected".
+            #
+            # `internal` is the honest code here and the first thing to use it: the device's
+            # frame was fine, the turn was fine, the *server* broke.
+            #
+            # `Exception`, never `BaseException` -- CancelledError must keep propagating, or
+            # a shutdown would be swallowed and reported to the device as a server fault.
+            log(
+                "turn.crashed",
+                problem=type(exc).__name__,
+                deltas=deltas,
+                level="error",
+            )
+            await self._send_error(
+                transport, ErrorCode.INTERNAL, f"the turn failed: {type(exc).__name__}"
+            )
+            return
 
         await transport.send(encode(Reply(text="", final=True)))
         log("turn.streamed", deltas=deltas)

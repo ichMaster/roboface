@@ -8,6 +8,7 @@ demand where a real one cannot.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
@@ -477,3 +478,79 @@ async def test_a_second_hello_is_the_devices_fault() -> None:
     await _router().serve(transport)
 
     assert transport.errors()[0].code is ErrorCode.BAD_FRAME
+
+
+# ---------------------------------------------------------------------------------------
+# A responder bug must not drop the device (code review #2)
+# ---------------------------------------------------------------------------------------
+
+
+class _BuggyResponder(_NoHistoryResponder):
+    """Any bug a responder can have: a KeyError, an untranslated vendor type."""
+
+    async def _stream(self, text: str) -> AsyncIterator[str]:
+        yield "почина"
+        raise KeyError("a bug nobody translated")
+
+
+@pytest.mark.asyncio
+async def test_an_untranslated_exception_becomes_an_error_frame_not_a_dead_socket() -> None:
+    """v0.1's EchoResponder could not raise, so this was a regression v0.2 introduced.
+
+    Dropping the socket is worse than a failed turn: the device has to notice the dead
+    connection, back off and reconnect, rather than render the error face and carry on.
+    """
+    router = Router(responder=_BuggyResponder(), session_id_factory=lambda: "s")
+    transport = ScriptedTransport([_hello(), encode(TextIn(text="hi"))])
+
+    await router.serve(transport)
+
+    frames = transport.frames()
+    assert frames[0] == Reply(text="почина", final=False)
+    assert isinstance(frames[-1], ErrorFrame)
+    # `internal` is the honest code: the device's frame was fine, the server broke.
+    assert frames[-1].code is ErrorCode.INTERNAL
+
+
+@pytest.mark.asyncio
+async def test_the_connection_survives_a_responder_bug() -> None:
+    calls = {"n": 0}
+
+    class SometimesBuggy(_NoHistoryResponder):
+        async def _stream(self, text: str) -> AsyncIterator[str]:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ValueError("first turn explodes")
+            yield "second turn is fine"
+
+    router = Router(responder=SometimesBuggy(), session_id_factory=lambda: "s")
+    transport = ScriptedTransport(
+        [_hello(), encode(TextIn(text="boom")), encode(TextIn(text="again"))]
+    )
+
+    await router.serve(transport)
+
+    kinds = [type(frame).__name__ for frame in transport.frames()]
+    assert kinds == ["ErrorFrame", "Reply", "Reply"]
+
+
+@pytest.mark.asyncio
+async def test_cancellation_is_not_swallowed_as_a_server_fault() -> None:
+    """CancelledError must keep propagating.
+
+    Catching BaseException here would turn a shutdown into an `internal` error frame sent to
+    the device, and would stop the task from actually cancelling.
+    """
+
+    class Cancelling(_NoHistoryResponder):
+        async def _stream(self, text: str) -> AsyncIterator[str]:
+            raise asyncio.CancelledError
+            yield  # pragma: no cover -- unreachable; makes this an async generator
+
+    router = Router(responder=Cancelling(), session_id_factory=lambda: "s")
+    transport = ScriptedTransport([_hello(), encode(TextIn(text="hi"))])
+
+    with pytest.raises(asyncio.CancelledError):
+        await router.serve(transport)
+
+    assert not transport.errors(), "cancellation was reported to the device as a server fault"
