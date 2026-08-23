@@ -33,6 +33,17 @@ from roboface_server.prompt import build_system_prompt
 from roboface_server.protocol import ErrorCode
 from roboface_server.providers.base import LLMProvider, Message, ProviderError
 
+#: The rolling conversation window, in messages. ARCHITECTURE §Data model specifies this
+#: number -- *"``SessionMessage{...}`` -- the rolling 40-message window"* -- as part of the v4
+#: data model. **The window is enforced here, from v0.2; what v4 adds is persistence**, not the
+#: bound. Keeping them separate matters: without a bound, a long-lived connection costs more
+#: per turn than the last one did, indefinitely, and eventually meets the model's context limit
+#: as an ``llm_failed`` nobody can explain.
+#:
+#: 20 exchanges is a long conversation for a desk companion, and the oldest turns are the ones
+#: a person has stopped meaning.
+MAX_HISTORY_MESSAGES: Final = 40
+
 #: How long the model has to produce its **first** delta. ARCHITECTURE §Budgets and abort
 #: semantics puts the LLM's first-token budget at ~8 s. Nothing bounds the deltas after it --
 #: a model mid-sentence is working, and cutting it off is worse than waiting.
@@ -66,6 +77,17 @@ class Orchestrator:
     first_token_budget_s: float = DEFAULT_FIRST_TOKEN_BUDGET_S
     _history: dict[str, list[Message]] = field(default_factory=dict)
 
+    def _remember(self, session_id: str, message: Message) -> None:
+        """Append to a session's history, keeping it inside the window.
+
+        Trimming from the front, so the messages that survive are the recent ones. A turn's own
+        message is always the newest, so it can never be the one dropped to make room for it.
+        """
+        history = self._history.setdefault(session_id, [])
+        history.append(message)
+        if len(history) > MAX_HISTORY_MESSAGES:
+            del history[: len(history) - MAX_HISTORY_MESSAGES]
+
     def history(self, session_id: str) -> tuple[Message, ...]:
         """This session's conversation so far. A copy -- callers must not mutate it."""
         return tuple(self._history.get(session_id, ()))
@@ -84,9 +106,9 @@ class Orchestrator:
         return self._run_turn(session_id, text)
 
     async def _run_turn(self, session_id: str, text: str) -> AsyncIterator[str]:
-        history = self._history.setdefault(session_id, [])
         user_message = Message(role="user", text=text)
-        history.append(user_message)
+        self._remember(session_id, user_message)
+        history = self._history[session_id]
 
         stream = self.provider.stream(self.system_prompt, tuple(history))
         collected: list[str] = []
@@ -144,7 +166,7 @@ class Orchestrator:
                 settled = True
                 raise self._abort_turn(session_id, user_message, self._translate(exc)) from exc
 
-            history.append(Message(role="model", text="".join(collected)))
+            self._remember(session_id, Message(role="model", text="".join(collected)))
             settled = True
             log("turn.reply", chars=chars("".join(collected)), deltas=len(collected))
         finally:

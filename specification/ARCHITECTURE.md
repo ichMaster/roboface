@@ -254,7 +254,7 @@ Five seams carry the whole system. Each is pinned by a contract test, and each h
 Nothing is persisted before v4 beyond a device record and config. From v4, SQLite behind a thin repository:
 
 - `Device{device_id, name, caps, last_seen, face_set}`
-- `SessionMessage{session_id, role, text, emotion, ts}` — the rolling 40-message window
+- `SessionMessage{session_id, role, text, emotion, ts}` — the rolling 40-message window. **The window itself is enforced in memory from v0.2**, because an unbounded history costs more per turn than the last one did and eventually meets the model's context limit; what v4 adds is *persistence*, not the bound.
 - `Fact{id, text (≤2 lines), confidence, source_ts}` — up to 500
 - `WorldSnapshot{kind, payload, fetched_at}` — the cached weather/news blocks
 

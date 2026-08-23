@@ -474,3 +474,103 @@ async def test_every_ending_leaves_history_in_one_of_two_states() -> None:
     silent = _orchestrator(SilentLLMProvider())
     [delta async for delta in silent.respond("s", "q")]
     assert [m.text for m in silent.history("s")] == ["q"]
+
+
+# ---------------------------------------------------------------------------------------
+# The conversation window (hardening: v0.2 code review #5)
+# ---------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_history_is_bounded_by_the_window() -> None:
+    """Unbounded history costs more per turn than the last one did, forever.
+
+    ARCHITECTURE §Data model specifies the number; what v4 adds is persistence, not the bound.
+    """
+    from roboface_server.orchestrator import MAX_HISTORY_MESSAGES
+
+    orchestrator = _orchestrator(MockLLMProvider(deltas=["ok"]))
+
+    for index in range(MAX_HISTORY_MESSAGES):  # two messages per turn
+        [delta async for delta in orchestrator.respond("s", f"turn {index}")]
+
+    assert len(orchestrator.history("s")) == MAX_HISTORY_MESSAGES
+
+
+@pytest.mark.asyncio
+async def test_the_window_keeps_the_recent_messages_not_the_first_ones() -> None:
+    # A window that dropped the newest would be worse than none: the model would answer using
+    # only what was said longest ago.
+    orchestrator = _orchestrator(MockLLMProvider(deltas=["ok"]))
+
+    for index in range(30):
+        [delta async for delta in orchestrator.respond("s", f"turn {index}")]
+
+    texts = [message.text for message in orchestrator.history("s")]
+    assert texts[-2:] == ["turn 29", "ok"]
+    assert "turn 0" not in texts
+
+
+@pytest.mark.asyncio
+async def test_the_provider_never_receives_more_than_the_window() -> None:
+    # The bound has to reach the *call*, not just the stored list -- the cost is in what is
+    # sent, and a trim that happened after the send would save nothing.
+    from roboface_server.orchestrator import MAX_HISTORY_MESSAGES
+
+    provider = MockLLMProvider(deltas=["ok"])
+    orchestrator = _orchestrator(provider)
+
+    for index in range(40):
+        [delta async for delta in orchestrator.respond("s", f"turn {index}")]
+
+    largest = max(len(messages) for _system, messages in provider.calls)
+    assert largest <= MAX_HISTORY_MESSAGES
+
+
+@pytest.mark.asyncio
+async def test_a_turns_own_message_is_never_the_one_trimmed() -> None:
+    # It is always the newest, so trimming from the front cannot reach it -- and if it could,
+    # the model would be answering a question it had not been shown.
+    from roboface_server.orchestrator import MAX_HISTORY_MESSAGES
+
+    provider = MockLLMProvider(deltas=["ok"])
+    orchestrator = _orchestrator(provider)
+
+    for index in range(MAX_HISTORY_MESSAGES + 5):
+        [delta async for delta in orchestrator.respond("s", f"turn {index}")]
+
+    _system, messages = provider.calls[-1]
+    assert messages[-1].text == f"turn {MAX_HISTORY_MESSAGES + 4}"
+
+
+@pytest.mark.asyncio
+async def test_rollback_still_works_at_the_window_boundary() -> None:
+    """Rollback finds its message by identity, and trimming may already have removed it.
+
+    Both are "the question is not in history afterwards", which is the invariant that matters.
+    """
+    from roboface_server.orchestrator import MAX_HISTORY_MESSAGES
+
+    provider = MockLLMProvider(deltas=["ok"])
+    orchestrator = _orchestrator(provider)
+    for index in range(MAX_HISTORY_MESSAGES):
+        [delta async for delta in orchestrator.respond("s", f"turn {index}")]
+
+    provider.fail_at_index = 0
+    with pytest.raises(TurnAborted):
+        [delta async for delta in orchestrator.respond("s", "this one fails")]
+
+    texts = [message.text for message in orchestrator.history("s")]
+    assert "this one fails" not in texts
+    assert len(texts) <= MAX_HISTORY_MESSAGES
+
+
+@pytest.mark.asyncio
+async def test_the_window_is_per_session() -> None:
+    orchestrator = _orchestrator(MockLLMProvider(deltas=["ok"]))
+
+    for index in range(30):
+        [delta async for delta in orchestrator.respond("busy", f"turn {index}")]
+    [delta async for delta in orchestrator.respond("quiet", "one turn")]
+
+    assert len(orchestrator.history("quiet")) == 2
