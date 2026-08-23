@@ -53,6 +53,8 @@ These cross the tier boundary and are pinned by contract tests. Changing one cha
 
 ### WS device↔server
 
+**The transport is `ws://` today, not `wss://`.** Everything else in this document says WSS, and that remains the intent — but the server runs uvicorn with no `ssl_keyfile`/`ssl_certfile`, so there is no TLS anywhere in the product as built. The firmware connects in plaintext over the LAN and keeps the scheme in `firmware/src/config.h`, so closing the gap is that line plus a certificate and a CA bundle rather than a rewrite. Recorded here rather than left implied: a specification that promises a transport the product does not offer is worse than one that says where it has got to.
+
 Text frames are JSON objects with a `type`. Binary frames carry raw payloads with **no JSON envelope** — their meaning comes from direction plus connection state.
 
 **device → server:** `hello{device_id, proto_ver, audio_fmt, caps}` · `listen_start` · `audio`(binary PCM16) · `listen_stop` · `text_in{text}` · `event{type: touch|motion|proximity, kind, meta?}` · `image_in{reason, w, h}` + `image`(binary JPEG) · `ping`
