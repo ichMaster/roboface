@@ -145,6 +145,25 @@ pio run -e cores3 -t upload # flash it
 pio device monitor          # the serial debug channel: type a line, read the reply
 ```
 
+**If a flash cannot connect** (`Device not configured`, or the port vanishing from `/dev`
+mid-upload): the Core S3's USB-C is the ESP32-S3's *native* USB, and a board still running
+M5Stack's UiFlow presents a CDC device that does not survive esptool's reset handshake. Hold the
+power button ~2 s until the green LED lights to force the ROM bootloader, then flash. Once this
+firmware is on the board the problem goes — it uses the hardware USB-Serial/JTAG controller
+(`303A:1001`), which handles the reset in silicon, and no button press is needed again.
+
+**The serial monitor drops on every reset** for the same reason: native USB re-enumerates, so the
+port disappears and returns as a new device. That is the board restarting, not a broken cable.
+
+**If the board joins WiFi but never connects** (`[ws] reconnecting in …` climbing to the ceiling
+while the server logs nothing): the macOS firewall blocks inbound connections to the Python
+*app bundle*, not to `bin/python3.14`. Allow the bundle:
+
+```bash
+PYAPP=$(lsof -p $(lsof -ti tcp:8000) | awk 'NR==2{print $NF}')
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add "$PYAPP" --unblockapp "$PYAPP"
+```
+
 `src/config.h` is **gitignored** — it holds the WiFi password. `SERVER_URL` is `ws://<host>:8000/ws`,
 not `wss://`: the server runs uvicorn with no TLS.
 
