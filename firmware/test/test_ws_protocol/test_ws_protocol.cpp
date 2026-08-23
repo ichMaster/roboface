@@ -269,8 +269,38 @@ static void test_pong_parses() {
                           static_cast<int>(parseServerFrame(raw, std::strlen(raw)).result));
 }
 
+// ---------------------------------------------------------------------------------------
+// The device's own inbound bound (code review #3)
+// ---------------------------------------------------------------------------------------
+
+static void test_the_device_accepts_far_less_than_the_contract_permits() {
+    // The contract's ceiling is what the *server* refuses beyond; the device's is what this board
+    // can afford to allocate. 64 KiB is a fifth of 320 KB, and ArduinoJson builds a document from
+    // whatever it is handed.
+    TEST_ASSERT_TRUE(kMaxInboundFrameBytes < kMaxTextFrameBytes);
+    TEST_ASSERT_EQUAL_UINT32(8192u, static_cast<uint32_t>(kMaxInboundFrameBytes));
+}
+
+static void test_the_device_bound_never_exceeds_the_contract() {
+    // Also a static_assert in the header; asserted here too so the reason is stated where a
+    // person reading the tests will meet it.
+    TEST_ASSERT_TRUE(kMaxInboundFrameBytes <= kMaxTextFrameBytes);
+}
+
+static void test_a_realistic_reply_delta_is_nowhere_near_the_device_bound() {
+    // The point of the smaller number: nothing this device legitimately receives comes close.
+    const std::string delta = "{\"type\":\"reply\",\"text\":\"Привіт, як справи?\",\"final\":false}";
+
+    TEST_ASSERT_TRUE(delta.size() < kMaxInboundFrameBytes / 10);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kReply),
+                          static_cast<int>(parseServerFrame(delta).result));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_the_device_accepts_far_less_than_the_contract_permits);
+    RUN_TEST(test_the_device_bound_never_exceeds_the_contract);
+    RUN_TEST(test_a_realistic_reply_delta_is_nowhere_near_the_device_bound);
     RUN_TEST(test_proto_version_is_pinned);
     RUN_TEST(test_audio_is_pcm16_16khz_mono);
     RUN_TEST(test_the_text_frame_cap_matches_the_server);

@@ -50,6 +50,23 @@ inline constexpr int kAudioChannels = 1;
 // it does on the server: this board has 320 KB of RAM, not gigabytes.
 inline constexpr std::size_t kMaxTextFrameBytes = 65536;
 
+// What **this device** will accept inbound, which is a different question from what the contract
+// permits. The server has gigabytes; this board has 320 KB, and ArduinoJson allocates a document to
+// parse whatever it is handed -- so a single 64 KiB frame would be a fifth of memory before the
+// tree is built, with v1's audio buffers and v2's framebuffer already spoken for.
+//
+// The largest text frame this device can legitimately receive is a `reply` delta of a few dozen
+// bytes; bulk data is binary and never reaches this path. 8 KiB is generous by two orders of
+// magnitude and still bounded.
+//
+// Deliberately a *separate* constant: `kMaxTextFrameBytes` is a pinned contract fact that the
+// cross-language test compares against the server, and collapsing the two would make the contract
+// test and the memory budget argue with each other.
+inline constexpr std::size_t kMaxInboundFrameBytes = 8192;
+
+static_assert(kMaxInboundFrameBytes <= kMaxTextFrameBytes,
+              "the device cannot accept more than the contract permits");
+
 // ---------------------------------------------------------------------------------------
 // The message vocabulary, both directions
 // ---------------------------------------------------------------------------------------

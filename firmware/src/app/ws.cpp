@@ -12,6 +12,12 @@ namespace {
 WebSocketsClient client;
 Ws* active = nullptr;
 
+// How long one connection attempt is given before the supervisor gives up on it and schedules
+// another. Without this the supervisor raced its own first attempt: `begin()` opened the socket
+// and the next `loop()` -- microseconds later, with retry_at_ms_ still 0 -- tore it down to start
+// again, so every boot threw away its first attempt.
+constexpr uint32_t kConnectTimeoutMs = 8000;
+
 constexpr uint32_t kPingIntervalMs = 15000;
 constexpr uint32_t kPongTimeoutMs = 5000;
 constexpr uint8_t kMissedPongsBeforeDrop = 2;
@@ -85,6 +91,9 @@ void Ws::begin(const char* url, const char* device_id, uint32_t now_ms) {
     });
 
     connect(now_ms);
+    // Let the attempt `connect()` just started actually run. Leaving this at 0 meant the first
+    // loop() aborted it immediately.
+    retry_at_ms_ = now_ms + kConnectTimeoutMs;
 }
 
 void Ws::connect(uint32_t now_ms) {
@@ -97,8 +106,20 @@ void Ws::connect(uint32_t now_ms) {
 }
 
 void Ws::handleText(const char* payload, std::size_t length) {
-    // Bounded before parsing, mirroring the server's own rule. It matters more here: this board
-    // has 320 KB of RAM, and an oversize frame that reached the parser would be copied first.
+    // Bounded by what *this device* can afford, which is not what the server can afford. See
+    // kMaxInboundFrameBytes: 64 KiB is the contract's ceiling and a fifth of this board's RAM.
+    if (length > roboface::kMaxInboundFrameBytes) {
+        Serial.printf("[ws] dropped a %u-byte frame (device limit %u)\n",
+                      static_cast<unsigned>(length),
+                      static_cast<unsigned>(roboface::kMaxInboundFrameBytes));
+        if (handler_) {
+            roboface::ServerFrame oversize;
+            oversize.result = roboface::ParseResult::kOversize;
+            handler_(Event::kDropped, oversize);
+        }
+        return;
+    }
+
     const roboface::ServerFrame frame = roboface::parseServerFrame(payload, length);
 
     switch (frame.result) {
@@ -136,7 +157,12 @@ void Ws::loop(uint32_t now_ms) {
     if (!connected_ && now_ms >= retry_at_ms_) {
         const uint32_t delay_ms = backoff_.nextDelayMs(static_cast<uint16_t>(esp_random() % 1001));
         retry_at_ms_ = now_ms + delay_ms;
-        Serial.printf("[ws] reconnecting in %lu ms\n", static_cast<unsigned long>(delay_ms));
+        // Say what happened and when the next one is due, rather than announcing a delay that is
+        // not being waited. Serial is the only diagnostic channel this device has, and a log that
+        // misdescribes the code costs the reader the time to disprove it.
+        Serial.printf("[ws] attempt %lu failed; retrying now, next in %lu ms\n",
+                      static_cast<unsigned long>(backoff_.attempts()),
+                      static_cast<unsigned long>(delay_ms));
         connect(now_ms);
     }
 }
