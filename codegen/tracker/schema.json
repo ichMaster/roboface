@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "_comment": "The event contract. Prose mirror: architecture.md §2-3, updated in the same commit as this file.",
+
+  "envelope": {
+    "required": ["v", "ts", "run_id", "type", "scope", "emitter"],
+    "optional": ["status", "data"],
+    "ts_pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+    "run_id_pattern": "^run-\\d{8}-\\d{6}$",
+    "emitter_pattern": "^(skill|hook):[a-z0-9-]+$",
+    "status_values": ["ok", "fail", "skip", "held", "running"]
+  },
+
+  "scope_keys": ["phase", "version", "step", "issue"],
+  "scope_requirements": {
+    "run": [],
+    "phase": ["phase"],
+    "version": ["phase", "version"],
+    "step": ["phase", "version", "step"],
+    "gate": ["phase", "version", "step"],
+    "issue": ["phase", "version", "step", "issue"],
+    "finding": ["phase", "version"],
+    "harden": ["phase", "version"],
+    "release": ["phase", "version"],
+    "tool": []
+  },
+
+  "events": {
+    "run.start":            { "data": ["command", "plan", "baseline", "git"] },
+    "run.estimate":         { "data": ["source", "versions", "total"] },
+    "run.resumed":          { "data": ["gap_s"] },
+    "run.end":              { "data": ["versions_done", "issues_done"] },
+    "run.aborted":          { "data": ["reason"] },
+
+    "phase.start":          { "data": [] },
+    "phase.end":            { "data": ["versions"] },
+
+    "version.start":        { "data": [] },
+    "version.decomposed":   { "data": ["issues"] },
+    "version.end":          { "data": ["tag"] },
+    "version.skipped":      { "data": ["reason"] },
+
+    "step.start":           { "data": [] },
+    "step.end":             { "data": [] },
+    "gate.blocked":         { "data": ["gate", "reason"] },
+
+    "issue.start":          { "data": ["size", "area"] },
+    "issue.uploaded":       { "data": ["issue", "gh_number", "url"] },
+    "issue.implement.end":  { "data": ["files_changed"] },
+    "issue.validate.end":   { "data": ["attempt", "pytest", "mypy"] },
+    "issue.commit":         { "data": ["sha", "files"] },
+    "issue.closed":         { "data": ["issue", "gh_number"] },
+    "issue.failed":         { "data": ["attempt", "reason"] },
+    "issue.reverted":       { "data": ["attempt"] },
+    "issue.end":            { "data": ["attempts"] },
+
+    "finding.raised":       { "data": ["finding", "severity", "title"] },
+    "finding.classified":   { "data": ["finding", "disposition"] },
+    "finding.fixed":        { "data": ["finding", "sha"] },
+    "finding.deferred":     { "data": ["finding", "home"] },
+
+    "harden.start":         { "data": [] },
+    "harden.skipped":       { "data": ["reason"] },
+    "harden.finding.fixed": { "data": ["finding", "sha"] },
+    "harden.finding.held":  { "data": ["finding", "reason"] },
+
+    "tool.used":            { "data": ["tool"] },
+
+    "release.tagged":       { "data": ["tag"] },
+    "release.pushed":       { "data": ["tag", "remote"] }
+  },
+
+  "enums": {
+    "severity": ["HIGH", "MEDIUM", "LOW"],
+    "size": ["S", "M", "L"],
+    "disposition": ["fix-now", "defer"],
+    "estimate_source": ["estimated", "counted"]
+  }
+}

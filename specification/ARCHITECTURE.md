@@ -1,0 +1,281 @@
+# Architecture — RoboFace
+
+## Overview
+
+Three tiers. The **device** renders the face, moves audio in both directions and captures frames. The **server** owns every decision — it runs the turn (ASR → LLM → TTS), decides the emotion, does the vision reasoning and, from v4, holds the mind. **External services** are reached only from the server over HTTPS.
+
+```
+M5Stack Core S3 (face + audio I/O + camera + sensors)
+   ⇅  WiFi / WSS — JSON control frames + binary PCM16 + binary JPEG
+Python server (protocol · router · orchestrator · emotion engine · vision · mind)
+   ⇅  HTTPS
+Gemini 2.5 Flash (chat + vision, thinkingBudget: 0) · Deepgram nova-2 (ASR, uk) · ElevenLabs (TTS, pcm_16000)
+```
+
+The split is the whole design: **no intelligence on the device, no rendering decisions on the server.** The server never sends pixels; the device never chooses an emotion.
+
+## Components
+
+- **Firmware (`firmware/`).** C++ on the Core S3 (PlatformIO, M5Unified/M5GFX). Owns the WSS client, the device state machine, audio capture and playback, the camera, the sensors, and the face renderer with its skins. Split in two layers (§Firmware architecture): Arduino-free **pure logic** that is host-tested, and **glue** that touches hardware.
+- **Server (`server/`).** Python, FastAPI + websockets. A pure **`protocol`** module (the wire contract), a **`router`** (one connection state machine per device), an **`orchestrator`** (streams every stage of a turn), an **emotion engine** (decides `EmotionFrame` from the turn and the model's own reported state), **`providers/`** (one seam per external service, each with a mock), and from v4 **memory** and **world context** over SQLite.
+- **Assets (`assets/`).** Face skin packs and their manifest. Adding a skin is adding a directory and a manifest entry.
+- **External services.** Chat and vision: **Gemini 2.5 Flash only**. ASR: **Deepgram** (nova-2, Ukrainian, PCM16 16 kHz). TTS: **ElevenLabs** (streaming `pcm_16000`). Each behind its provider seam; keys live in `server/.env`.
+- **Codegen (`codegen/`).** The generation tracker, hooks and dashboard. Subject-independent: it observes how this repo is built and is never imported by the product.
+
+## Hardware map
+
+Every piece of Core S3 hardware is assigned to a version on purpose; nothing is "wired up later, somehow".
+
+| Hardware | Use | Version |
+|---|---|---|
+| WiFi (ESP32-S3) | the WSS channel — the backbone | v0 |
+| USB-C serial | debug channel and `text_in` | v0 |
+| 2" 320×240 IPS (ILI9342C) | face: state stub → full animated face | v0 stub, v2 full |
+| PSRAM 8 MB | audio buffers, sprite framebuffer, JPEG frames | v1–v3 |
+| Speaker + AW88298 | streaming TTS playback | v1 |
+| Dual mics (ES7210) | 16 kHz PCM16 capture; direction, robust VAD, AEC | v1 mono, v2 direction, v3 AEC |
+| Touch (FT6336U) | backup PTT, touch reactions, skin carousel | v1 PTT, v2 reactions |
+| Proximity (LTR-553) | wake on an approaching hand, gaze toward it | v2 |
+| IMU (BMI270) | tilt/shake/carry/fall reactions | v2 |
+| Camera (GC0308) | "look and tell", presence, background emotion read | v3 |
+| Ambient light (LTR-553) | auto-brightness of the face | later |
+| RTC (BM8563) | time without network | later (with v4 memory) |
+| microSD | skin pack cache, local logs | later |
+| AXP2101 + 500 mAh | power; charge level as "tiredness" | v0 power, indication later |
+| Bottom3 halo (10× WS2812) | `accent_color` → emotion halo | v5 (optional) |
+| BLE 5 | not used (WiFi-first) | out of plan |
+
+## Contracts
+
+These cross the tier boundary and are pinned by contract tests. Changing one changes its test in the same commit.
+
+### WS device↔server
+
+Text frames are JSON objects with a `type`. Binary frames carry raw payloads with **no JSON envelope** — their meaning comes from direction plus connection state.
+
+**device → server:** `hello{device_id, proto_ver, audio_fmt, caps}` · `listen_start` · `audio`(binary PCM16) · `listen_stop` · `text_in{text}` · `event{type: touch|motion|proximity, kind, meta?}` · `image_in{reason, w, h}` + `image`(binary JPEG) · `ping`
+
+**server → device:** `asr_partial{text}` · `asr{text}` · `reply{text, final}` · `emotion{...EmotionFrame}` · `tts_audio`(binary PCM16) · `tts_end` · `config_updated{face_set?, brightness?, presence?}` · `error{code, msg}` · `restart` · `pong`
+
+Audio is **PCM16, 16 kHz, mono** in both directions (the device down-mixes its two channels before sending — the uplink is never stereo). Images are **JPEG** from the camera, announced by the `image_in` control frame that immediately precedes the binary frame.
+
+`hello.caps` is the capability set (§Hardware variants) — `touch`, `camera`, `dual_mic`, `halo`, `buttons` — and the server tailors what it sends to it.
+
+### EmotionFrame
+
+The entire face channel, server→device, one object:
+
+```json
+{ "emotion": "joy", "intensity": 0.8, "gaze": {"x": -0.4, "y": 0.0},
+  "accent_color": "#5FFFC4", "speaking": true, "ttl_ms": 6000 }
+```
+
+- `emotion` — the fixed enum: `neutral · calm · joy · thinking · surprised · sad · error`. Required.
+- `intensity` — 0..1, scales expressiveness: smile depth, eye opening, idle amplitude, halo brightness. Required.
+- `gaze` — continuous `{x, y}` in −1..1. Driven by the server (voice direction, the vision turn) and overridden locally by a reflex (a hand approaching, a touch). Optional, default centre.
+- `accent_color` — hex; the skin's element colour and, from v5, the halo. Optional; omitted means "use the recipe colour".
+- `speaking` — whether lip-sync is active. Optional, default false.
+- `ttl_ms` — with no new frame after this, the renderer relaxes to `neutral`. Optional, default 8000.
+
+**The server decides `emotion`; the device never infers one.** Turn states are expressed through the face — `listening`, `thinking`, `replying` map to frames (`calm`, `thinking`, and the reply's own emotion), not to text labels on the screen. The **audio level is not part of this object**: lip-sync is a local `setAudioLevel(0..1)` derived from the playback buffer.
+
+### event{}
+
+The second level of the reaction model. The reflex already fired locally; this tells the character it happened.
+
+```json
+{ "type": "touch", "kind": "stroke", "meta": {"zone": "cheek", "count": 3} }
+```
+
+`kind` is a small enum per type — touch: `tap · multi_tap · stroke · poke_eye · long_press`; motion: `tilt · shake · picked_up · upside_down · free_fall`; proximity: `approach · leave`. The server may answer with an `emotion` frame, a spoken line, or nothing at all.
+
+### Error codes
+
+Enumerated, never free text: `wifi_lost · server_unreachable · proto_unsupported · unauthorized · rate_limited · asr_failed · llm_timeout · llm_failed · tts_failed · vision_failed · internal`.
+
+## Turn lifecycle
+
+Half-duplex until v3.4 (barge-in needs AEC).
+
+```
+VAD speech start → listen_start → audio(bin)… → VAD endpoint → listen_stop
+  → ASR → asr_partial* / asr → LLM (stream) → reply deltas + emotion frame
+  → TTS (stream) → tts_audio(bin)… → tts_end → back to idle
+```
+
+Text path (v0, serial/debug): `text_in` → LLM → `reply`. Vision path (v3): `image_in` + JPEG ride into the same LLM call as multimodal input.
+
+**Streaming is the latency design.** ASR emits interims and one final. The LLM streams token deltas; the orchestrator buffers them to **clause/sentence boundaries** and hands each completed phrase to TTS, so speech begins before the model has finished. TTS returns audio incrementally as `tts_audio` frames closed by `tts_end`. Target: first audio **< ~1.5 s** after `listen_stop`.
+
+**Server-initiated frames.** The emotion engine may push an `emotion` frame outside a turn (a state change, a reaction to an `event{}`, a mirroring of the user's read emotion). The device plays whatever arrives whenever it arrives.
+
+## Device states
+
+`boot → wifi_connecting → idle → listening → thinking → replying → idle`, with `offline` (no WiFi/server) and `error` reachable from anywhere. The state drives the face; the device holds no persona logic, and transitions come from local input plus server messages.
+
+## The face
+
+### Renderer ladder
+
+One `IFaceRenderer` interface across every tier, so improving the look is a renderer swap, not a rewrite:
+
+```cpp
+class IFaceRenderer {
+  virtual void begin();                       // load the skin pack into PSRAM
+  virtual void show(const EmotionFrame&);     // set target expression (crossfade ~150–250 ms)
+  virtual void setAudioLevel(float lvl);      // 0..1 while speaking — lip-sync
+  virtual void tick(uint32_t dt_ms);          // idle loop: blink, breathe, gaze drift, blend
+};
+```
+
+1. **Stub (v0.4)** — the state expressed as a static face. Proves the channel end to end.
+2. **Procedural Stack-chan (v2.1)** — layered M5GFX sprites drawn from primitives; no assets.
+3. **Spirit sprite skins (v2.6)** — `ghost`, `flame`, `jelly`, `cloud`: the same layer scheme filled with authored art plus one "element" behaviour each (flame colour, cloud weather, jellyfish glow, ghost blush/tear).
+
+### Layer model and recipes
+
+The face is composed from a small layer bank at render time, never stored as one image per emotion: background/glow → base → eyes → brows → mouth → element/overlay FX. An **emotion is a recipe** over that bank (which eye shape, which mouth, tilt, colour, idle amplitude), scaled by `intensity`. N emotions cost a small bank, not N faces.
+
+`face-prototype.html` (in this directory) is the executable reference for the whole grammar: `renderFace(skin, frame)` is pure, the five skins share `sEyes`/`sMouth` with per-skin ink and coordinates, and the JSON under the screen is exactly what the server sends. Port that structure; do not invent a second one.
+
+### Skins
+
+All five faces are **skins over the same `EmotionFrame`**. A skin is a manifest entry plus shapes and a palette — if a skin needs renderer logic, the design is wrong. Switching happens two ways: `config_updated{face_set}` from the server, or a **long press** on the device (the carousel). The active skin is reported back in the next `hello`.
+
+### Lip-sync
+
+Local, always. The device computes a short-window RMS envelope of the audio it is playing and maps it to mouth openness:
+
+```
+level < 0.10 → closed    < 0.35 → small    < 0.65 → mid    else → wide
+```
+
+~15–20 FPS over the layered sprites. **No server data is involved** — the server only sets `speaking`.
+
+### Gaze
+
+`gaze` arrives from the server (voice direction in v2.5, the vision turn in v3) and is overridden locally by reflexes: the proximity sensor pulls the gaze toward an approaching hand; a touch pulls it to the touched zone; the IMU rolls the eyes against a tilt to keep the horizon.
+
+## Interaction — two levels
+
+Every physical input is handled twice, and the two levels never block each other.
+
+1. **Reflex (device, <100 ms).** Pure animation over the current state. It never interrupts speech or listening and never waits for the network. Tap → wink and a small smile; repeated taps → growing joy and blush; stroke → contented arc eyes; poke in the eye → surprise and a recoil; tilt → eyes roll against it; shake → dizzy spirals; picked up → wide alert eyes; upside down → the face flips and frowns; free fall → full-screen fright.
+2. **Report (`event{}` → server).** The same input is sent up, and the character may answer with an emotion change or a spoken line (prolonged shaking → offence and a remark). If the server is unreachable, level 1 still works — the face never depends on the network to feel alive.
+
+The long press is reserved: it runs the **skin carousel**, and press-and-hold is the **backup PTT**.
+
+## Audio pipeline
+
+- **Capture.** ES7210, 16 kHz PCM16. The device processes stereo locally and always sends **mono** upstream.
+- **Active listening (v1.4).** The default mode: the mic is always open, a VAD endpointer marks speech start and the end-of-utterance pause. Touch-and-hold remains as the backup PTT. While the device speaks, listening is paused (half-duplex) until v3.4.
+- **Dual-mic rollout.** v1: one channel, simplest thing that works. v2.5: direction from the inter-mic time/level difference → `gaze`, plus channel selection/summing for a cleaner ASR signal, and the start of dual-channel VAD robustness. v3.4: the esp-sr AFE (AEC + noise suppression + VAD) using the playback reference channel, which makes listening full-duplex and enables **barge-in**.
+- **Playback.** Streaming `tts_audio` frames into a PSRAM ring buffer feeding AW88298; the same buffer feeds the lip-sync envelope.
+
+## Vision
+
+Three tiers, all v3, and all subject to the privacy rule below.
+
+1. **Look and tell (v3.1).** On demand ("what do you see?") the device captures a JPEG, announces it with `image_in` and sends it; the server attaches it to that turn's Gemini call as multimodal input and answers by voice.
+2. **Presence (v3.2).** Cheap local motion/brightness detection plus the proximity sensor wakes the face and greets someone who sits down. No identity, no recognition.
+3. **Background emotion read (v3.3).** A **separate channel and a separate Gemini call**, fully outside the turn pipeline: while presence mode is on, the device sends a small frame every few seconds; a background task asks "what emotion is the person showing?" (enum + intensity) and puts the answer in two places — a **mood line** in the next turn's system prompt, and optionally an **immediate mirror** on the face via an `EmotionFrame`. **It never blocks or delays a turn**: if the background call is late, the turn goes without it. Wake-on-face falls out of the same channel.
+
+**Privacy.** Frames are processed in memory and never written to disk. The camera is live only during an explicit turn or in presence mode, and presence mode is opt-in in the role/config.
+
+## The mind (v4)
+
+Deliberately small, entirely server-side, no console:
+
+- **Canon** — one authored text file describing the RoboFace character (a separate character, not Pyramid's or Lumi's), assembled into the system prompt.
+- **Memory** — session history: the last **40 messages**; plus **facts about the interlocutor**: up to **500 facts of 2 lines** each, extracted by the model from the conversation, stored in SQLite and mixed into the system prompt.
+- **One tool** — web search via Gemini's built-in **`google_search` grounding**: the model searches and answers with sources, so no separate search API and no tool-loop machinery.
+- **World context** — a prompt block the server refreshes itself: date/weekday/time-of-day from the server clock, location from config, weather (one call, cached an hour) and ~10 lines of headlines (RSS or the same grounding, cached a few hours).
+
+MCP, the role model and temperament are deliberately absent and are not "coming in v4.5" — they are out of this project's scope.
+
+## Model policy — Gemini only
+
+**Chat and vision run on Gemini 2.5 Flash, with thinking disabled (`thinkingBudget: 0`), and on nothing else.** The rationale: the lowest time-to-first-token and cost for a short conversational character, multimodal input that covers both the vision turn and the background emotion read, and `google_search` grounding that removes the need for a separate tool stack. There is one real `LLMProvider` implementation plus a mock; a second chat vendor is a non-goal, not a backlog item.
+
+Speech is not chat, and each has its own seam: **Deepgram** for ASR, **ElevenLabs** for TTS. Swapping either is a provider change, not an architecture change.
+
+## Providers and seams
+
+Five seams carry the whole system. Each is pinned by a contract test, and each has a mock used by default in tests:
+
+| Seam | Where | What it hides |
+|---|---|---|
+| WS protocol | `server/…/protocol.py` + `firmware/…/ws_protocol.h` | message set, binary-frame rules, error codes |
+| `EmotionFrame` | protocol + `IFaceRenderer` | the entire face channel |
+| `LLMProvider` | `server/…/providers/` | Gemini (the only real impl) — streams reply deltas |
+| `ASRProvider` / `TTSProvider` | `server/…/providers/` | Deepgram / ElevenLabs — stream chunks |
+| `IFaceRenderer` + skin manifest | `firmware/` + `assets/` | which skin draws the frame |
+
+## Data model
+
+Nothing is persisted before v4 beyond a device record and config. From v4, SQLite behind a thin repository:
+
+- `Device{device_id, name, caps, last_seen, face_set}`
+- `SessionMessage{session_id, role, text, emotion, ts}` — the rolling 40-message window
+- `Fact{id, text (≤2 lines), confidence, source_ts}` — up to 500
+- `WorldSnapshot{kind, payload, fetched_at}` — the cached weather/news blocks
+
+## Configuration and secrets
+
+Server config and keys live in `server/.env` (gitignored; `server/.env.example` is committed): `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, the location for world context, the default `face_set`, and the WS bind address. **The firmware never holds a model key** — it holds only the WiFi credentials and the server URL, in a gitignored `firmware/src/config.h` generated from `config.example.h`.
+
+## Error handling and resilience
+
+- Every failure maps to an enumerated `error.code`; the device renders the `error` emotion rather than a stack trace.
+- Per-stage budgets: ASR, LLM and TTS each have a timeout; exceeding one fails that turn cleanly and returns the device to `idle`.
+- WiFi/server loss → `offline`: the face keeps its idle loop and its reflexes; reconnection is exponential backoff with jitter.
+- A background emotion read that fails or is late is dropped silently — it must never affect a turn.
+- The renderer degrades: a missing skin pack falls back to the procedural Stack-chan face; an unknown `emotion` value falls back to `neutral`.
+
+## Hardware variants and capability flags
+
+One firmware, several boards. `hello.caps` tells the server what exists, and the firmware itself guards each subsystem:
+
+- **Core S3 (v0–v5)** — the full set. With the optional **Bottom3** (v5): `halo`.
+- **FIRE v2.7 (v6)** — classic ESP32, same 320×240 screen, **no touch, no camera, one mic**, built-in 10× SK6812. Degradation: three buttons replace touch (A = PTT/carousel, B/C = navigation), the dual-mic features are off and listening stays half-duplex, all of Vision is unavailable, the halo works immediately with the v5 logic. The face, the skins, lip-sync and IMU reactions work fully.
+
+Until v6 the firmware is written purely for the Core S3; the port is a one-off job inside that version, not a constraint on earlier ones.
+
+## Firmware architecture
+
+Two kinds of unit, the same split that made Pyramid's firmware testable:
+
+1. **Pure logic** — header-only, Arduino-free, in `namespace roboface`: frame parsing and framing, the turn state machine, VAD, the lip-sync envelope, gaze math, the emotion recipe table, backoff. No `M5`/`WiFi` includes, so it compiles and is unit-tested on the host (`pio test -e native`).
+2. **Glue** — `.h`/`.cpp` pairs in `namespace app`: `main` (wiring only), `net` (WiFi + reconnect supervisor), `ws` (the WSS client), `audio_io` (capture + playback), `face` (M5GFX sprite renderer + skins), `sensors` (touch, IMU, proximity), `camera`, `state`. Validated by compile plus on-device smoke checks in each phase's DoD.
+
+Parsing, decisions and math never live behind an `M5` include; hardware access never lives in pure logic.
+
+## Stack and repository layout
+
+```
+/firmware       # C++ / PlatformIO, M5Unified + M5GFX — Core S3 (FIRE from v6)
+/server         # Python: FastAPI + websockets — protocol, router, orchestrator, providers, emotion engine
+/assets         # face skin packs (stackchan/, ghost/, flame/, jelly/, cloud/) + manifest
+/tests          # pytest: unit, contract, integration — fake device + mocked providers
+/specification  # MISSION.md, ARCHITECTURE.md, ROADMAP.md, the original CONCEPT*.md,
+                #   face-prototype.html, roadmap/implementation/
+/codegen        # code-generation tracking + dashboard (never imported by the product)
+.github/workflows/ci.yml   # lint + tests on every push/PR
+```
+
+`pyproject.toml` at the root sets `pythonpath = ["server"]` so tests import the server package; `codegen/` keeps its own `pyproject.toml` and is tested from inside its own directory.
+
+## Testing and CI
+
+Tests ship with each phase — they encode its DoD, and `main` stays green.
+
+- **Unit** — pure logic on both sides: prompt assembly, history windowing, error mapping, emotion recipes, VAD, framing, the lip-sync envelope, gaze math.
+- **Contract** — the five seams above. The WS message set, `EmotionFrame`, the provider interfaces and the skin manifest each have a test that must change when the contract does.
+- **Fakes, not hardware or paid APIs** — a **fake device** speaks the WS protocol in tests, and **mock Gemini/Deepgram/ElevenLabs** return canned streams. CI never makes a paid call; a live call is opt-in and manual.
+- **Integration** — a full turn end-to-end against the fakes: `text_in → reply` (v0), `audio → tts_end` (v1+), `image_in → reply` (v3), asserting state transitions and the error paths.
+- **Firmware** — host-testable logic under `pio test -e native`; hardware I/O is covered by the manual DoD checks in the roadmap.
+- **CI** — `ruff` + `pytest` (and `mypy server`, strict) on every push/PR.
+
+## Code-generation tracking
+
+`codegen/` records how this repository is built by the SDLC skills in `.claude/skills/`: an append-only event log per run, hooks that observe tool use independently of what the skills claim, a reducer, and a dashboard on port 8420. It is **subject-independent** — it imports nothing from `server/` or `firmware/`, survives a reset of the generated tree, and its own suite runs from inside `codegen/`. See [codegen/README.md](../codegen/README.md).

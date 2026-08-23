@@ -1,0 +1,43 @@
+# Tool configuration for the tracking system.
+#
+# Deliberately NO [project] table: this is not a distributable package, and a
+# [project] table here would invite the generated project's build to discover it.
+#
+# NOTE mypy must be invoked as:
+#     mypy --config-file codegen/pyproject.toml codegen/
+# mypy reads config from the current directory only -- it does not walk up from
+# the files being checked -- so plain `mypy codegen/` silently ignores this file
+# and runs non-strict. ruff and pytest do walk up and need no flag.
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+warn_unreachable = true
+warn_unused_ignores = true
+
+# bleak is imported lazily inside BleakTransport.run and may legitimately be absent:
+# bridge/ is a leaf, and the dashboard must keep starting on a machine with no
+# Bluetooth. Declaring that here rather than silencing the line keeps the intent in
+# one place, and a test asserts the import really is not at module scope.
+[[tool.mypy.overrides]]
+module = ["bleak", "bleak.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+# Relative to rootdir, which is THIS directory (codegen/) whether pytest walks up
+# from inside it or is pointed here with `-c codegen/pyproject.toml`. It read
+# "codegen/tests" before, which resolved to codegen/codegen/tests, did not exist, and
+# made pytest fall back to collecting recursively from the cwd -- silently sweeping in
+# the generated application's suite once one existed.
+testpaths = ["tests"]
+# -p pytester: the guard test runs a nested pytest session to observe its own
+# failure mode. Registered here because codegen/tests/conftest.py is not the
+# rootdir conftest, where pytest_plugins would have to live.
+addopts = "-q -p pytester"

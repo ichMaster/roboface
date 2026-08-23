@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "Hook registration for the tracker. NOT enabled by default: copy these entries into",
+    ".claude/settings.json (or settings.local.json for just yourself) when you want a run",
+    "tracked. Architecture §7 -- the only tracking-related content permitted outside codegen/,",
+    "and it holds nothing but a matcher and a command pointing back in here.",
+    "",
+    "Use $CLAUDE_PROJECT_DIR, never a relative path. A relative path resolves against the",
+    "session's cwd, which is not the repo root whenever a command has cd'd -- the hook then",
+    "fails to start and its non-zero exit BLOCKS the tool call. Found the hard way: an earlier",
+    "relative registration broke the very session that wrote it."
+  ],
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/codegen/hooks/on_tool_use.py" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/codegen/hooks/on_stop.py" }
+        ]
+      }
+    ]
+  }
+}

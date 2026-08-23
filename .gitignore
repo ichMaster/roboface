@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- RoboFace ---------------------------------------------------------------
+# codegen run logs: machine-local evidence, never committed
+codegen/runs/
+codegen/var/
+
+# firmware secrets and build output (WiFi credentials + server URL live here)
+firmware/src/config.h
+.pio/
+
+# macOS
+.DS_Store

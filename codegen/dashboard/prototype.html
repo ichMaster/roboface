@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codegen Tracker — /ship-phase v01</title>
+<style>
+/* ───────────────────────────────────────────────────────────────────────────
+   PALETTE — validated with dataviz/scripts/validate_palette.js
+     light  #2a78d6,#eb6834,#1baf7a,#eda100,#e87ba4  → ALL PASS
+            (contrast WARN on aqua/yellow/magenta → relief: direct labels + table view)
+     dark   #3987e5,#d95926,#199e70,#c98500,#d55181  → ALL PASS
+   Dark steps are selected for the dark surface, not an automatic flip.
+   ─────────────────────────────────────────────────────────────────────────── */
+.viz-root{
+  color-scheme: light;
+  --surface-1:#fcfcfb; --plane:#f9f9f7;
+  --text-primary:#0b0b0b; --text-secondary:#52514e; --text-muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,.10);
+  --series-1:#2a78d6; --series-2:#eb6834; --series-3:#1baf7a;
+  --series-4:#eda100; --series-5:#e87ba4;
+  --seq-200:#9ec5f4; --seq-350:#5598e7; --seq-450:#2a78d6; --seq-600:#184f95;
+  --deemph:#d6d5cf;
+  --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+  --delta-good:#006300;
+}
+@media (prefers-color-scheme: dark){
+  :root:where(:not([data-theme="light"])) .viz-root{
+    color-scheme: dark;
+    --surface-1:#1a1a19; --plane:#0d0d0d;
+    --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10);
+    --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70;
+    --series-4:#c98500; --series-5:#d55181;
+    --seq-200:#184f95; --seq-350:#256abf; --seq-450:#3987e5; --seq-600:#9ec5f4;
+    --deemph:#3a3a37;
+    --delta-good:#0ca30c;
+  }
+}
+:root[data-theme="dark"] .viz-root{
+  color-scheme: dark;
+  --surface-1:#1a1a19; --plane:#0d0d0d;
+  --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10);
+  --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70;
+  --series-4:#c98500; --series-5:#d55181;
+  --seq-200:#184f95; --seq-350:#256abf; --seq-450:#3987e5; --seq-600:#9ec5f4;
+  --deemph:#3a3a37;
+  --delta-good:#0ca30c;
+}
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--plane);color:var(--text-primary);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:14px;line-height:1.45}
+.viz-root{background:var(--plane);min-height:100vh;padding:20px}
+.wrap{max-width:1240px;margin:0 auto}
+
+/* header + filters ------------------------------------------------------- */
+.topbar{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px 16px;margin-bottom:14px}
+.topbar h1{font-size:15px;font-weight:600;margin:0;letter-spacing:.01em}
+.topbar .sub{color:var(--text-muted);font-size:12.5px}
+.spacer{flex:1}
+/* One filter row, above everything it scopes — never per-chart. */
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px}
+.filters label{color:var(--text-muted);font-size:12px;margin-right:2px}
+select,.btn{font:inherit;font-size:12.5px;color:var(--text-primary);background:var(--surface-1);
+  border:1px solid var(--border);border-radius:8px;padding:5px 9px;cursor:pointer}
+.btn[aria-pressed="true"]{background:var(--seq-200);border-color:transparent}
+
+/* cards ------------------------------------------------------------------ */
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
+.card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:14px 16px;min-width:0}
+.card h2{font-size:12.5px;font-weight:600;margin:0 0 2px;letter-spacing:.01em}
+.card .note{color:var(--text-muted);font-size:11.5px;margin:0 0 10px}
+.c12{grid-column:span 12}.c8{grid-column:span 8}.c6{grid-column:span 6}.c4{grid-column:span 4}
+@media(max-width:900px){.c8,.c6,.c4{grid-column:span 12}}
+
+/* hero ------------------------------------------------------------------- */
+.hero{display:flex;flex-wrap:wrap;gap:22px;align-items:center}
+.hero .now{font-size:15px;font-weight:600}
+.hero .elapsed{font-size:48px;font-weight:600;letter-spacing:-.02em;line-height:1.05}
+.hero .lbl{color:var(--text-muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.06em}
+.eta{border-left:1px solid var(--border);padding-left:22px}
+.eta .val{font-size:26px;font-weight:600}
+/* Status = icon + label + color. Never colour alone. */
+.status{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600}
+.dot{width:9px;height:9px;border-radius:50%;flex:none}
+.s-run .dot{background:var(--series-1);animation:pulse 1.6s ease-in-out infinite}
+.s-ok  .dot{background:var(--good)} .s-fail .dot{background:var(--critical)}
+.s-held .dot{background:var(--serious)} .s-skip .dot{background:var(--text-muted)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+/* The status word always carries the state; the pulse is decoration only. */
+@media (prefers-reduced-motion: reduce){
+  *{animation:none !important;transition:none !important}
+}
+/* Visible focus for keyboard users on every interactive mark. */
+.hit:focus-visible,.btn:focus-visible,select:focus-visible{
+  outline:2px solid var(--series-1);outline-offset:2px}
+
+/* KPI tiles -------------------------------------------------------------- */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px 18px}
+@media(max-width:1000px){.kpis{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:620px){.kpis{grid-template-columns:repeat(2,1fr)}}
+.kpi .lbl{color:var(--text-muted);font-size:11.5px;margin-bottom:3px}
+.kpi .val{font-size:25px;font-weight:600;letter-spacing:-.01em}
+.kpi .val small{font-size:14px;font-weight:500;color:var(--text-muted)}
+.kpi .delta{font-size:11.5px;color:var(--text-secondary);margin-top:1px}
+.kpi .delta.up{color:var(--delta-good)}
+
+/* tree ------------------------------------------------------------------- */
+.tree{font-size:12.5px}
+.tnode{display:flex;align-items:center;gap:8px;padding:3px 0;border-bottom:1px solid var(--grid)}
+.tnode:last-child{border-bottom:0}
+.tname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tdur{color:var(--text-muted);font-variant-numeric:tabular-nums;font-size:11.5px}
+.d1{padding-left:14px}.d2{padding-left:30px}.d3{padding-left:46px}
+.tnode.active .tname{font-weight:600}
+.tag{font-size:10.5px;color:var(--text-muted);border:1px solid var(--border);border-radius:5px;padding:0 5px}
+
+/* charts ----------------------------------------------------------------- */
+svg{display:block;width:100%;height:auto;overflow:visible}
+.ax{font-size:10.5px;fill:var(--text-muted);font-variant-numeric:tabular-nums}
+.axl{font-size:11px;fill:var(--text-secondary)}
+.dlabel{font-size:11px;fill:var(--text-primary);font-weight:600}
+.gridline{stroke:var(--grid);stroke-width:1}
+.axisline{stroke:var(--axis);stroke-width:1}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:10px;font-size:11.5px;color:var(--text-secondary)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.key{width:11px;height:11px;border-radius:3px;flex:none}
+.key.line{height:2px;border-radius:2px;width:14px}
+
+/* table view (the WCAG-clean twin every chart needs) --------------------- */
+table{border-collapse:collapse;width:100%;font-size:12px;margin-top:8px}
+th,td{text-align:right;padding:4px 8px;border-bottom:1px solid var(--grid);font-variant-numeric:tabular-nums}
+th:first-child,td:first-child{text-align:left;font-variant-numeric:normal}
+th{color:var(--text-muted);font-weight:500}
+[hidden]{display:none !important}
+.cardhead{display:flex;align-items:flex-start;gap:10px}
+.cardhead .spacer{flex:1}
+.tv{font-size:11px;padding:2px 7px}
+
+/* tooltip ---------------------------------------------------------------- */
+#tip{position:fixed;z-index:50;pointer-events:none;opacity:0;transition:opacity .09s;
+  background:var(--surface-1);border:1px solid var(--border);border-radius:8px;padding:7px 9px;
+  box-shadow:0 6px 22px rgba(0,0,0,.16);font-size:12px;max-width:250px}
+#tip .v{font-weight:600;font-size:13px}
+#tip .r{display:flex;align-items:center;gap:6px;color:var(--text-secondary);margin-top:2px}
+#tip .lk{width:12px;height:2px;border-radius:2px;flex:none}
+.hit{fill:transparent;cursor:pointer}
+.mark:hover,.mark:focus{filter:brightness(1.12)}
+footer{color:var(--text-muted);font-size:11.5px;margin-top:18px;padding-top:12px;border-top:1px solid var(--border)}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em}
+</style>
+</head>
+<body>
+<div class="viz-root">
+<div class="wrap">
+
+  <div class="topbar">
+    <h1>Codegen Tracker</h1>
+    <span class="sub"><code>/ship-phase v01</code> · run-20260803-142012 · branch <code>codegen-tracking</code></span>
+    <span class="spacer"></span>
+    <button class="btn" id="theme">Toggle theme</button>
+  </div>
+
+  <!-- ONE filter row, scoping everything below. Never inside a chart card. -->
+  <div class="filters">
+    <label for="f-run">Run</label>
+    <select id="f-run"><option>run-20260803-142012 (live)</option><option>run-20260802-091500</option><option>Compare last 5 runs…</option></select>
+    <label for="f-phase">Phase</label>
+    <select id="f-phase"><option>v01 — Game Core &amp; Server Foundation</option><option>All phases</option></select>
+    <label for="f-status">Status</label>
+    <select id="f-status"><option>All</option><option>Failed only</option><option>Retried only</option></select>
+  </div>
+
+  <div class="grid">
+
+    <!-- 1 · RUN HEADER — hero figure, not a chart -->
+    <div class="card c12">
+      <div class="hero">
+        <div>
+          <div class="lbl">Elapsed</div>
+          <div class="elapsed" id="h-elapsed">51:47</div>
+        </div>
+        <div class="eta">
+          <div class="lbl">Now</div>
+          <div class="now">v01.03 · RF-016 · validating <span class="status s-run"><span class="dot"></span>running</span></div>
+          <div class="lbl" style="margin-top:9px">Estimated to finish</div>
+          <!-- ETA is a RANGE, never a point. Blank until ≥1 version has finished. -->
+          <div class="val" id="h-eta">~38–52 min</div>
+          <div class="sub" style="color:var(--text-muted);font-size:11.5px">
+            from 15 issues sampled · 1 of 4 versions not yet decomposed, so the upper bound is wide
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2 · KPI ROW — stat tiles -->
+    <div class="card c12">
+      <div class="kpis" id="kpis"></div>
+    </div>
+
+    <!-- 3 · LIVE TREE — the primary panel; a tree, not a chart -->
+    <div class="card c6">
+      <div class="cardhead"><div>
+        <h2>Live run tree</h2>
+        <p class="note">run → phase → version → step → issue. Five nested levels of state is more than colour can carry.</p>
+      </div></div>
+      <div class="tree" id="tree"></div>
+    </div>
+
+    <!-- 4 · BURN-DOWN -->
+    <div class="card c6">
+      <div class="cardhead">
+        <div>
+          <h2>Burn-down — work remaining</h2>
+          <p class="note">Scope is <em>discovered</em>: the band is what isn't decomposed yet, widest at the start.</p>
+        </div>
+        <span class="spacer"></span>
+        <button class="btn tv" data-tv="tv-burn" aria-pressed="false">Table</button>
+      </div>
+      <div id="c-burn"></div>
+      <div class="legend">
+        <span><i class="key line" style="background:var(--series-1)"></i>Projected remaining</span>
+        <span><i class="key" style="background:var(--series-1);opacity:.28"></i>Uncertainty range</span>
+        <span><i class="key line" style="background:var(--text-muted)"></i>Ideal</span>
+      </div>
+      <div id="tv-burn" hidden></div>
+    </div>
+
+    <!-- 5 · VELOCITY -->
+    <div class="card c4">
+      <div class="cardhead">
+        <div><h2>Velocity — mean time per issue</h2>
+        <p class="note">Dots show per-issue spread; a mean alone hides its retries.</p></div>
+        <span class="spacer"></span>
+        <button class="btn tv" data-tv="tv-vel" aria-pressed="false">Table</button>
+      </div>
+      <div id="c-vel"></div>
+      <div id="tv-vel" hidden></div>
+    </div>
+
+    <!-- 6 · WHERE TIME WENT -->
+    <div class="card c8">
+      <div class="cardhead">
+        <div><h2>Where the time went</h2>
+        <p class="note">Steps are strictly gated, so this composition <em>is</em> the chronology — no Gantt needed.</p></div>
+        <span class="spacer"></span>
+        <button class="btn tv" data-tv="tv-time" aria-pressed="false">Table</button>
+      </div>
+      <div id="c-time"></div>
+      <div class="legend" id="l-time"></div>
+      <div id="tv-time" hidden></div>
+    </div>
+
+    <!-- 7 · FAILURE SURFACE -->
+    <div class="card c6">
+      <div class="cardhead">
+        <div><h2>Failure surface — attempts per issue</h2>
+        <p class="note">Emphasis, not eight hues: issues that fought back are the point.</p></div>
+        <span class="spacer"></span>
+        <button class="btn tv" data-tv="tv-fail" aria-pressed="false">Table</button>
+      </div>
+      <div id="c-fail"></div>
+      <div class="legend">
+        <span><i class="key" style="background:var(--series-2)"></i>Needed &gt;1 attempt</span>
+        <span><i class="key" style="background:var(--deemph)"></i>First-pass</span>
+      </div>
+      <div id="tv-fail" hidden></div>
+    </div>
+
+    <!-- 8 · SUITE TRAJECTORY -->
+    <div class="card c6">
+      <div class="cardhead">
+        <div><h2>Tests passing, by version</h2>
+        <p class="note">One series, so no legend box — the title names it.</p></div>
+        <span class="spacer"></span>
+        <button class="btn tv" data-tv="tv-suite" aria-pressed="false">Table</button>
+      </div>
+      <div id="c-suite"></div>
+      <p class="note" style="margin-top:8px">
+        Suite <em>duration</em> is deliberately not on this chart — 0–250 tests against 0–8 s on a second
+        y-axis would invent a correlation. It gets its own tile above.
+      </p>
+      <div id="tv-suite" hidden></div>
+    </div>
+
+    <!-- 9 · QUALITY FLOW -->
+    <div class="card c12">
+      <div class="cardhead">
+        <div><h2>Code-review findings — how many, and what closed them</h2>
+        <p class="note">Review density (findings ÷ issues shipped) is the comparable number; raw counts just track version size.</p></div>
+        <span class="spacer"></span>
+        <button class="btn tv" data-tv="tv-q" aria-pressed="false">Table</button>
+      </div>
+      <div id="c-q"></div>
+      <div class="legend" id="l-q"></div>
+      <div id="tv-q" hidden></div>
+    </div>
+
+  </div>
+
+  <footer>
+    Prototype · mock data shaped to the event schema in
+    <code>codegen/ship-phase-tracking-vision.md</code> §4. Palette validated with
+    <code>validate_palette.js</code> (light + dark, all checks pass). No external requests, no build step.
+  </footer>
+</div>
+</div>
+<div id="tip" role="status" aria-live="polite"></div>
+
+<script>
+/* ── mock run, shaped exactly like the event log would reduce to ─────────── */
+const V = [
+  {id:'v01.01', title:'Project skeleton & the game engine', status:'ok',   tag:'v01.01.00',
+   steps:{generate:130,upload:65,execute:860,review:250,release:29}, tests:41,  issues:5,
+   find:{fixnow:2,hard:1,defer:0,held:0}},
+  {id:'v01.02', title:'Persistence layer (SQLite)',         status:'ok',   tag:'v01.02.00',
+   steps:{generate:160,upload:72,execute:1170,review:290,release:28}, tests:98, issues:6,
+   find:{fixnow:2,hard:1,defer:2,held:0}},
+  {id:'v01.03', title:'Match, seats & lobby REST',          status:'run',  tag:null,
+   steps:{generate:145,upload:70,execute:742,review:0,release:0},   tests:156, issues:6,
+   find:{fixnow:0,hard:0,defer:0,held:0}},
+  {id:'v01.04', title:'WebSocket protocol & move authority',status:'todo', tag:null,
+   steps:null, tests:null, issues:5, find:null}
+];
+const ISSUES = [
+  {id:'RF-001',v:'v01.01',size:'M',dur:268,att:1}, {id:'RF-002',v:'v01.01',size:'S',dur:151,att:1},
+  {id:'RF-003',v:'v01.01',size:'M',dur:412,att:2}, {id:'RF-004',v:'v01.01',size:'S',dur:139,att:1},
+  {id:'RF-005',v:'v01.01',size:'M',dur:264,att:1},
+  {id:'RF-006',v:'v01.02',size:'M',dur:281,att:1}, {id:'RF-007',v:'v01.02',size:'L',dur:604,att:3},
+  {id:'RF-008',v:'v01.02',size:'S',dur:147,att:1}, {id:'RF-009',v:'v01.02',size:'M',dur:296,att:1},
+  {id:'RF-010',v:'v01.02',size:'M',dur:274,att:1}, {id:'RF-011',v:'v01.02',size:'M',dur:389,att:2},
+  {id:'RF-012',v:'v01.03',size:'M',dur:302,att:1}, {id:'RF-013',v:'v01.03',size:'S',dur:158,att:1},
+  {id:'RF-014',v:'v01.03',size:'L',dur:571,att:2}, {id:'RF-015',v:'v01.03',size:'M',dur:288,att:1}
+];
+const REPO = {branch:'codegen-tracking', head:'f069fb6', remote:'origin',
+              created:17, closed:15, commits:19};
+// v01.04 is NOT decomposed yet — its issue count does not exist.
+const DECOMPOSED = ['v01.01','v01.02','v01.03'];
+const EST_LO=3, EST_HI=7;                     // roadmap band per undecomposed version
+const STEPS = [['generate','Generate issues',1],['upload','Upload issues',2],
+               ['execute','Execute issues',3],['review','Review & fix',4],['release','Release',5]];
+const QSEG  = [['fixnow','Fixed now',1],['hard','Hardened later',3],['defer','Still deferred',4],['held','Held',2]];
+
+const S=v=>`var(--series-${v})`;
+const mmss=s=>`${Math.floor(s/60)}:${String(Math.round(s%60)).padStart(2,'0')}`;
+const W=v=>({S:1,M:3,L:5})[v.size];
+const el=(id)=>document.getElementById(id);
+const svg=(w,h)=>`<svg viewBox="0 0 ${w} ${h}" role="img">`;
+
+/* ── tooltip: textContent only — labels are untrusted data ──────────────── */
+const tip=el('tip');
+function showTip(e,title,rows){
+  tip.textContent='';
+  const t=document.createElement('div'); t.className='v'; t.textContent=title; tip.appendChild(t);
+  rows.forEach(([label,val,color])=>{
+    const r=document.createElement('div'); r.className='r';
+    if(color){const k=document.createElement('i');k.className='lk';k.style.background=color;r.appendChild(k);}
+    const s=document.createElement('span'); s.textContent=label+' '+val; r.appendChild(s);
+    tip.appendChild(r);
+  });
+  tip.style.opacity='1';
+  const pad=14, w=tip.offsetWidth, h=tip.offsetHeight;
+  tip.style.left=Math.min(e.clientX+pad, innerWidth-w-8)+'px';
+  tip.style.top =Math.max(8, e.clientY-h-pad)+'px';
+}
+const hideTip=()=>tip.style.opacity='0';
+function bind(node,title,rows){
+  node.addEventListener('pointermove',e=>showTip(e,title,rows));
+  node.addEventListener('pointerleave',hideTip);
+  node.addEventListener('focus',e=>{const r=node.getBoundingClientRect();
+    showTip({clientX:r.left+r.width/2,clientY:r.top},title,rows);});
+  node.addEventListener('blur',hideTip);
+  node.setAttribute('tabindex','0');
+}
+
+/* ── 2 · KPI tiles ──────────────────────────────────────────────────────── */
+const done=ISSUES.length, planned=V.reduce((a,v)=>a+v.issues,0);
+const meanIssue=ISSUES.reduce((a,i)=>a+i.dur,0)/done;
+const firstPass=Math.round(ISSUES.filter(i=>i.att===1).length/done*100);
+const findOpen=V.reduce((a,v)=>a+(v.find?v.find.defer+v.find.held:0),0);
+const vmean=id=>{const d=ISSUES.filter(i=>i.v===id);return d.reduce((a,i)=>a+i.dur,0)/d.length;};
+const velD=(vmean('v01.03')-vmean('v01.02'))/vmean('v01.02')*100;
+const undec = V.filter(v=>!DECOMPOSED.includes(v.id)).length;
+const known = V.filter(v=>DECOMPOSED.includes(v.id)).reduce((a,v)=>a+v.issues,0);
+const m2=vmean('v01.02'), m3=vmean('v01.03'), diff=Math.round(m2-m3);
+el('kpis').innerHTML=[
+  ['Issues done',`${done}`,`${known} known · ${known+undec*EST_LO}–${known+undec*EST_HI} projected`,''],
+  ['Versions','2 <small>/ 4</small>','v01.03 in progress',''],
+  // label names the unit AND the subject; delta names the comparison, shows its value,
+  // and states the direction in words — never an arrow alone on a time metric.
+  ['Mean time per issue',mmss(m3)+' <small>in v01.03</small>',
+     `${Math.abs(diff)}s ${diff>0?'faster':'slower'} than v01.02 (${mmss(m2)})`, diff>0?'up':''],
+  ['Tests passing','156','+58 since v01.02','up'],
+  ['Tests failing now','0','expected — see failure surface',''],
+  ['Review findings','2 <small>open</small>','2 HIGH deferred',''],
+  ['GitHub issues',`${REPO.created} <small>created</small>`,`${REPO.closed} closed · ${REPO.created-REPO.closed} open`,''],
+  ['Commits',`${REPO.commits}`,`on ${REPO.branch} · from ${REPO.head}`,'']
+].map(([l,v,d,c])=>`<div class="kpi"><div class="lbl">${l}</div><div class="val">${v}</div><div class="delta ${c}">${d}</div></div>`).join('');
+
+/* ── 3 · live tree ──────────────────────────────────────────────────────── */
+(function(){
+  const sc={ok:'s-ok',run:'s-run',todo:'s-skip',fail:'s-fail'};
+  const word={ok:'done',run:'running',todo:'queued',fail:'failed'};
+  let h=`<div class="tnode"><span class="status s-run"><span class="dot"></span></span>
+        <span class="tname">run · ship-phase v01</span><span class="tdur">51:47</span></div>`;
+  V.forEach(v=>{
+    const total=v.steps?Object.values(v.steps).reduce((a,b)=>a+b,0):null;
+    h+=`<div class="tnode d1 ${v.status==='run'?'active':''}">
+        <span class="status ${sc[v.status]}"><span class="dot"></span></span>
+        <span class="tname">${v.id} — ${v.title}</span>
+        ${v.tag?`<span class="tag">${v.tag}</span>`:''}
+        <span class="tdur">${total?mmss(total):word[v.status]}</span></div>`;
+    if(v.status==='run'){
+      STEPS.forEach(([k,label])=>{
+        const d=v.steps[k];
+        h+=`<div class="tnode d2"><span class="status ${d?'s-ok':'s-skip'}"><span class="dot"></span></span>
+            <span class="tname">${label}</span><span class="tdur">${d?mmss(d):'—'}</span></div>`;
+        if(k==='execute'){
+          ISSUES.filter(i=>i.v===v.id).forEach(i=>{
+            h+=`<div class="tnode d3"><span class="status ${i.att>1?'s-held':'s-ok'}"><span class="dot"></span></span>
+                <span class="tname">${i.id} · ${i.size}${i.att>1?` · ${i.att} attempts`:''}</span>
+                <span class="tdur">${mmss(i.dur)}</span></div>`;
+          });
+          h+=`<div class="tnode d3 active"><span class="status s-run"><span class="dot"></span></span>
+              <span class="tname">RF-016 · M · validating (attempt 2)</span><span class="tdur">1:31</span></div>`;
+        }
+      });
+    }
+  });
+  el('tree').innerHTML=h;
+})();
+
+/* ── 4 · burn-down: PROJECTED total (line) + uncertainty range (band) ──────
+   Scope is discovered, not declared. Plotting only *known* remaining would drop the
+   line to zero at every version boundary — reading as "finished" when it means "the
+   next version isn't decomposed yet". So the line is the best estimate of total
+   remaining (known + midpoint), and the band is the low–high range. The band is
+   widest at t=0, when the total is entirely inference, and narrows as versions land. */
+(function(){
+  const LO=9, HI=21;                       // points per undecomposed version (3–7 issues × ~3)
+  // [elapsed_min, known_points, undecomposed_versions]
+  const TL=[[0,0,4],[2,11,3],[6,8,3],[11,5,3],[16,2,3],[22,0,3],
+            [24,18,2],[29,13,2],[34,9,2],[40,4,2],[46,0,2],[48,18,1],[52,12,1]];
+  const lo=p=>p[1]+p[2]*LO, hi=p=>p[1]+p[2]*HI, mid=p=>(lo(p)+hi(p))/2;
+  const W_=560,H=200,L=34,R=14,T=10,B=26, maxX=105, maxY=90;
+  const x=v=>L+(v/maxX)*(W_-L-R), y=v=>T+(1-v/maxY)*(H-T-B);
+  let s=svg(W_,H);
+  [0,30,60,90].forEach(g=>{ s+=`<line class="gridline" x1="${L}" x2="${W_-R}" y1="${y(g)}" y2="${y(g)}"/>
+      <text class="ax" x="${L-6}" y="${y(g)+3.5}" text-anchor="end">${g}</text>`; });
+  s+=`<line class="axisline" x1="${L}" x2="${W_-R}" y1="${y(0)}" y2="${y(0)}"/>`;
+  [0,25,50,75,100].forEach(t=>s+=`<text class="ax" x="${x(t)}" y="${H-8}" text-anchor="middle">${t}m</text>`);
+  const up=TL.map(p=>`${x(p[0]).toFixed(1)},${y(hi(p)).toFixed(1)}`).join(' L');
+  const dn=TL.slice().reverse().map(p=>`${x(p[0]).toFixed(1)},${y(lo(p)).toFixed(1)}`).join(' L');
+  s+=`<path d="M${up} L${dn} Z" fill="${S(1)}" opacity=".16"/>`;
+  s+=`<line x1="${x(0)}" y1="${y(mid(TL[0]))}" x2="${x(95)}" y2="${y(0)}"
+        stroke="var(--text-muted)" stroke-width="2" stroke-dasharray="5 4" stroke-linecap="round"/>`;
+  s+=`<path d="M${TL.map(p=>x(p[0]).toFixed(1)+','+y(mid(p)).toFixed(1)).join(' L')}"
+        fill="none" stroke="${S(1)}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  const lp=TL[TL.length-1];
+  s+=`<circle cx="${x(lp[0])}" cy="${y(mid(lp))}" r="4.5" fill="${S(1)}" stroke="var(--surface-1)" stroke-width="2"/>`;
+  s+=`<text class="dlabel" x="${x(lp[0])+9}" y="${y(mid(lp))+4}">${lo(lp)}–${hi(lp)}</text>`;
+  s+=`<text class="ax" x="${x(2)}" y="${y(84)}" style="font-size:10px">band narrows as versions are decomposed →</text>`;
+  TL.forEach((p,i)=>{ s+=`<rect class="hit" data-i="${i}" x="${x(p[0])-11}" y="${T}" width="22" height="${H-T-B}"/>`; });
+  s+='</svg>';
+  el('c-burn').innerHTML=s;
+  el('c-burn').querySelectorAll('.hit').forEach(n=>{
+    const p=TL[+n.dataset.i];
+    bind(n,`${p[0]} min elapsed`,[
+      ['Projected remaining',`${lo(p)}–${hi(p)} pts`,S(1)],
+      ['Known (decomposed)',`${p[1]} pts`],
+      ['Not yet decomposed',`${p[2]} version${p[2]===1?'':'s'} → +${p[2]*LO}–${p[2]*HI}`]]);
+  });
+  el('tv-burn').innerHTML='<table><thead><tr><th>Elapsed</th><th>Known</th><th>Undecomposed</th><th>Projected</th></tr></thead><tbody>'
+    +TL.map(p=>`<tr><td>${p[0]} min</td><td>${p[1]}</td><td>${p[2]} ver</td><td>${lo(p)}–${hi(p)}</td></tr>`).join('')+'</tbody></table>';
+})();
+
+/* ── 5 · velocity ───────────────────────────────────────────────────────── */
+(function(){
+  const rows=V.filter(v=>v.steps).map(v=>{
+    const is=ISSUES.filter(i=>i.v===v.id);
+    return {id:v.id, mean:is.reduce((a,i)=>a+i.dur,0)/is.length, pts:is.map(i=>i.dur)};
+  });
+  const W_=340,H=190,L=42,R=40,T=10,B=26, maxY=650;
+  const bw=Math.min(24,(W_-L-R)/rows.length-16);
+  const y=v=>T+(1-v/maxY)*(H-T-B);
+  let s=svg(W_,H);
+  [0,300,600].forEach(g=>{s+=`<line class="gridline" x1="${L}" x2="${W_-R}" y1="${y(g)}" y2="${y(g)}"/>
+    <text class="ax" x="${L-6}" y="${y(g)+3.5}" text-anchor="end">${mmss(g)}</text>`;});
+  s+=`<line class="axisline" x1="${L}" x2="${W_-R}" y1="${y(0)}" y2="${y(0)}"/>`;
+  rows.forEach((r,i)=>{
+    const cx=L+(i+.5)*((W_-L-R)/rows.length);
+    const h=y(0)-y(r.mean);
+    s+=`<path class="mark" d="M${cx-bw/2},${y(0)} L${cx-bw/2},${y(r.mean)+4} q0,-4 4,-4 L${cx+bw/2-4},${y(r.mean)} q4,0 4,4 L${cx+bw/2},${y(0)} Z" fill="${S(1)}"/>`;
+    r.pts.forEach(p=>{ s+=`<circle cx="${cx+bw/2+7}" cy="${y(p)}" r="2.5" fill="var(--text-muted)" opacity=".65"/>`; });
+    s+=`<text class="ax" x="${cx}" y="${H-8}" text-anchor="middle">${r.id}</text>`;
+    s+=`<rect class="hit" x="${cx-bw/2-6}" y="${T}" width="${bw+24}" height="${H-T-B}" data-i="${i}"/>`;
+  });
+  s+='</svg>'; el('c-vel').innerHTML=s;
+  el('c-vel').querySelectorAll('.hit').forEach(n=>{const r=rows[+n.dataset.i];
+    bind(n,r.id,[['Mean per issue',mmss(r.mean),S(1)],['Slowest',mmss(Math.max(...r.pts))],['Issues',r.pts.length]]);});
+  el('tv-vel').innerHTML='<table><thead><tr><th>Version</th><th>Mean/issue</th><th>Slowest</th></tr></thead><tbody>'
+    +rows.map(r=>`<tr><td>${r.id}</td><td>${mmss(r.mean)}</td><td>${mmss(Math.max(...r.pts))}</td></tr>`).join('')+'</tbody></table>';
+})();
+
+/* ── 6 · where time went (horizontal stacked bar, 2px surface gaps) ─────── */
+(function(){
+  const rows=V.filter(v=>v.steps);
+  const W_=700,H=170,L=54,R=54,T=8,B=24;
+  const maxX=rows.reduce((m,v)=>Math.max(m,Object.values(v.steps).reduce((a,b)=>a+b,0)),0);
+  const sx=v=>(v/maxX)*(W_-L-R);
+  const bh=Math.min(24,(H-T-B)/rows.length-14);
+  let s=svg(W_,H);
+  [0,600,1200,1800].forEach(g=>{s+=`<line class="gridline" x1="${L+sx(g)}" x2="${L+sx(g)}" y1="${T}" y2="${H-B}"/>
+    <text class="ax" x="${L+sx(g)}" y="${H-8}" text-anchor="middle">${g/60}m</text>`;});
+  rows.forEach((v,i)=>{
+    const yy=T+i*((H-T-B)/rows.length)+((H-T-B)/rows.length-bh)/2;
+    let cx=L, total=0;
+    s+=`<text class="axl" x="${L-8}" y="${yy+bh/2+4}" text-anchor="end">${v.id}</text>`;
+    STEPS.forEach(([k,label,slot],si)=>{
+      const d=v.steps[k]; if(!d) return; total+=d;
+      const w=Math.max(0,sx(d)-2); // 2px surface gap does the separating — no borders
+      const first=si===0, lastSeg=si===STEPS.length-1||!v.steps[STEPS[si+1][0]];
+      const r1=first?4:0, r2=lastSeg?4:0;
+      s+=`<path class="mark seg" data-v="${i}" data-k="${k}"
+            d="M${cx+r1},${yy} h${Math.max(0,w-r1-r2)} q${r2},0 ${r2},${r2} v${bh-2*r2} q0,${r2} ${-r2},${r2}
+               h${-(Math.max(0,w-r1-r2))} q${-r1},0 ${-r1},${-r1} v${-(bh-2*r1)} q0,${-r1} ${r1},${-r1} Z"
+            fill="${S(slot)}"/>`;
+      cx+=sx(d);
+    });
+    // direct label at the bar end — relief for the light-mode contrast WARN
+    s+=`<text class="dlabel" x="${cx+7}" y="${yy+bh/2+4}">${mmss(total)}</text>`;
+  });
+  s+='</svg>'; el('c-time').innerHTML=s;
+  el('c-time').querySelectorAll('.seg').forEach(n=>{
+    const v=rows[+n.dataset.v], k=n.dataset.k, meta=STEPS.find(x=>x[0]===k);
+    bind(n,`${v.id} · ${meta[1]}`,[['Duration',mmss(v.steps[k]),S(meta[2])]]);
+  });
+  el('l-time').innerHTML=STEPS.map(([k,l,slot])=>`<span><i class="key" style="background:${S(slot)}"></i>${l}</span>`).join('');
+  el('tv-time').innerHTML='<table><thead><tr><th>Version</th>'+STEPS.map(s2=>`<th>${s2[1]}</th>`).join('')+'<th>Total</th></tr></thead><tbody>'
+    +rows.map(v=>`<tr><td>${v.id}</td>${STEPS.map(([k])=>`<td>${v.steps[k]?mmss(v.steps[k]):'—'}</td>`).join('')}<td>${mmss(Object.values(v.steps).reduce((a,b)=>a+b,0))}</td></tr>`).join('')+'</tbody></table>';
+})();
+
+/* ── 7 · failure surface (EMPHASIS: retried in accent, rest gray) ───────── */
+(function(){
+  const W_=560,H=180,L=30,R=12,T=10,B=42, maxY=3;
+  const y=v=>T+(1-v/maxY)*(H-T-B);
+  const bw=Math.min(24,(W_-L-R)/ISSUES.length-6);
+  let s=svg(W_,H);
+  [1,2,3].forEach(g=>{s+=`<line class="gridline" x1="${L}" x2="${W_-R}" y1="${y(g)}" y2="${y(g)}"/>
+    <text class="ax" x="${L-6}" y="${y(g)+3.5}" text-anchor="end">${g}</text>`;});
+  s+=`<line class="axisline" x1="${L}" x2="${W_-R}" y1="${y(0)}" y2="${y(0)}"/>`;
+  ISSUES.forEach((it,i)=>{
+    const cx=L+(i+.5)*((W_-L-R)/ISSUES.length), hot=it.att>1;
+    const yv=y(it.att);
+    s+=`<path class="mark" d="M${cx-bw/2},${y(0)} L${cx-bw/2},${yv+4} q0,-4 4,-4 L${cx+bw/2-4},${yv} q4,0 4,4 L${cx+bw/2},${y(0)} Z"
+          fill="${hot?S(2):'var(--deemph)'}"/>`;
+    if(hot) s+=`<text class="dlabel" x="${cx}" y="${yv-6}" text-anchor="middle">${it.att}</text>`;
+    s+=`<text class="ax" x="${cx}" y="${H-26}" text-anchor="middle"
+          transform="rotate(-45 ${cx} ${H-26})">${it.id.replace('RF-','')}</text>`;
+    s+=`<rect class="hit" x="${cx-bw/2-3}" y="${T}" width="${bw+6}" height="${H-T-B}" data-i="${i}"/>`;
+  });
+  s+=`<text class="ax" x="${L}" y="${H-4}">RF-###</text>`;
+  s+='</svg>'; el('c-fail').innerHTML=s;
+  el('c-fail').querySelectorAll('.hit').forEach(n=>{const it=ISSUES[+n.dataset.i];
+    bind(n,it.id+' · '+it.size,it.att>1
+      ? [['Attempts',it.att,S(2)],['Duration',mmss(it.dur)],['Attempt 1','3 tests failed · test_reconnect.py']]
+      : [['Attempts',it.att,'var(--deemph)'],['Duration',mmss(it.dur)]]);});
+  el('tv-fail').innerHTML='<table><thead><tr><th>Issue</th><th>Size</th><th>Attempts</th><th>Duration</th></tr></thead><tbody>'
+    +ISSUES.map(i=>`<tr><td>${i.id}</td><td>${i.size}</td><td>${i.att}</td><td>${mmss(i.dur)}</td></tr>`).join('')+'</tbody></table>';
+})();
+
+/* ── 8 · suite trajectory (one series, no legend, NO second axis) ───────── */
+(function(){
+  const pts=V.filter(v=>v.tests!=null).map((v,i)=>[i,v.tests,v.id]);
+  const W_=520,H=170,L=36,R=34,T=12,B=26, maxY=200;
+  const x=i=>L+(i/(pts.length-1||1))*(W_-L-R), y=v=>T+(1-v/maxY)*(H-T-B);
+  let s=svg(W_,H);
+  [0,50,100,150,200].forEach(g=>{s+=`<line class="gridline" x1="${L}" x2="${W_-R}" y1="${y(g)}" y2="${y(g)}"/>
+    <text class="ax" x="${L-6}" y="${y(g)+3.5}" text-anchor="end">${g}</text>`;});
+  s+=`<line class="axisline" x1="${L}" x2="${W_-R}" y1="${y(0)}" y2="${y(0)}"/>`;
+  s+=`<path d="M${x(0)},${y(0)} L${pts.map(p=>x(p[0])+','+y(p[1])).join(' L')} L${x(pts.length-1)},${y(0)} Z"
+        fill="${S(1)}" opacity=".10"/>`;
+  s+=`<path d="M${pts.map(p=>x(p[0])+','+y(p[1])).join(' L')}" fill="none" stroke="${S(1)}"
+        stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  pts.forEach(p=>{s+=`<circle cx="${x(p[0])}" cy="${y(p[1])}" r="4.5" fill="${S(1)}" stroke="var(--surface-1)" stroke-width="2"/>
+    <text class="ax" x="${x(p[0])}" y="${H-8}" text-anchor="middle">${p[2]}</text>`;});
+  const lp=pts[pts.length-1];
+  s+=`<text class="dlabel" x="${x(lp[0])+9}" y="${y(lp[1])+4}">${lp[1]}</text>`;
+  pts.forEach((p,i)=>s+=`<rect class="hit" x="${x(p[0])-18}" y="${T}" width="36" height="${H-T-B}" data-i="${i}"/>`);
+  s+='</svg>'; el('c-suite').innerHTML=s;
+  el('c-suite').querySelectorAll('.hit').forEach(n=>{const p=pts[+n.dataset.i];
+    bind(n,p[2],[['Tests passing',p[1],S(1)],['mypy errors',0]]);});
+  el('tv-suite').innerHTML='<table><thead><tr><th>Version</th><th>Tests passing</th></tr></thead><tbody>'
+    +pts.map(p=>`<tr><td>${p[2]}</td><td>${p[1]}</td></tr>`).join('')+'</tbody></table>';
+})();
+
+/* ── 9 · quality flow ───────────────────────────────────────────────────── */
+(function(){
+  // Only versions whose review step has actually run. A version at 0 findings because
+  // review has not happened yet is not "clean" — rendering it as an empty bar would lie.
+  const rows=V.filter(v=>v.find && v.steps && v.steps.review>0);
+  const pend=V.filter(v=>v.steps && !v.steps.review).map(v=>v.id);
+  const W_=980,H=110,L=54,R=110,T=10,B=24, maxX=6;
+  const sx=v=>(v/maxX)*(W_-L-R);
+  const bh=Math.min(24,(H-T-B)/rows.length-12);
+  let s=svg(W_,H);
+  [0,2,4,6].forEach(g=>{s+=`<line class="gridline" x1="${L+sx(g)}" x2="${L+sx(g)}" y1="${T}" y2="${H-B}"/>
+    <text class="ax" x="${L+sx(g)}" y="${H-8}" text-anchor="middle">${g}</text>`;});
+  rows.forEach((v,i)=>{
+    const yy=T+i*((H-T-B)/rows.length)+((H-T-B)/rows.length-bh)/2;
+    let cx=L,total=0;
+    s+=`<text class="axl" x="${L-8}" y="${yy+bh/2+4}" text-anchor="end">${v.id}</text>`;
+    QSEG.forEach(([k,label,slot],si)=>{
+      const d=v.find[k]; if(!d) return; total+=d;
+      const w=Math.max(0,sx(d)-2);
+      s+=`<rect class="mark qs" data-v="${i}" data-k="${k}" x="${cx}" y="${yy}" width="${w}" height="${bh}" rx="4" fill="${S(slot)}"/>`;
+      cx+=sx(d);
+    });
+    const density=(total/v.issues).toFixed(2);
+    s+=`<text class="dlabel" x="${cx+9}" y="${yy+bh/2+4}">${total} · ${density}/issue</text>`;
+  });
+  s+='</svg>';
+  el('c-q').innerHTML=s+(pend.length?`<p class="note" style="margin:8px 0 0">${pend.join(', ')} — review not run yet; excluded rather than drawn as zero.</p>`:'');
+  el('c-q').querySelectorAll('.qs').forEach(n=>{
+    const v=rows[+n.dataset.v], k=n.dataset.k, m=QSEG.find(x=>x[0]===k);
+    bind(n,`${v.id} · ${m[1]}`,[['Findings',v.find[k],S(m[2])]]);});
+  el('l-q').innerHTML=QSEG.map(([k,l,slot])=>`<span><i class="key" style="background:${S(slot)}"></i>${l}</span>`).join('');
+  el('tv-q').innerHTML='<table><thead><tr><th>Version</th>'+QSEG.map(q=>`<th>${q[1]}</th>`).join('')+'<th>Per issue</th></tr></thead><tbody>'
+    +rows.map(v=>{const t=QSEG.reduce((a,[k])=>a+v.find[k],0);
+      return `<tr><td>${v.id}</td>${QSEG.map(([k])=>`<td>${v.find[k]}</td>`).join('')}<td>${(t/v.issues).toFixed(2)}</td></tr>`;}).join('')+'</tbody></table>';
+})();
+
+/* ── table-view toggles + theme ─────────────────────────────────────────── */
+document.querySelectorAll('.tv').forEach(b=>b.addEventListener('click',()=>{
+  const t=el(b.dataset.tv), on=b.getAttribute('aria-pressed')==='true';
+  b.setAttribute('aria-pressed',String(!on)); t.hidden=on;
+  b.previousElementSibling; // chart stays visible — the table is a twin, not a replacement
+}));
+el('theme').addEventListener('click',()=>{
+  const cur=document.documentElement.getAttribute('data-theme');
+  const sysDark=matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.setAttribute('data-theme', cur? (cur==='dark'?'light':'dark') : (sysDark?'light':'dark'));
+});
+
+/* live clock, so the prototype reads as a live view */
+let t=51*60+47;
+setInterval(()=>{t++; el('h-elapsed').textContent=mmss(t);},1000);
+</script>
+</body>
+</html>

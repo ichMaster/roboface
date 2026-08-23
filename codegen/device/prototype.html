@@ -1,0 +1,459 @@
+<title>Core2 device screens — prototype</title>
+<style>
+:root{ color-scheme: dark; }
+*{ box-sizing:border-box; }
+body{
+  margin:0; padding:32px 24px 64px;
+  font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+  background:#111110; color:#e8e7e3;
+}
+.wrap{ max-width:1180px; margin:0 auto; }
+h1{ font-size:20px; margin:0 0 6px; letter-spacing:-.01em; }
+.lede{ color:#898781; max-width:74ch; margin:0 0 4px; }
+.lede code{ color:#c3c2b7; }
+.bar{ display:flex; gap:10px; align-items:center; margin:20px 0 26px; flex-wrap:wrap;
+      color:#6f6d68; font-size:12.5px; }
+.bar code{ color:#c3c2b7; }
+.grid{ display:flex; flex-wrap:wrap; gap:30px; }
+figure{ margin:0; }
+figcaption{ margin-top:11px; width:360px; }
+.cap-t{ font-weight:650; font-size:13px; letter-spacing:.02em; }
+.cap-d{ color:#898781; font-size:12.5px; margin-top:3px; }
+.cap-f{ color:#6f6d68; font-size:11.5px; margin-top:5px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
+
+/* ── the device ─────────────────────────────────────────────────────────── */
+.bezel{
+  width:360px; padding:20px; border-radius:15px;
+  background:linear-gradient(#3a3a38,#232322);
+  box-shadow:0 10px 26px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.09);
+}
+.screen{
+  width:320px; height:240px; border-radius:3px; overflow:hidden;
+  position:relative; display:block;
+}
+.btns{ display:flex; justify-content:space-around; padding-top:13px; }
+.btns i{ width:44px; height:5px; border-radius:3px; background:rgba(255,255,255,.15); display:block; }
+
+/* ── screen palette — the DARK block of codegen/dashboard/static/styles.css,
+      verbatim. Dark steps there are selected for the dark surface, not an
+      automatic flip of the light ones, so they are copied rather than derived.
+      The device ships dark-only: it sits on a desk in a lit room, and one
+      palette is one palette to keep validated. ───────────────────────────── */
+.scr{
+  --surface-1:#1a1a19; --plane:#0d0d0d;
+  --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#898781;
+  --grid:#2c2c2a; --axis:#383835;
+  --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70;
+  --series-4:#c98500; --series-5:#d55181;
+  --deemph:#3a3a37;
+  --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+}
+.scr text{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif; }
+
+/* ── the mapping table ──────────────────────────────────────────────────── */
+table{ border-collapse:collapse; width:100%; margin-top:14px; font-size:12.5px; }
+th,td{ text-align:left; padding:7px 12px 7px 0; border-bottom:1px solid rgba(255,255,255,.09); vertical-align:top; }
+th{ color:#898781; font-weight:600; font-size:11.5px; letter-spacing:.04em; text-transform:uppercase; }
+td code{ font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; color:#3987e5; }
+h2{ font-size:15px; margin:52px 0 4px; }
+.note{ color:#898781; font-size:12.5px; max-width:80ch; }
+.frames{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; line-height:1.65;
+  background:#1a1a19; border:1px solid rgba(255,255,255,.09); border-radius:8px;
+  padding:14px 16px; overflow-x:auto; margin-top:12px; color:#c3c2b7;
+}
+</style>
+
+<div class="wrap">
+<h1>Core2 device screens — prototype</h1>
+<p class="lede">
+  Six screens at true <strong>320×240</strong>, drawn from the <em>exact</em> BLE frames defined in
+  <code>device-frontends-vision.md</code>. Every number below is real, measured from
+  <code>run-20260815-213849</code> — 42 issues, 15 releases, 4.1 hours.
+</p>
+<p class="lede">
+  Nothing here is pseudographics: the arcs, curves and bars are true anti-aliased vector shapes,
+  which is what <code>LovyanGFX</code> draws on the real panel. This file is a design reference —
+  it is never served and never flashed.
+</p>
+
+<div class="bar">
+  Dark only — the palette is copied verbatim from the dark block of
+  <code>dashboard/static/styles.css</code>, so the panel and the browser read as one product.
+</div>
+
+<div class="grid" id="screens"></div>
+
+<h2>Frames these screens render from</h2>
+<p class="note">
+  The device asks; the bridge answers. <code>{"want":N}</code> goes out over Notify, the JSON comes
+  back over Write. Two loops run independently: <strong>notifications every 5 s</strong> — the only
+  channel that can buzz, and so the only real latency requirement — and <strong>the active screen
+  every 15–120 s</strong>, paced by how fast that screen's own data actually changes. Every value
+  arrives display-ready; the device computes nothing at all, and each answer carries
+  <code>next</code>, telling it when to ask again.
+</p>
+<div class="frames" id="frames"></div>
+
+<h2>Element → frame field → draw call</h2>
+<table id="map"></table>
+
+<h2>Why this needs no font work</h2>
+<p class="note">
+  Every curve, ring, bar and dot on these screens is a <em>shape</em>, not a glyph. The frame carries
+  <code>"sp":"7511232"</code> and <code>"vs":"##############&gt;"</code> — digits and ASCII flags — and the
+  firmware turns them into geometry. So the only glyphs the panel ever renders are
+  <code>[A-Za-z0-9 .:/%-]</code>, which the stock Latin font already covers. No Cyrillic set, no custom
+  glyph range, and no box-of-question-marks surprise that only shows up on hardware.
+</p>
+
+<h2>Budget</h2>
+<p class="note">
+  A full-screen RGB565 sprite is <strong>150 KB</strong> — 1.8% of the Core2's 8 MB PSRAM. A complete
+  anti-aliased repaint costs roughly <strong>110 ms</strong> against a <strong>15,000 ms</strong> budget
+  on the fastest screen — under <strong>1%</strong>. The usual reason embedded UIs look crude, no time
+  in the frame, does not apply at these rates.
+</p>
+<p class="note">
+  There are no partial redraws, and that is not an optimisation we declined — it is what
+  statelessness leaves. Dirty-region tracking needs a previous frame to compare against, and the
+  device never keeps one. Every answer repaints the whole screen.
+</p>
+</div>
+
+<script>
+/* ═══ THE FRAMES — byte-for-byte what arrives over BLE ═══════════════════ */
+const CORE = {v:1,s:1,next:15,st:"run",cur:"v05.03 RF-112",stp:"execute-issues",
+              el:"04:25",ct:"2m",cc:1,pct:91,idit:"42/46",eta:"30-60 min"};
+const S2 = {v:1,s:2,next:120,sp:"7511232",now:"6/h",med:"1:42",left:4};
+const S3 = {v:1,s:3,next:60,vs:"##############>",done:"14/15"};
+const S4 = {v:1,s:4,next:60,fp:"76%",rt:"10/42",pct:24,
+            top:["RF-086 x4","RF-084 x3"],fnd:[0,6,3],open:"v01.02 MEDIUM"};
+const S5 = {v:1,s:5,next:60,st:[[6,312,41],[7,49,26],[7,135,16],[7,30,10],[7,53,7]],
+            tp:"238",tps:"1235667",cov:42};
+const S6 = {v:1,s:6,next:60,bd:"4646464633292524242222201714111007050404",
+            tot:46,est:58,rem:4,el:15928,lo:1200,hi:1800,err:26};
+/* want:0 — the notification channel. Alerts and events are one list; only `b` differs. */
+const S0 = {v:1,s:0,next:5,n:[{k:"release",t:"v05.03 tagged",b:0},
+                              {k:"retry",t:"RF-086 x4",b:2,g:4}]};
+
+const W=320,H=240,HDR=30;
+const px = v => v;
+
+/* ─── helpers ─────────────────────────────────────────────────────────── */
+const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+
+function header(title, right, dotColor){
+  const dot = dotColor
+    ? `<circle cx="14" cy="${HDR/2}" r="4.5" fill="${dotColor}"/>`
+    : "";
+  return `
+    <rect x="0" y="0" width="${W}" height="${HDR}" fill="var(--surface-1)"/>
+    <line x1="0" y1="${HDR}.5" x2="${W}" y2="${HDR}.5" stroke="var(--grid)" stroke-width="1"/>
+    ${dot}
+    <text x="${dotColor?26:14}" y="${HDR/2+4.5}" font-size="13" font-weight="650"
+          letter-spacing=".6" fill="var(--text-primary)">${esc(title)}</text>
+    <text x="${W-14}" y="${HDR/2+4.5}" font-size="13" text-anchor="end"
+          font-variant-numeric="tabular-nums" fill="var(--text-secondary)">${esc(right)}</text>`;
+}
+
+/* smooth catmull-rom → cubic bezier */
+function smoothPath(pts){
+  if(pts.length<2) return "";
+  let d=`M${pts[0][0]},${pts[0][1]}`;
+  for(let i=0;i<pts.length-1;i++){
+    const p0=pts[i-1]||pts[i], p1=pts[i], p2=pts[i+1], p3=pts[i+2]||p2;
+    const c1x=p1[0]+(p2[0]-p0[0])/6, c1y=p1[1]+(p2[1]-p0[1])/6;
+    const c2x=p2[0]-(p3[0]-p1[0])/6, c2y=p2[1]-(p3[1]-p1[1])/6;
+    d+=`C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+  }
+  return d;
+}
+
+const CC = ["var(--good)","var(--warning)","var(--critical)"];
+
+/* ─── 1 · NOW ─────────────────────────────────────────────────────────── */
+function now(){
+  const cx=250, cy=132, r=44, C=2*Math.PI*r;
+  const [v,ver,iss] = [CORE.cur, ...CORE.cur.split(" ")];
+  return `
+  ${header("RUNNING", CORE.el, "var(--good)")}
+  <text x="16" y="86"  font-size="34" font-weight="700" letter-spacing="-.5"
+        fill="var(--text-primary)">${esc(ver)}</text>
+  <text x="16" y="118" font-size="21" font-weight="600"
+        fill="var(--series-1)">${esc(iss)}</text>
+  <text x="16" y="150" font-size="14" fill="var(--text-secondary)">${esc(CORE.stp)}</text>
+
+  <rect x="16" y="162" width="74" height="23" rx="11.5" fill="${CC[CORE.cc]}" opacity=".16"/>
+  <circle cx="28" cy="173.5" r="3.5" fill="${CC[CORE.cc]}"/>
+  <text x="38" y="178" font-size="13" font-variant-numeric="tabular-nums"
+        font-weight="600" fill="${CC[CORE.cc]}">${esc(CORE.ct)}</text>
+
+  <text x="16" y="214" font-size="13" fill="var(--text-muted)">ETA</text>
+  <text x="46" y="214" font-size="14" font-weight="600"
+        fill="var(--text-secondary)">${esc(CORE.eta)}</text>
+
+  <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--deemph)" stroke-width="9"/>
+  <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--series-1)" stroke-width="9"
+          stroke-linecap="round" stroke-dasharray="${C*CORE.pct/100} ${C}"
+          transform="rotate(-90 ${cx} ${cy})"/>
+  <text x="${cx}" y="${cy+3}" font-size="26" font-weight="700" text-anchor="middle"
+        font-variant-numeric="tabular-nums" fill="var(--text-primary)">${CORE.pct}%</text>
+  <text x="${cx}" y="${cy+23}" font-size="13" text-anchor="middle"
+        font-variant-numeric="tabular-nums" fill="var(--text-muted)">${esc(CORE.idit)}</text>`;
+}
+
+/* ─── 2 · VELOCITY ────────────────────────────────────────────────────── */
+function velocity(){
+  const vals=[...S2.sp].map(Number);
+  const x0=18,x1=302,y0=56,y1=140;
+  const max=7;
+  const pts=vals.map((v,i)=>[x0+i*(x1-x0)/(vals.length-1), y1-(v/max)*(y1-y0)]);
+  const line=smoothPath(pts);
+  const area=`${line}L${x1},${y1+1}L${x0},${y1+1}Z`;
+  const real=[15,7,2,2,6,4,6];
+  const grid=[0,.5,1].map(f=>`<line x1="${x0}" y1="${y0+f*(y1-y0)}" x2="${x1}" y2="${y0+f*(y1-y0)}"
+        stroke="var(--grid)" stroke-width="1"/>`).join("");
+  const dots=pts.map((p,i)=>i===pts.length-1
+    ? `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="4" fill="var(--series-1)"
+               stroke="var(--plane)" stroke-width="2"/>` : "").join("");
+  const labels=real.map((v,i)=>`<text x="${pts[i][0].toFixed(1)}" y="156" font-size="10"
+        text-anchor="middle" font-variant-numeric="tabular-nums" fill="var(--text-muted)">${v}</text>`).join("");
+  const kv=(x,l,v,c)=>`
+    <text x="${x}" y="188" font-size="10.5" letter-spacing=".05" fill="var(--text-muted)">${l}</text>
+    <text x="${x}" y="210" font-size="19" font-weight="650" font-variant-numeric="tabular-nums"
+          fill="${c||"var(--text-primary)"}">${v}</text>`;
+  return `
+  ${header("VELOCITY", CORE.el)}
+  <defs><linearGradient id="vg" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="var(--series-1)" stop-opacity=".42"/>
+    <stop offset="1" stop-color="var(--series-1)" stop-opacity="0"/>
+  </linearGradient></defs>
+  ${grid}
+  <path d="${area}" fill="url(#vg)"/>
+  <path d="${line}" fill="none" stroke="var(--series-1)" stroke-width="2.5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  ${dots}${labels}
+  <text x="${x1}" y="48" font-size="10.5" text-anchor="end" fill="var(--text-muted)">issues / 30 min</text>
+  ${kv(18,"CURRENT",CORE.ct,CC[CORE.cc])}
+  ${kv(97,"MEDIAN",S2.med)}
+  ${kv(176,"RATE",S2.now)}
+  ${kv(250,"LEFT",S2.left)}`;
+}
+
+/* ─── 3 · PLAN ────────────────────────────────────────────────────────── */
+function plan(){
+  const groups=[4,3,3,2,3];
+  const col={ "#":"var(--good)", ">":"var(--series-1)", ".":"var(--deemph)", "!":"var(--critical)" };
+  let k=0, out="", y=64;
+  groups.forEach((n,gi)=>{
+    out+=`<text x="18" y="${y+5}" font-size="13" font-weight="600"
+             fill="var(--text-secondary)">v0${gi+1}</text>`;
+    for(let i=0;i<n;i++){
+      const s=S3.vs[k++]||".", cx=68+i*34;
+      out += s===">"
+        ? `<circle cx="${cx}" cy="${y}" r="11" fill="var(--series-1)" opacity=".22"/>
+           <circle cx="${cx}" cy="${y}" r="7" fill="${col[s]}"/>`
+        : `<circle cx="${cx}" cy="${y}" r="7" fill="${col[s]}"/>`;
+    }
+    y+=33;
+  });
+  const lg=[["#","done"],[">","running"],[".","pending"]].map((e,i)=>`
+    <circle cx="${186+i*46}" cy="216" r="5" fill="${col[e[0]]}"/>
+    <text x="${196+i*46}" y="220" font-size="10.5" fill="var(--text-muted)">${e[1]}</text>`).join("");
+  return `
+  ${header("PLAN", S3.done)}
+  ${out}
+  <text x="18" y="220" font-size="11" fill="var(--text-muted)">15 versions</text>
+  ${lg}`;
+}
+
+/* ─── 4 · FRICTION ────────────────────────────────────────────────────── */
+function friction(){
+  const [h,m,l]=S4.fnd, tot=h+m+l;
+  const sev=[["HIGH",h,"var(--critical)"],["MED",m,"var(--serious)"],["LOW",l,"var(--warning)"]];
+  const chips=sev.map((s,i)=>`
+    <rect x="${18+i*66}" y="150" width="58" height="34" rx="8"
+          fill="${s[2]}" opacity="${s[1]?".17":".07"}"/>
+    <text x="${47+i*66}" y="167" font-size="17" font-weight="700" text-anchor="middle"
+          font-variant-numeric="tabular-nums"
+          fill="${s[1]?s[2]:"var(--text-muted)"}">${s[1]}</text>
+    <text x="${47+i*66}" y="179" font-size="9" text-anchor="middle"
+          letter-spacing=".06" fill="var(--text-muted)">${s[0]}</text>`).join("");
+  const bar=(x,y,w,pct,c)=>`
+    <rect x="${x}" y="${y}" width="${w}" height="7" rx="3.5" fill="var(--deemph)"/>
+    <rect x="${x}" y="${y}" width="${(w*pct/100).toFixed(1)}" height="7" rx="3.5" fill="${c}"/>`;
+  return `
+  ${header("FRICTION", CORE.el)}
+  <text x="18" y="58" font-size="10.5" letter-spacing=".05" fill="var(--text-muted)">FIRST-PASS</text>
+  <text x="18" y="84" font-size="27" font-weight="700" font-variant-numeric="tabular-nums"
+        fill="var(--good)">${S4.fp}</text>
+  ${bar(18,94,128,76,"var(--good)")}
+
+  <text x="176" y="58" font-size="10.5" letter-spacing=".05" fill="var(--text-muted)">RETRIES</text>
+  <text x="176" y="84" font-size="27" font-weight="700" font-variant-numeric="tabular-nums"
+        fill="var(--series-2)">${S4.rt}</text>
+  ${bar(176,94,126,S4.pct,"var(--series-2)")}
+
+  ${S4.top.map((t,i)=>`
+    <rect x="${18+i*142}" y="112" width="134" height="24" rx="7" fill="var(--series-2)" opacity=".13"/>
+    <text x="${85+i*142}" y="128" font-size="12" text-anchor="middle" font-weight="600"
+          font-variant-numeric="tabular-nums" fill="var(--series-2)">${esc(t)}</text>`).join("")}
+
+  ${chips}
+  <text x="220" y="166" font-size="11" fill="var(--text-muted)">findings</text>
+  <text x="220" y="182" font-size="19" font-weight="700" font-variant-numeric="tabular-nums"
+        fill="var(--text-primary)">${tot}</text>
+
+  <line x1="18" y1="199" x2="302" y2="199" stroke="var(--grid)"/>
+  <text x="18" y="220" font-size="12" fill="var(--text-muted)">open</text>
+  <text x="56" y="220" font-size="12.5" font-weight="600" fill="var(--serious)">${esc(S4.open)}</text>`;
+}
+
+/* ─── 5 · ANALYTICS ───────────────────────────────────────────────────── */
+function analytics(){
+  const names=["execute","upload","review","release","generate"];
+  const cols=["var(--series-1)","var(--series-2)","var(--series-3)","var(--series-4)","var(--series-5)"];
+  const mmss=s=>`${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;
+  const rows=S5.st.map((r,i)=>{
+    const y=68+i*27, [n,med,share]=r, bw=share/41*104;
+    return `
+      <text x="18" y="${y}" font-size="12.5" fill="var(--text-primary)">${names[i]}</text>
+      <text x="106" y="${y}" font-size="12" text-anchor="end" font-variant-numeric="tabular-nums"
+            fill="var(--text-muted)">${n}</text>
+      <text x="152" y="${y}" font-size="12.5" text-anchor="end" font-variant-numeric="tabular-nums"
+            fill="var(--text-secondary)">${mmss(med)}</text>
+      <rect x="164" y="${y-9}" width="${bw.toFixed(1)}" height="11" rx="5.5" fill="${cols[i]}"/>
+      <text x="302" y="${y}" font-size="12.5" text-anchor="end" font-weight="600"
+            font-variant-numeric="tabular-nums" fill="var(--text-primary)">${share}%</text>`;
+  }).join("");
+  const sv=[...S5.tps].map(Number), sx0=112,sx1=214,sy0=200,sy1=222;
+  const sp=sv.map((v,i)=>[sx0+i*(sx1-sx0)/(sv.length-1), sy1-(v/7)*(sy1-sy0)]);
+  return `
+  ${header("ANALYTICS", CORE.el)}
+  <text x="18"  y="50" font-size="9.5" letter-spacing=".07" fill="var(--text-muted)">STEP</text>
+  <text x="106" y="50" font-size="9.5" letter-spacing=".07" text-anchor="end" fill="var(--text-muted)">N</text>
+  <text x="152" y="50" font-size="9.5" letter-spacing=".07" text-anchor="end" fill="var(--text-muted)">MEDIAN</text>
+  <text x="302" y="50" font-size="9.5" letter-spacing=".07" text-anchor="end" fill="var(--text-muted)">SHARE</text>
+  <line x1="18" y1="55" x2="302" y2="55" stroke="var(--grid)"/>
+  ${rows}
+  <line x1="18" y1="186" x2="302" y2="186" stroke="var(--grid)"/>
+  <text x="18" y="214" font-size="11" fill="var(--text-muted)">tests</text>
+  <text x="18" y="228" font-size="17" font-weight="700" font-variant-numeric="tabular-nums"
+        fill="var(--good)">${S5.tp}</text>
+  <path d="${smoothPath(sp)}" fill="none" stroke="var(--good)" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="232" y="203" width="70" height="21" rx="10.5" fill="var(--warning)" opacity=".15"/>
+  <text x="267" y="217" font-size="11" text-anchor="middle" font-weight="600"
+        fill="var(--warning)">sample ${S5.cov}%</text>`;
+}
+
+/* ─── 6 · BURNDOWN ────────────────────────────────────────────────────── */
+function burndown(){
+  const rem=[]; for(let i=0;i<S6.bd.length;i+=2) rem.push(Number(S6.bd.slice(i,i+2)));
+  const x0=32,x1=302,y0=48,y1=168;
+  const yMax=S6.est, tMax=S6.el+S6.hi;
+  const X=t=>x0+(t/tMax)*(x1-x0);
+  const Y=v=>y1-(v/yMax)*(y1-y0);
+  const pts=rem.map((v,i)=>[X(S6.el*i/(rem.length-1)), Y(v)]);
+  const line=smoothPath(pts);
+  const area=`${line}L${pts[pts.length-1][0].toFixed(1)},${y1}L${x0},${y1}Z`;
+
+  // where the estimate said we would be: 58 issues burned over the same horizon
+  const estLine=`M${X(0)},${Y(S6.est)}L${X(tMax)},${Y(0)}`;
+
+  // projection: a cone to the ETA range, never a single line
+  const last=pts[pts.length-1];
+  const cone=`M${last[0].toFixed(1)},${last[1].toFixed(1)}
+              L${X(S6.el+S6.lo).toFixed(1)},${Y(0)}
+              L${X(S6.el+S6.hi).toFixed(1)},${Y(0)}Z`;
+
+  const gy=[0,S6.tot,S6.est].map(v=>`
+    <line x1="${x0}" y1="${Y(v)}" x2="${x1}" y2="${Y(v)}" stroke="var(--grid)" stroke-width="1"
+          ${v===S6.est?'stroke-dasharray="2 3"':''}/>
+    <text x="${x0-5}" y="${Y(v)+3.5}" font-size="9.5" text-anchor="end"
+          font-variant-numeric="tabular-nums" fill="var(--text-muted)">${v}</text>`).join("");
+
+  const kv=(x,l,v,c)=>`
+    <text x="${x}" y="197" font-size="10.5" letter-spacing=".05" fill="var(--text-muted)">${l}</text>
+    <text x="${x}" y="219" font-size="19" font-weight="650" font-variant-numeric="tabular-nums"
+          fill="${c||"var(--text-primary)"}">${v}</text>`;
+
+  return `
+  ${header("BURNDOWN", CORE.el)}
+  <defs><linearGradient id="bg6" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="var(--series-1)" stop-opacity=".34"/>
+    <stop offset="1" stop-color="var(--series-1)" stop-opacity="0"/>
+  </linearGradient></defs>
+  ${gy}
+  <path d="${cone}" fill="var(--series-4)" opacity=".2"/>
+  <path d="${estLine}" fill="none" stroke="var(--text-muted)" stroke-width="1.5"
+        stroke-dasharray="4 4" opacity=".8"/>
+  <path d="${area}" fill="url(#bg6)"/>
+  <path d="${line}" fill="none" stroke="var(--series-1)" stroke-width="2.5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="4"
+          fill="var(--series-1)" stroke="var(--plane)" stroke-width="2"/>
+
+  <text x="${X(0)+4}" y="${Y(S6.est)-5}" font-size="9.5" fill="var(--text-muted)">estimate ${S6.est}</text>
+  <text x="${x1}" y="182" font-size="9.5" text-anchor="end" fill="var(--text-muted)">projected finish</text>
+  <text x="${x0}" y="182" font-size="9.5" fill="var(--text-muted)">0h</text>
+
+  ${kv(18,"REMAINING",S6.rem,"var(--series-1)")}
+  ${kv(104,"ETA","25m")}
+  <rect x="182" y="200" width="120" height="23" rx="11.5" fill="var(--warning)" opacity=".15"/>
+  <text x="242" y="215" font-size="11.5" text-anchor="middle" font-weight="600"
+        fill="var(--warning)">scope est +${S6.err}%</text>`;
+}
+
+/* ─── assemble ────────────────────────────────────────────────────────── */
+const SCREENS=[
+  ["1 · NOW", now, "Up 95% of the time. The ring is the run; the pill is the current issue's age against its median — amber past 3×. Minutes, not seconds: at a 15 s poll a seconds display would visibly jump.", "want:1 · every 15 s"],
+  ["2 · VELOCITY", velocity, "Issues closed per 30 min. The dip at 1.5–2 h is real: 15 → 7 → 2 → 2 before recovering.", "want:2 · every 120 s"],
+  ["3 · PLAN", plan, "Fifteen versions grouped by phase. The running one carries a halo, so it reads without hunting.", "want:3 · every 60 s"],
+  ["4 · FRICTION", friction, "What needed a human. Zero hard failures in this run — the content is 10 retries and 9 findings.", "want:4 · every 60 s"],
+  ["5 · ANALYTICS", analytics, "Where the time went, by step type. Median, not sum — so one unclosed 155-min node cannot distort it.", "want:5 · every 60 s"],
+  ["6 · BURNDOWN", burndown, "Issues remaining. Dashed = what the estimate predicted, cone = projection to the ETA range. The flat first 50 min are real: generate and upload close no issues.", "want:6 · every 60 s"],
+];
+
+document.getElementById("screens").innerHTML = SCREENS.map(([t,fn,d,f])=>`
+  <figure>
+    <div class="bezel">
+      <svg class="screen scr" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">
+        <rect width="${W}" height="${H}" fill="var(--plane)"/>
+        ${fn()}
+      </svg>
+      <div class="btns"><i></i><i></i><i></i></div>
+    </div>
+    <figcaption>
+      <div class="cap-t">${t}</div>
+      <div class="cap-d">${d}</div>
+      <div class="cap-f">${f}</div>
+    </figcaption>
+  </figure>`).join("");
+
+document.getElementById("frames").innerHTML =
+  [["want:0",S0],["want:1",CORE],["want:2",S2],["want:3",S3],["want:4",S4],["want:5",S5],["want:6",S6]]
+    .map(([n,f])=>{
+      const j=JSON.stringify(f);
+      return `<div><span style="color:#898781">${n.padEnd(5)}</span> ${esc(j)}
+              <span style="color:#898781"> — ${new TextEncoder().encode(j).length} B</span></div>`;
+    }).join("");
+
+const MAP=[
+  ["Progress ring","<code>pct</code>","<code>drawSmoothArc()</code>","91% of 46 issues. A ring, not a bar — it reads as a proportion from across the room."],
+  ["Issue-age pill","<code>ct</code> + <code>cc</code>","<code>fillSmoothRoundRect()</code>","Bridge compares age to the step-type median and sends the colour class. Device picks a colour."],
+  ["Velocity curve","<code>sp</code>","<code>drawSmoothLine()</code> ×N","Seven digits 0–7, already bucketed and quantised on the bridge."],
+  ["Curve gradient","—","sprite + alpha blend","Pure decoration, drawn into the off-screen sprite. Costs no bytes on the wire."],
+  ["Version dots","<code>vs</code>","<code>fillSmoothCircle()</code>","One ASCII flag per version: <code>#</code> done, <code>&gt;</code> running, <code>.</code> pending, <code>!</code> failed."],
+  ["Severity chips","<code>fnd</code>","<code>fillSmoothRoundRect()</code>","<code>[0,6,3]</code> — counts only, never a finding's text."],
+  ["Share bars","<code>st[i][2]</code>","<code>fillSmoothRoundRect()</code>","Rounded ends; width is the share, colour is the series token."],
+  ["sample badge","<code>cov</code>","<code>fillSmoothRoundRect()</code>","42% — the table is built on closed spans only, and says so."],
+  ["Burndown curve","<code>bd</code>","<code>drawSmoothLine()</code> ×N","Twenty 2-digit values, remaining issues. Monotonic, so it cannot sawtooth the way <code>state.burndown</code> does."],
+  ["Estimate line","<code>est</code>","<code>drawSmoothLine()</code> dashed","Labelled <em>estimate</em>, never <em>ideal</em> — you are not meant to be on it; the gap is the measurement."],
+  ["Projection cone","<code>lo</code>,<code>hi</code>","<code>fillTriangle()</code> + alpha","A range, never a single line — the same rule the ETA already follows."],
+];
+document.getElementById("map").innerHTML =
+  `<tr><th>Element</th><th>Frame field</th><th>LovyanGFX</th><th>Note</th></tr>` +
+  MAP.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td><code>${r[2].replace(/<\/?code>/g,"")}</code></td><td style="color:#898781">${r[3]}</td></tr>`).join("");
+</script>

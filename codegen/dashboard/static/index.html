@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codegen Tracker</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="viz-root">
+<div class="wrap">
+
+  <div class="topbar">
+    <h1>Codegen Tracker</h1>
+    <span class="sub" id="h-sub"></span>
+    <span class="spacer"></span>
+    <span class="status" id="conn"></span>
+    <button class="btn" id="theme">Toggle theme</button>
+  </div>
+
+  <!-- ONE filter row, scoping everything below. Never inside a chart card. -->
+  <div class="filters">
+    <label for="f-run">Run</label>
+    <select id="f-run"><option>run-20260803-142012 (live)</option><option>run-20260802-091500</option><option>Compare last 5 runs…</option></select>
+    <label for="f-phase">Phase</label>
+    <select id="f-phase"><option>v01 — Game Core &amp; Server Foundation</option><option>All phases</option></select>
+    <label for="f-status">Status</label>
+    <select id="f-status"><option>All</option><option>Failed only</option><option>Retried only</option></select>
+  </div>
+
+  <div class="grid">
+
+    <!-- 1 · RUN HEADER — hero figure, not a chart -->
+    <div class="card c12">
+      <div class="hero">
+        <div>
+          <div class="lbl">Elapsed</div>
+          <div class="elapsed" id="h-elapsed">51:47</div>
+          <div class="sub" style="color:var(--text-muted);font-size:11.5px">min:sec</div>
+        </div>
+        <div class="eta">
+          <div class="lbl">Now</div>
+          <div class="now">v01.03 · RF-016 · validating <span class="status s-run"><span class="dot"></span>running</span></div>
+          <div class="lbl" style="margin-top:9px">Estimated to finish</div>
+          <!-- ETA is a RANGE, never a point. Blank until ≥1 version has finished. -->
+          <div class="val" id="h-eta">~38–52 min</div>
+          <div class="sub" style="color:var(--text-muted);font-size:11.5px">
+            from 15 issues sampled · 1 of 4 versions not yet decomposed, so the upper bound is wide
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2 · KPI ROW — stat tiles -->
+    <div class="card c12">
+      <div class="kpis" id="kpis"></div>
+    </div>
+
+    <!-- 3 · LIVE TREE — the primary panel; a tree, not a chart -->
+    <div class="card c6">
+      <div class="cardhead"><div>
+        <h2>Live run tree</h2>
+        <p class="note">run → phase → version → step → issue. Five nested levels of state is more than colour can carry.</p>
+      </div></div>
+      <div class="tree" id="tree"></div>
+    </div>
+
+    <!-- 4 · BURN-DOWN -->
+    <div class="card c6">
+      <div class="cardhead">
+        <div>
+          <h2>Burn-down — work remaining</h2>
+          <p class="note">Scope is <em>discovered</em>: the band is what isn't decomposed yet, widest at the start.</p>
+        </div>
+        <span class="spacer"></span>
+        <button class="btn tv" data-tv="tv-burn" aria-pressed="false">Table</button>
+      </div>
+      <div id="c-burn"></div>
+      <div class="legend">
+        <span><i class="key line" style="background:var(--series-1)"></i>Projected remaining</span>
+        <span><i class="key" style="background:var(--series-1);opacity:.28"></i>Uncertainty range</span>
+        <span><i class="key line" style="background:var(--text-muted)"></i>Ideal</span>
+      </div>
+      <div id="tv-burn" hidden></div>
+    </div>
+
+    <!-- 5 · VELOCITY -->
+    <div class="card c4">
+      <div class="cardhead">
+        <div><h2>Velocity — mean time per issue</h2>
+        <p class="note">Dots show per-issue spread; a mean alone hides its retries.</p></div>
+        <span class="spacer"></span>
+        <button class="btn tv" data-tv="tv-vel" aria-pressed="false">Table</button>
+      </div>
+      <div id="c-vel"></div>
+      <div id="tv-vel" hidden></div>
+    </div>
+
+    <!-- 6 · WHERE TIME WENT -->
+    <div class="card c8">
+      <div class="cardhead">
+        <div><h2>Where the time went</h2>
+        <p class="note">Steps are strictly gated, so this composition <em>is</em> the chronology — no Gantt needed.</p></div>
+        <span class="spacer"></span>
+        <button class="btn tv" data-tv="tv-time" aria-pressed="false">Table</button>
+      </div>
+      <div id="c-time"></div>
+      <div class="legend" id="l-time"></div>
+      <div id="tv-time" hidden></div>
+    </div>
+
+    <!-- 7 · FAILURE SURFACE -->
+    <div class="card c6">
+      <div class="cardhead">
+        <div><h2>Failure surface — attempts per issue</h2>
+        <p class="note">Emphasis, not eight hues: issues that fought back are the point.</p></div>
+        <span class="spacer"></span>
+        <button class="btn tv" data-tv="tv-fail" aria-pressed="false">Table</button>
+      </div>
+      <div id="c-fail"></div>
+      <div class="legend">
+        <span><i class="key" style="background:var(--series-2)"></i>Needed &gt;1 attempt</span>
+        <span><i class="key" style="background:var(--deemph)"></i>First-pass</span>
+      </div>
+      <div id="tv-fail" hidden></div>
+    </div>
+
+    <!-- 8 · SUITE TRAJECTORY -->
+    <div class="card c6">
+      <div class="cardhead">
+        <div><h2>Tests passing, by version</h2>
+        <p class="note">One series, so no legend box — the title names it.</p></div>
+        <span class="spacer"></span>
+        <button class="btn tv" data-tv="tv-suite" aria-pressed="false">Table</button>
+      </div>
+      <div id="c-suite"></div>
+      <p class="note" style="margin-top:8px">
+        Suite <em>duration</em> is deliberately not on this chart — 0–250 tests against 0–8 s on a second
+        y-axis would invent a correlation. It gets its own tile above.
+      </p>
+      <div id="tv-suite" hidden></div>
+    </div>
+
+    <!-- 9 · QUALITY FLOW -->
+    <div class="card c12">
+      <div class="cardhead">
+        <div><h2>Code-review findings — how many, and what closed them</h2>
+        <p class="note">Review density (findings ÷ issues shipped) is the comparable number; raw counts just track version size.</p></div>
+        <span class="spacer"></span>
+        <button class="btn tv" data-tv="tv-q" aria-pressed="false">Table</button>
+      </div>
+      <div id="c-q"></div>
+      <div class="legend" id="l-q"></div>
+      <div id="tv-q" hidden></div>
+    </div>
+
+  </div>
+
+  <p id="panel-errors" style="color:var(--critical);font-size:12px"></p>
+  <footer>
+    Every figure above is reduced from <code>codegen/runs/&lt;run&gt;/events.jsonl</code> — the run's own
+    log — via <code>tracker/reduce.py</code>. Nothing here is sampled from the working tree, so the
+    dashboard and the repo can disagree, and that disagreement is the finding. The filter row is not
+    wired yet. No external requests, no build step.
+  </footer>
+</div>
+</div>
+<div id="tip" role="status" aria-live="polite"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

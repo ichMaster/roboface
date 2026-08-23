@@ -1,0 +1,148 @@
+/* Codegen Tracker — see codegen/dashboard-specification.md §2.
+   Palette validated with the dataviz validator in both modes; do not edit a
+   --series-* value without re-running it (TRK-021 makes that a test). */
+/* ───────────────────────────────────────────────────────────────────────────
+   PALETTE — validated with dataviz/scripts/validate_palette.js
+     light  #2a78d6,#eb6834,#1baf7a,#eda100,#e87ba4  → ALL PASS
+            (contrast WARN on aqua/yellow/magenta → relief: direct labels + table view)
+     dark   #3987e5,#d95926,#199e70,#c98500,#d55181  → ALL PASS
+   Dark steps are selected for the dark surface, not an automatic flip.
+   ─────────────────────────────────────────────────────────────────────────── */
+.viz-root{
+  color-scheme: light;
+  --surface-1:#fcfcfb; --plane:#f9f9f7;
+  --text-primary:#0b0b0b; --text-secondary:#52514e; --text-muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,.10);
+  --series-1:#2a78d6; --series-2:#eb6834; --series-3:#1baf7a;
+  --series-4:#eda100; --series-5:#e87ba4;
+  --seq-200:#9ec5f4; --seq-350:#5598e7; --seq-450:#2a78d6; --seq-600:#184f95;
+  --deemph:#d6d5cf;
+  --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+  --delta-good:#006300;
+}
+@media (prefers-color-scheme: dark){
+  :root:where(:not([data-theme="light"])) .viz-root{
+    color-scheme: dark;
+    --surface-1:#1a1a19; --plane:#0d0d0d;
+    --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10);
+    --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70;
+    --series-4:#c98500; --series-5:#d55181;
+    --seq-200:#184f95; --seq-350:#256abf; --seq-450:#3987e5; --seq-600:#9ec5f4;
+    --deemph:#3a3a37;
+    --delta-good:#0ca30c;
+  }
+}
+:root[data-theme="dark"] .viz-root{
+  color-scheme: dark;
+  --surface-1:#1a1a19; --plane:#0d0d0d;
+  --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10);
+  --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70;
+  --series-4:#c98500; --series-5:#d55181;
+  --seq-200:#184f95; --seq-350:#256abf; --seq-450:#3987e5; --seq-600:#9ec5f4;
+  --deemph:#3a3a37;
+  --delta-good:#0ca30c;
+}
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--plane);color:var(--text-primary);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:14px;line-height:1.45}
+.viz-root{background:var(--plane);min-height:100vh;padding:20px}
+.wrap{max-width:1240px;margin:0 auto}
+
+/* header + filters ------------------------------------------------------- */
+.topbar{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px 16px;margin-bottom:14px}
+.topbar h1{font-size:15px;font-weight:600;margin:0;letter-spacing:.01em}
+.topbar .sub{color:var(--text-muted);font-size:12.5px}
+.spacer{flex:1}
+/* One filter row, above everything it scopes — never per-chart. */
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px}
+.filters label{color:var(--text-muted);font-size:12px;margin-right:2px}
+select,.btn{font:inherit;font-size:12.5px;color:var(--text-primary);background:var(--surface-1);
+  border:1px solid var(--border);border-radius:8px;padding:5px 9px;cursor:pointer}
+.btn[aria-pressed="true"]{background:var(--seq-200);border-color:transparent}
+
+/* cards ------------------------------------------------------------------ */
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
+.card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:14px 16px;min-width:0}
+.card h2{font-size:12.5px;font-weight:600;margin:0 0 2px;letter-spacing:.01em}
+.card .note{color:var(--text-muted);font-size:11.5px;margin:0 0 10px}
+.c12{grid-column:span 12}.c8{grid-column:span 8}.c6{grid-column:span 6}.c4{grid-column:span 4}
+@media(max-width:900px){.c8,.c6,.c4{grid-column:span 12}}
+
+/* hero ------------------------------------------------------------------- */
+.hero{display:flex;flex-wrap:wrap;gap:22px;align-items:center}
+.hero .now{font-size:15px;font-weight:600}
+.hero .elapsed{font-size:48px;font-weight:600;letter-spacing:-.02em;line-height:1.05}
+.hero .lbl{color:var(--text-muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.06em}
+.eta{border-left:1px solid var(--border);padding-left:22px}
+.eta .val{font-size:26px;font-weight:600}
+/* Status = icon + label + color. Never colour alone. */
+.status{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600}
+.dot{width:9px;height:9px;border-radius:50%;flex:none}
+.s-run .dot{background:var(--series-1);animation:pulse 1.6s ease-in-out infinite}
+.s-ok  .dot{background:var(--good)} .s-fail .dot{background:var(--critical)}
+.s-held .dot{background:var(--serious)} .s-skip .dot{background:var(--text-muted)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+/* The status word always carries the state; the pulse is decoration only. */
+@media (prefers-reduced-motion: reduce){
+  *{animation:none !important;transition:none !important}
+}
+/* Visible focus for keyboard users on every interactive mark. */
+.hit:focus-visible,.btn:focus-visible,select:focus-visible{
+  outline:2px solid var(--series-1);outline-offset:2px}
+
+/* KPI tiles -------------------------------------------------------------- */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px 18px}
+@media(max-width:1000px){.kpis{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:620px){.kpis{grid-template-columns:repeat(2,1fr)}}
+.kpi .lbl{color:var(--text-muted);font-size:11.5px;margin-bottom:3px}
+.kpi .val{font-size:25px;font-weight:600;letter-spacing:-.01em}
+.kpi .val small{font-size:14px;font-weight:500;color:var(--text-muted)}
+.kpi .delta{font-size:11.5px;color:var(--text-secondary);margin-top:1px}
+.kpi .delta.up{color:var(--delta-good)}
+
+/* tree ------------------------------------------------------------------- */
+.tree{font-size:12.5px}
+.tnode{display:flex;align-items:center;gap:8px;padding:3px 0;border-bottom:1px solid var(--grid)}
+.tnode:last-child{border-bottom:0}
+.tname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tdur{color:var(--text-muted);font-variant-numeric:tabular-nums;font-size:11.5px}
+.d1{padding-left:14px}.d2{padding-left:30px}.d3{padding-left:46px}
+.tnode.active .tname{font-weight:600}
+.tag{font-size:10.5px;color:var(--text-muted);border:1px solid var(--border);border-radius:5px;padding:0 5px}
+
+/* charts ----------------------------------------------------------------- */
+svg{display:block;width:100%;height:auto;overflow:visible}
+.ax{font-size:10.5px;fill:var(--text-muted);font-variant-numeric:tabular-nums}
+.axl{font-size:11px;fill:var(--text-secondary)}
+.dlabel{font-size:11px;fill:var(--text-primary);font-weight:600}
+.gridline{stroke:var(--grid);stroke-width:1}
+.axisline{stroke:var(--axis);stroke-width:1}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:10px;font-size:11.5px;color:var(--text-secondary)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.key{width:11px;height:11px;border-radius:3px;flex:none}
+.key.line{height:2px;border-radius:2px;width:14px}
+
+/* table view (the WCAG-clean twin every chart needs) --------------------- */
+table{border-collapse:collapse;width:100%;font-size:12px;margin-top:8px}
+th,td{text-align:right;padding:4px 8px;border-bottom:1px solid var(--grid);font-variant-numeric:tabular-nums}
+th:first-child,td:first-child{text-align:left;font-variant-numeric:normal}
+th{color:var(--text-muted);font-weight:500}
+[hidden]{display:none !important}
+.cardhead{display:flex;align-items:flex-start;gap:10px}
+.cardhead .spacer{flex:1}
+.tv{font-size:11px;padding:2px 7px}
+
+/* tooltip ---------------------------------------------------------------- */
+#tip{position:fixed;z-index:50;pointer-events:none;opacity:0;transition:opacity .09s;
+  background:var(--surface-1);border:1px solid var(--border);border-radius:8px;padding:7px 9px;
+  box-shadow:0 6px 22px rgba(0,0,0,.16);font-size:12px;max-width:250px}
+#tip .v{font-weight:600;font-size:13px}
+#tip .r{display:flex;align-items:center;gap:6px;color:var(--text-secondary);margin-top:2px}
+#tip .lk{width:12px;height:2px;border-radius:2px;flex:none}
+.hit{fill:transparent;cursor:pointer}
+.mark:hover,.mark:focus{filter:brightness(1.12)}
+footer{color:var(--text-muted);font-size:11.5px;margin-top:18px;padding-top:12px;border-top:1px solid var(--border)}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em}
