@@ -20,6 +20,10 @@
 pythonpath = ["server", "tests"]
 testpaths = ["tests"]
 addopts = "-ra"
+# A stalled server must fail, not hang. The fake device blocks on a queue with no deadline of
+# its own (see tests/fake_device.py), so without this a regression that stops the server
+# replying takes the CI job's whole wall-clock limit and leaves no failing test to point at.
+timeout = 60
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
 

@@ -75,3 +75,21 @@ def test_env_example_documents_the_v0_1_variables(repo_root: Path) -> None:
 
     for key in ("ROBOFACE_WS_HOST", "ROBOFACE_WS_PORT", "ROBOFACE_LOG_LEVEL"):
         assert f"{key}=" in text, f"{key} is missing from server/.env.example"
+
+
+def test_a_stalled_test_fails_rather_than_hanging(repo_root: Path) -> None:
+    """A suite-level deadline exists (code review #4).
+
+    The fake device blocks on a queue with no deadline of its own, so this is the only thing
+    standing between a regression that stops the server replying and a CI job that hangs
+    until its wall-clock limit. Asserted rather than assumed, because a missing plugin or a
+    dropped setting fails silently -- the suite still passes, it just stops being bounded.
+    """
+    config = _pyproject(repo_root)
+    pytest_config = config["tool"]["pytest"]["ini_options"]  # type: ignore[call-overload, index]
+
+    assert isinstance(pytest_config["timeout"], int)
+    assert 0 < pytest_config["timeout"] <= 300
+
+    requirements = (repo_root / "requirements-dev.txt").read_text(encoding="utf-8")
+    assert "pytest-timeout" in requirements, "the setting is inert without the plugin"

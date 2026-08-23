@@ -38,9 +38,12 @@ from starlette.websockets import WebSocketDisconnect
 
 FrameT = TypeVar("FrameT", bound=Frame)
 
-#: How long a receive waits before the test is declared hung. Generous enough for a loaded
-#: CI runner, short enough that a deadlock fails the suite instead of stalling it.
-DEFAULT_TIMEOUT_S = 5.0
+# NOTE there is deliberately no per-receive timeout here. `WebSocketTestSession.receive_text`
+# blocks on a queue, and wrapping each call in a thread with a deadline would leak the
+# blocked thread on every timeout. The bound lives one level up instead: `pytest-timeout` in
+# pyproject.toml turns a stalled server into a failing test with a traceback at the blocked
+# line, rather than a CI job that hangs until its own wall-clock limit kills it. `recv_until`
+# bounds how many frames are *skipped*, which is a different thing and not a substitute.
 
 
 class FakeDevice:
