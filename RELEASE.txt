@@ -1,6 +1,25 @@
 RoboFace -- release notes
 =========================
 
+Version 0.2.1 (2026-08-23)
+---------------------------
+Post-release hardening on phase v0.2. The end-of-phase sweep over the v0.1 and
+v0.2 code reviews found one still-unfixed MEDIUM finding.
+
+- orchestrator: the conversation window is bounded at 40 messages, trimmed from
+  the front. Session history grew by two messages per turn with no cap and the
+  whole of it was resent to the model every turn, so a long-lived connection cost
+  more per turn than the last one did and would eventually meet the context limit
+  as an unexplainable llm_failed.
+
+  The v0.2 review had deferred this to v4.2, reasoning that a window here would
+  pre-empt that phase's design. The sweep found that reasoning half wrong:
+  ARCHITECTURE already specifies the number -- the rolling 40-message window --
+  and what belongs to v4.2 is the persistence, not the bound. ARCHITECTURE now
+  says so explicitly, so v4.2 adds SQLite behind an existing window.
+
+No contract changed. 333 tests passing.
+
 Version 0.2.0 (2026-08-23)
 ---------------------------
 Roadmap phase v0.2 -- Gemini and the orchestrator. The echo becomes a
