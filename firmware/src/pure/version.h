@@ -6,6 +6,12 @@
 
 #pragma once
 
+// Both environments must agree on the language standard, or the code the host tests prove is not
+// the code the board runs. The ESP32 core appends its own -std=gnu++11; platformio.ini unsets it,
+// and this is what notices if that ever stops working -- in the build, in whichever environment
+// broke, rather than as a puzzling constexpr error three headers away.
+static_assert(__cplusplus >= 201703L, "RoboFace firmware requires C++17 in every environment");
+
 namespace roboface {
 
 // Kept in step with the repository VERSION file by `release-version`. It is announced nowhere

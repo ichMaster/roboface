@@ -34,10 +34,14 @@ class Backoff {
           multiplier_(multiplier < 2 ? 2 : multiplier),
           current_ms_(base_ms == 0 ? 1 : base_ms) {}
 
+    // Not `constexpr`: these mutate, they are only ever called at run time -- from a supervisor,
+    // with a draw from the hardware RNG -- and a mutating constexpr member is a C++14 feature the
+    // board's toolchain does not reliably offer. The const accessors keep theirs.
+    //
     // The delay before the next attempt, then grow. `jitter_permille` is 0..1000 and is applied as
     // a *subtraction* of up to 25% -- retrying early is harmless, retrying late compounds with the
     // ceiling, and only spreading downward keeps the ceiling meaningful.
-    constexpr uint32_t nextDelayMs(uint16_t jitter_permille = 0) {
+    uint32_t nextDelayMs(uint16_t jitter_permille = 0) {
         const uint32_t base = current_ms_;
         grow();
 
@@ -52,12 +56,12 @@ class Backoff {
     // Call on a successful connect. Without this a device that flaps once an hour would keep
     // climbing toward the ceiling all day and eventually respond to a two-second outage with a
     // thirty-second wait.
-    constexpr void reset() { current_ms_ = base_ms_; }
+    void reset() { current_ms_ = base_ms_; }
 
     constexpr uint32_t attempts() const { return attempts_; }
 
   private:
-    constexpr void grow() {
+    void grow() {
         ++attempts_;
         if (current_ms_ >= ceiling_ms_ / multiplier_) {
             current_ms_ = ceiling_ms_;
