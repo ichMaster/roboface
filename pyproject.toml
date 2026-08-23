@@ -12,7 +12,12 @@
 # would silently merge. tests/test_repo_scaffold.py asserts they stay separate.
 
 [tool.pytest.ini_options]
-pythonpath = ["server"]
+# "server" makes `roboface_server` importable without installing it. "tests" makes the
+# shared fake-device harness importable as `fake_device` from any test module -- the tests
+# tree is deliberately __init__.py-free, so without this the harness is reachable only by
+# accident of pytest's path insertion order, and conftest.py (which loads first) cannot see
+# it at all.
+pythonpath = ["server", "tests"]
 testpaths = ["tests"]
 addopts = "-ra"
 asyncio_mode = "strict"

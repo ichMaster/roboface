@@ -26,7 +26,9 @@ def test_pytest_is_configured_for_the_product_suite_only(repo_root: Path) -> Non
     pytest_config = config["tool"]["pytest"]["ini_options"]  # type: ignore[call-overload, index]
 
     assert pytest_config["testpaths"] == ["tests"]
-    assert pytest_config["pythonpath"] == ["server"]
+    # "tests" is on the path so conftest.py can import the shared fake-device harness;
+    # the tests tree is deliberately __init__.py-free.
+    assert pytest_config["pythonpath"] == ["server", "tests"]
 
 
 def test_root_collection_never_reaches_codegen(repo_root: Path) -> None:

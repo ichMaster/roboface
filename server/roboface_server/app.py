@@ -9,6 +9,7 @@ an ASGI stack -- and what will let the WSS/TLS termination change without touchi
 from __future__ import annotations
 
 from collections.abc import MutableMapping
+from contextlib import suppress
 from typing import Any
 
 import uvicorn
@@ -66,7 +67,18 @@ class WebSocketTransport:
         raise Disconnected(f"unexpected websocket message: {message.get('type')!r}")
 
     async def close(self, code: int = WS_CLOSE_NORMAL) -> None:
-        if self._websocket.client_state is not WebSocketState.DISCONNECTED:
+        """Close once, idempotently.
+
+        The rejection path closes the socket inside the router and the endpoint closes again
+        in its `finally`, so this is reached twice on every rejected `hello`. The state that
+        matters is `application_state` -- what *this* side has already sent -- not
+        `client_state`; guarding on the latter lets the second close through and Starlette
+        raises "Cannot call send once a close message has been sent".
+        """
+        if self._websocket.application_state is WebSocketState.DISCONNECTED:
+            return
+        # The peer can still vanish between that check and this send.
+        with suppress(RuntimeError):
             await self._websocket.close(code)
 
 
