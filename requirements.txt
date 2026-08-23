@@ -5,3 +5,6 @@ fastapi>=0.115
 uvicorn[standard]>=0.32
 websockets>=13.0
 python-dotenv>=1.0
+# Chat and vision, and nothing else (MISSION: Gemini only). Imported lazily inside
+# providers/gemini.py so the default test suite runs without it.
+google-genai>=1.0

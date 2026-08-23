@@ -10,6 +10,7 @@ asserted here rather than trusted.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tomllib
@@ -93,3 +94,39 @@ def test_a_stalled_test_fails_rather_than_hanging(repo_root: Path) -> None:
 
     requirements = (repo_root / "requirements-dev.txt").read_text(encoding="utf-8")
     assert "pytest-timeout" in requirements, "the setting is inert without the plugin"
+
+
+def test_the_live_suite_cannot_run_by_accident(repo_root: Path) -> None:
+    """No paid call is reachable by typing `pytest` (ARCHITECTURE §Testing and CI).
+
+    Two independent guards, because either alone rots: the default collection excludes
+    `tests/live`, *and* every test in it is skipped unless `ROBOFACE_LIVE_TESTS=1`. Asserted
+    rather than trusted — a guard that silently stops guarding is worse than none, since the
+    green run looks identical.
+    """
+    config = _pyproject(repo_root)
+    pytest_config = config["tool"]["pytest"]["ini_options"]  # type: ignore[call-overload, index]
+
+    assert "tests/live" in pytest_config["norecursedirs"]
+
+    collected = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert collected.returncode == 0, collected.stdout + collected.stderr
+    assert "tests/live" not in collected.stdout, "a paid test was collected by a bare `pytest`"
+
+    # And if it is collected explicitly, it still skips without the opt-in.
+    explicit = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/live", "-q", "--no-header"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env={key: value for key, value in os.environ.items() if key != "ROBOFACE_LIVE_TESTS"},
+    )
+    assert "skipped" in explicit.stdout, explicit.stdout + explicit.stderr
+    assert " passed" not in explicit.stdout, "a live test ran without the opt-in"

@@ -18,7 +18,11 @@
 # accident of pytest's path insertion order, and conftest.py (which loads first) cannot see
 # it at all.
 pythonpath = ["server", "tests"]
+# `tests/live` is excluded from the default run: it is the only place that makes a paid
+# call, and it must be impossible to reach by typing `pytest`. Run it deliberately with
+# `ROBOFACE_LIVE_TESTS=1 pytest tests/live`.
 testpaths = ["tests"]
+norecursedirs = ["tests/live"]
 addopts = "-ra"
 # A stalled server must fail, not hang. The fake device blocks on a queue with no deadline of
 # its own (see tests/fake_device.py), so without this a regression that stops the server
