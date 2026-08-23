@@ -1,0 +1,37 @@
+RoboFace -- release notes
+=========================
+
+Version 0.1.0 (2026-08-23)
+---------------------------
+Roadmap phase v0.1 -- Server skeleton and the wire contract. The first release:
+a server exists, a fake device can talk to it, and the wire format is pinned.
+
+- protocol: the WS device<->server seam as a pure module -- the full message
+  vocabulary in both directions, the eleven-value ErrorCode enum, the five
+  capability flags, PROTO_VERSION 1 with no compatibility window, the
+  PCM16/16 kHz/mono constants, hello negotiation, and the rule that binary
+  frames carry raw payloads with no envelope. Pinned by a contract test.
+- router: one connection state machine per device -- awaiting_hello -> ready ->
+  closing, ping/pong, clean teardown on every path. text_in is answered through
+  an injected Responder, which echoes in v0.1 and becomes the orchestrator in
+  v0.2.
+- app: the FastAPI application and its /ws endpoint, with the WebSocket adapter
+  that keeps the router framework-free.
+- config: ROBOFACE_WS_HOST, ROBOFACE_WS_PORT and ROBOFACE_LOG_LEVEL, read from
+  the environment and server/.env, with both sources injectable for tests.
+- logging: one JSON object per line, keyed by device_id and session_id bound
+  once per connection. Bodies are never logged -- a length is.
+- tests: a reusable fake device that speaks the protocol, plus unit, contract
+  and integration suites. 174 passing, no paid API call, no hardware.
+- CI: ruff, strict mypy and pytest on every push and pull request.
+
+Code review of the phase fixed four findings: inbound text frames are now capped
+at 64 KiB and refused before parsing; a log field can no longer overwrite the
+device_id or session_id it claims to describe; an unrecognised log level falls
+back instead of raising out of the router and dropping a live connection; and a
+stalled server now fails the suite instead of hanging it.
+
+Known open question, deliberately not decided here: ErrorCode has no value
+meaning "the device sent something this server cannot parse", so a malformed
+frame is reported as `internal`. See specification/roadmap/implementation/
+v0.1-code-review.md, finding 9.

@@ -12,5 +12,5 @@ via pytest's `pythonpath`; the package is never installed.
 __all__ = ["__version__"]
 
 #: The running server version. Kept in step with the release tag `vA.B.C` by
-#: `release-version`; v0.1 is the first phase, so nothing has been released yet.
-__version__ = "0.0.0"
+#: `release-version`, and with the `version=` string the FastAPI app reports.
+__version__ = "0.1.0"
