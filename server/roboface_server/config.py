@@ -70,6 +70,28 @@ class Settings:
     gemini_model: str
     gemini_thinking_budget: int
 
+    def __repr__(self) -> str:
+        """Never render the key.
+
+        The generated dataclass ``__repr__`` printed all 39 characters of a live credential,
+        and a ``Settings`` reaches text by too many ordinary routes to rely on nobody taking
+        one: an unhandled traceback that renders locals, a ``log(..., settings=settings)``
+        that the JSON formatter would happily stringify, a ``print`` while debugging, a crash
+        reporter. The v0.1 review's standard for a log line -- that it stays safe to paste
+        into an issue -- applies at least as strongly to the module that owns the secrets.
+
+        ``***`` and ``unset``, never a prefix and never a length: both of those are still
+        information about a credential, and neither helps anyone debug more than knowing
+        whether it is there at all.
+        """
+        key = "***" if self.gemini_api_key else "unset"
+        return (
+            f"Settings(ws_host={self.ws_host!r}, ws_port={self.ws_port!r}, "
+            f"log_level={self.log_level!r}, gemini_api_key={key}, "
+            f"gemini_model={self.gemini_model!r}, "
+            f"gemini_thinking_budget={self.gemini_thinking_budget!r})"
+        )
+
     def require_gemini_api_key(self) -> str:
         """The key, or a clear failure.
 

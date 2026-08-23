@@ -206,3 +206,67 @@ def test_inline_comments_in_the_env_file_are_not_part_of_the_value(tmp_path: Pat
     )
 
     assert load_settings({}, env_file=env_file).gemini_model == "gemini-2.5-flash"
+
+
+# ---------------------------------------------------------------------------------------
+# The key never renders (code review #1)
+# ---------------------------------------------------------------------------------------
+
+
+SECRET = "AIzaSyTOTALLY-SECRET-KEY-12345"
+
+
+def test_repr_never_contains_the_api_key(tmp_path: Path) -> None:
+    """A Settings reaches text by too many ordinary routes to rely on nobody taking one.
+
+    The generated dataclass repr printed all 39 characters of a live credential.
+    """
+    settings = load_settings({"GEMINI_API_KEY": SECRET}, env_file=_no_file(tmp_path))
+
+    assert SECRET not in repr(settings)
+    assert SECRET not in str(settings)
+    assert SECRET not in f"{settings}"
+
+
+def test_repr_shows_whether_a_key_is_present_and_nothing_more(tmp_path: Path) -> None:
+    # Not a prefix, not a length: both are still information about a credential, and neither
+    # helps anyone debug more than the boolean does.
+    with_key = repr(load_settings({"GEMINI_API_KEY": SECRET}, env_file=_no_file(tmp_path)))
+    without = repr(load_settings({}, env_file=_no_file(tmp_path)))
+
+    assert "gemini_api_key=***" in with_key
+    assert "gemini_api_key=unset" in without
+    assert SECRET[:6] not in with_key
+    assert str(len(SECRET)) not in with_key
+
+
+def test_repr_still_shows_the_non_secret_settings(tmp_path: Path) -> None:
+    # A redacting repr that redacted everything would just move the debugging problem.
+    settings = load_settings(
+        {"GEMINI_API_KEY": SECRET, "ROBOFACE_WS_PORT": "9001", "GEMINI_MODEL": "m"},
+        env_file=_no_file(tmp_path),
+    )
+
+    rendered = repr(settings)
+    assert "9001" in rendered
+    assert "'m'" in rendered
+    assert "log_level='info'" in rendered
+
+
+def test_the_key_does_not_leak_through_a_structured_log_line(tmp_path: Path) -> None:
+    """The concrete route that worried the review: JsonFormatter stringifies with default=str."""
+    import json as json_module
+    from io import StringIO
+
+    from roboface_server.logging import configure, connection_context, log
+
+    stream = StringIO()
+    configure("debug", stream=stream)
+    settings = load_settings({"GEMINI_API_KEY": SECRET}, env_file=_no_file(tmp_path))
+
+    with connection_context("s"):
+        log("startup", settings=settings)
+
+    rendered = stream.getvalue()
+    assert SECRET not in rendered
+    assert json_module.loads(rendered)["settings"].startswith("Settings(")
