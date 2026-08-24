@@ -19,7 +19,7 @@ specification/   MISSION.md · ARCHITECTURE.md · ROADMAP.md   ← the source of
 .claude/skills/  eleven SDLC skills that generate this repo from the specification
 server/          the product: protocol · router · orchestrator · providers · config · logging
 tests/           contract · unit · integration (fake device) · live (opt-in, paid)
-tools/           chat.py — a terminal stand-in for the device, until v0.3
+tools/           chat.py — a terminal stand-in for the device · board.py — the serial monitor
 codegen/         generation tracking: event log, hooks, reducer, dashboard (:8420)
 ```
 
@@ -153,7 +153,14 @@ firmware is on the board the problem goes — it uses the hardware USB-Serial/JT
 (`303A:1001`), which handles the reset in silicon, and no button press is needed again.
 
 **The serial monitor drops on every reset** for the same reason: native USB re-enumerates, so the
-port disappears and returns as a new device. That is the board restarting, not a broken cable.
+port disappears and returns as a new device. That is the board restarting, not a broken cable —
+which is why `pio device monitor` dies at exactly the moment you want to be watching. Use the
+repo's own monitor instead, which reattaches:
+
+```bash
+.venv/bin/python tools/board.py                    # watch until Ctrl-C
+.venv/bin/python tools/board.py --send /faces      # and drive the self-test
+```
 
 **If the board joins WiFi but never connects** (`[ws] reconnecting in …` climbing to the ceiling
 while the server logs nothing): the macOS firewall blocks inbound connections to the Python
