@@ -351,7 +351,7 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
     }
 
     if (line.text == "/chat-on") {
-        if (!console.enable(state)) {
+        if (!console.enable()) {
             Serial.println("[chat] already on");
             printConsolePrompt();
             return;
@@ -368,10 +368,11 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
             Serial.println("[chat] already off");
             return;
         }
-        // Give back exactly what was borrowed. Announcing the state on serial matters because the
-        // screen deliberately never says which one it is in.
-        state = console.savedState();
-        Serial.printf("\n[chat] console off — back to %s.\n", roboface::toString(state));
+        // Render the state the device is *actually* in, not the one it was in when the console
+        // opened. The state machine kept running while the transcript had the screen -- a link can
+        // have dropped -- and putting the old state back would make the face assert something
+        // untrue. (v0.5 review, finding 1.)
+        Serial.printf("\n[chat] console off — showing %s.\n", roboface::toString(state));
         render();
         needs_push = true;
         return;
