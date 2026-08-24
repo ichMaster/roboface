@@ -25,6 +25,8 @@
 #include <string>
 #include <vector>
 
+#include "pure/layout.h"
+
 namespace roboface {
 
 // --- UTF-8 primitives ------------------------------------------------------------------
@@ -165,7 +167,11 @@ inline std::vector<std::string> wrapUtf8(const std::string& text, std::size_t co
 
 //: Lines the console keeps. Beyond this the oldest are dropped: the panel cannot show them, and a
 //: buffer that grew with the conversation would be a slow leak on a device with finite PSRAM.
-inline constexpr std::size_t kTranscriptMaxLines = 9;
+//: Taken from the screen geometry rather than chosen here, so the bound and the panel agree.
+inline constexpr std::size_t kTranscriptMaxLines = static_cast<std::size_t>(kConsoleLines);
+
+//: The default width, likewise from the geometry: the face area divided by the font's cell.
+inline constexpr std::size_t kTranscriptColumns = static_cast<std::size_t>(kConsoleColumns);
 
 //: A hard byte ceiling on the accumulated reply, independent of the line bound. A model that
 //: streamed without stopping would otherwise grow this string forever even though only the last
@@ -240,7 +246,7 @@ class Transcript {
         reply_.erase(0, drop);
     }
 
-    std::size_t columns_ = 26;
+    std::size_t columns_ = kTranscriptColumns;
     std::size_t max_lines_ = kTranscriptMaxLines;
     std::size_t max_reply_bytes_ = kTranscriptMaxReplyBytes;
     std::string outgoing_;

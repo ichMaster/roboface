@@ -28,6 +28,21 @@ inline constexpr int kGlyphSize = 12;
 inline constexpr int kStatusClusterRight = kScreenWidth - 8;
 inline constexpr int kStatusClusterTop = 8;
 
+// The console's text grid, for v0.5's serial chat console.
+//
+// The font is a glue asset (`app/fonts/font_cyrillic_10x20`), but the numbers it implies are
+// geometry, and geometry lives here where a host test can check the arithmetic. The face area
+// fits 26 columns and 9 lines of a 10x20 cell -- 260x180 of the available 264x184, so 4 px
+// spare in each direction. The grid is the largest that fits, not an exact division; what
+// matters is that it cannot exceed the area, which is what the host test pins.
+//
+// Both halves read these: the wrap in `pure/transcript.h` measures against `kConsoleColumns`, and
+// the renderer steps by `kConsoleLineHeight`. One number, two users -- so they cannot drift.
+inline constexpr int kConsoleAdvanceWidth = 10;
+inline constexpr int kConsoleLineHeight = 20;
+inline constexpr int kConsoleColumns = kFaceWidth / kConsoleAdvanceWidth;   // 26
+inline constexpr int kConsoleLines = kFaceHeight / kConsoleLineHeight;      // 9
+
 // Whether a rectangle stays clear of the face. The renderer and the chrome drawer each assert
 // their own bounds with this, so "chrome never overlaps the face" is checked by arithmetic at the
 // point of drawing rather than by a person squinting at a panel.

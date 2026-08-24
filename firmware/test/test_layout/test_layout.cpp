@@ -7,6 +7,7 @@
 #include <unity.h>
 
 #include "pure/layout.h"
+#include "pure/transcript.h"
 
 using namespace roboface;
 
@@ -69,6 +70,49 @@ static void test_the_bands_and_the_face_tile_the_screen_without_gaps() {
     TEST_ASSERT_EQUAL_INT(kScreenHeight, kBandHeight + kFaceHeight + kBandHeight);
 }
 
+
+// --- the console's text grid (v0.5) ---------------------------------------------------
+//
+// The font is a glue asset, so a laptop cannot check that a glyph looks right. What it can check
+// is the arithmetic that decides whether text fits -- and getting that wrong does not look like a
+// font problem on the panel, it looks like the last line of every reply being cut off, or text
+// bleeding into the chrome band.
+
+void test_the_console_grid_is_the_largest_that_fits_the_face_area() {
+    // 264/10 and 184/20 both leave a remainder -- 260x180 used of 264x184 -- so the grid is the
+    // largest that fits rather than an exact division. Both halves of that matter: it must not
+    // exceed the area (or text bleeds into the chrome band), and it must not be smaller than it
+    // could be (or the panel wastes a column and the last line of a long reply is cut).
+    TEST_ASSERT_TRUE(kConsoleColumns * kConsoleAdvanceWidth <= kFaceWidth);
+    TEST_ASSERT_TRUE((kConsoleColumns + 1) * kConsoleAdvanceWidth > kFaceWidth);
+    TEST_ASSERT_TRUE(kConsoleLines * kConsoleLineHeight <= kFaceHeight);
+    TEST_ASSERT_TRUE((kConsoleLines + 1) * kConsoleLineHeight > kFaceHeight);
+}
+
+void test_the_console_grid_is_the_documented_26_by_9() {
+    TEST_ASSERT_EQUAL_INT(26, kConsoleColumns);
+    TEST_ASSERT_EQUAL_INT(9, kConsoleLines);
+}
+
+void test_a_full_console_stays_inside_the_face_area() {
+    // Every column and every line drawn, at the face's origin: still clear of the chrome bands.
+    TEST_ASSERT_TRUE(insideFace(kFaceLeft, kFaceTop,
+                                kConsoleColumns * kConsoleAdvanceWidth,
+                                kConsoleLines * kConsoleLineHeight));
+    // And one line more would not be.
+    TEST_ASSERT_FALSE(insideFace(kFaceLeft, kFaceTop,
+                                 kConsoleColumns * kConsoleAdvanceWidth,
+                                 (kConsoleLines + 1) * kConsoleLineHeight));
+}
+
+void test_the_transcript_measures_against_the_same_numbers() {
+    // The wrap and the renderer must agree on the width, or the text is either clipped at the
+    // right edge or wrapped short of it. One constant, both users.
+    const roboface::Transcript t;
+    TEST_ASSERT_EQUAL_UINT32(static_cast<std::size_t>(kConsoleColumns), t.columns());
+    TEST_ASSERT_EQUAL_UINT32(static_cast<std::size_t>(kConsoleLines), t.maxLines());
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_the_screen_is_the_documented_size);
@@ -80,5 +124,9 @@ int main(int, char**) {
     RUN_TEST(test_something_overlapping_the_face_is_reported_as_such);
     RUN_TEST(test_the_face_area_reports_itself_as_inside);
     RUN_TEST(test_the_bands_and_the_face_tile_the_screen_without_gaps);
+    RUN_TEST(test_the_console_grid_is_the_largest_that_fits_the_face_area);
+    RUN_TEST(test_the_console_grid_is_the_documented_26_by_9);
+    RUN_TEST(test_a_full_console_stays_inside_the_face_area);
+    RUN_TEST(test_the_transcript_measures_against_the_same_numbers);
     return UNITY_END();
 }
