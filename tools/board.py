@@ -6,12 +6,13 @@ that happens constantly: its USB-C is the ESP32-S3's *native* USB, so the port d
 dies exactly when you most want to be watching — at boot, after a flash, or when the thing you are
 debugging reboots.
 
-This reattaches. It also sends lines, so the firmware's serial commands (`/faces`, `/debug`,
-`/help`) can be driven from a script rather than typed.
+This reattaches. It is also two-way: type a line and press Enter to send it to the board, so the
+firmware's serial commands (`/faces`, `/debug`, `/help`) work interactively -- and `--send` drives
+the same path from a script.
 
 Usage::
 
-    .venv/bin/python tools/board.py                       # watch until Ctrl-C
+    .venv/bin/python tools/board.py                       # watch, and type commands at it
     .venv/bin/python tools/board.py --for 30              # watch for 30 seconds
     .venv/bin/python tools/board.py --send /faces         # watch, and send once attached
     .venv/bin/python tools/board.py --send /faces --for 25 --quiet
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import select
 import sys
 import time
 from contextlib import suppress
@@ -55,6 +57,12 @@ except ImportError:  # pragma: no cover -- environment problem, not a code path
 PORT_GLOB = "/dev/cu.usbmodem*"
 BAUD = 115200
 
+#: How many consecutive read failures to absorb before treating the port as gone. Writing to
+#: the Core S3's native-USB CDC frequently makes the *next* read raise while the board runs on
+#: untouched -- so a single failure means nothing, and reattaching on one loses exactly the
+#: output that matters: the reply to the command just sent.
+MAX_TRANSIENT_READ_FAILURES = 8
+
 
 def find_port() -> str | None:
     """The board's serial port, or None while it is between enumerations."""
@@ -83,12 +91,14 @@ def watch(duration: float | None, to_send: list[str], send_after: float, quiet: 
     port: str | None = None
     buffer = b""
     sent = False
+    stdin_open = True
+    read_failures = 0
 
     def note(message: str) -> None:
         if not quiet:
             print(f"[board] {message}", flush=True)
 
-    note(f"watching {PORT_GLOB} — Ctrl-C to stop")
+    note(f"watching {PORT_GLOB} — type a command and press Enter, Ctrl-C to stop")
     try:
         while deadline is None or time.time() < deadline:
             if connection is None:
@@ -109,12 +119,25 @@ def watch(duration: float | None, to_send: list[str], send_after: float, quiet: 
 
             try:
                 data = connection.read(4096)
+                read_failures = 0
             except Exception:
-                note("port dropped — the board is resetting; waiting for it to come back")
+                # A transient, most likely: see MAX_TRANSIENT_READ_FAILURES. While the port is
+                # still present, keep the connection and retry -- 25 s of pure watching produces
+                # no failures at all, so absorbing a burst after a write costs nothing and saves
+                # the reply that would otherwise be dropped on the floor.
+                read_failures += 1
+                if find_port() == port and read_failures < MAX_TRANSIENT_READ_FAILURES:
+                    time.sleep(0.05)
+                    continue
+                # Do not claim the board reset: on native USB the CDC endpoint also drops on
+                # its own while the firmware runs untouched, and the `up Ns` counter in the next
+                # status line proves which happened -- it restarts from 0 only on a real reset.
+                note("port dropped — reattaching (board reset, or the USB CDC link hiccuping)")
                 with suppress(Exception):
                     connection.close()
                 connection = None
                 buffer = b""
+                read_failures = 0
                 time.sleep(0.5)
                 continue
 
@@ -123,6 +146,31 @@ def watch(duration: float | None, to_send: list[str], send_after: float, quiet: 
                 lines, buffer = split_lines(buffer)
                 for line in lines:
                     print(line, flush=True)
+
+            # Forward anything typed at us. `select` with a zero timeout keeps this a poll rather
+            # than a blocking read, so the board's output never stalls waiting for a keystroke --
+            # the serial read's own 0.2 s timeout is what paces the loop.
+            #
+            # A closed stdin (`< /dev/null`, or a pipe that has ended) reports *readable* forever
+            # and returns "" every time, so EOF has to latch the poll off or the loop spins.
+            if stdin_open:
+                try:
+                    readable, _, _ = select.select([sys.stdin], [], [], 0)
+                except (OSError, ValueError):  # pragma: no cover -- stdin not selectable
+                    stdin_open = False
+                    readable = []
+                if readable:
+                    typed = sys.stdin.readline()
+                    if typed == "":
+                        stdin_open = False
+                    else:
+                        typed = typed.rstrip("\r\n")
+                        if typed:
+                            note(f">>> {typed}")
+                            try:
+                                connection.write((typed + "\n").encode())
+                            except Exception as exc:
+                                note(f"could not send: {exc}")
 
             if to_send and not sent and time.time() - started >= send_after:
                 for text in to_send:
