@@ -354,6 +354,14 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
     }
 
     if (line.text == "/chat-on") {
+        // One borrower of the screen at a time. With both running, the self-test would keep
+        // assigning states nobody can see -- the console owns the panel -- so its whole purpose
+        // silently does nothing, and its own restore fights the console's rendering.
+        // (v0.5 review, finding 3.)
+        if (self_test_running) {
+            Serial.println("[busy] self-test running — /chat-on ignored");
+            return;
+        }
         if (!console.enable()) {
             Serial.println("[chat] already on");
             printConsolePrompt();
