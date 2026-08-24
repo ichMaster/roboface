@@ -97,6 +97,12 @@ Port 8420, never 8000 — the RoboFace server will own 8000. Run its pytest **fr
 
 `~/development/lumi` is the source of this repo's documentation shape and versioning standard.
 
+## Testing
+
+[TESTING.md](TESTING.md) is the practical guide: the suites, driving the server with
+`tools/chat.py`, driving the board with `tools/board.py`, what a healthy boot looks like, and the
+hardware gotchas that each cost real time to learn. Everything in it has been run.
+
 ## Toolchain
 
 **Server** — Python, FastAPI + websockets, SQLite from v4. Run everything from the repo root:
