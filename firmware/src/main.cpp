@@ -14,12 +14,14 @@
 #include <WiFi.h>
 
 #include "app/chrome_view.h"
+#include "app/console_view.h"
 #include "app/net.h"
 #include "app/stub_renderer.h"
 #include "app/ws.h"
 #include "config.h"
 #include "pure/chrome.h"
 #include "pure/console.h"
+#include "pure/transcript.h"
 #include "pure/line_reader.h"
 #include "pure/state.h"
 #include "pure/version.h"
@@ -32,6 +34,7 @@ app::Net net;
 app::Ws ws;
 app::StubRenderer renderer;
 app::ChromeView chrome_view;
+app::ConsoleView console_view;
 roboface::Chrome chrome;
 roboface::LineReader lines;
 roboface::DeviceState state = roboface::DeviceState::kBoot;
@@ -61,6 +64,7 @@ bool debug_line = false;  // the tiny corner diagnostic; off by default
 // the state it took -- the discipline lives in `pure/console.h` where a host test proves it is
 // total over the state enum.
 roboface::ConsoleMode console;
+roboface::Transcript transcript;
 
 // The prompt is printed after entering the mode and after each reply settles, so the serial
 // session reads as a conversation rather than as a log you occasionally type into.
@@ -86,7 +90,13 @@ constexpr roboface::DeviceState kSelfTestStates[] = {
 };
 
 void render() {
-    renderer.show(state);
+    // The console borrows the face area; chrome keeps its bands either way, because link and
+    // battery are facts and hiding them would hide a dropped link exactly when it matters.
+    if (console.isOn()) {
+        console_view.draw(renderer.canvas(), transcript);
+    } else {
+        renderer.show(state);
+    }
     chrome_view.draw(renderer.canvas(), chrome);
     if (debug_line && renderer.canvas() != nullptr) {
         renderer.canvas()->setTextColor(0x39E7, 0x0000);
@@ -190,8 +200,13 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
             }
             // Written inside the receive path, not accumulated: the first words appear while the
             // last are still being generated, which is the property v0.2 exists to provide.
-            Serial.print(frame.text.c_str());
-            return;
+                Serial.print(frame.text.c_str());
+                // The console accumulates and marks the sprite dirty; the loop's 33 ms
+                // rate limit decides when to repaint. Pushing per delta would put the
+                // loop back to being one long sprite push, which v0.4's review removed.
+                transcript.appendReply(frame.text.c_str());
+                needs_push = true;
+                return;
 
         case roboface::ParseResult::kError:
             if (reply_in_progress) {
@@ -341,6 +356,7 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
             printConsolePrompt();
             return;
         }
+        transcript.clear();
         Serial.println("\n[chat] console on — type a message; /chat-off returns the face.");
         render();
         needs_push = true;
@@ -393,6 +409,7 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
         Serial.println("[error] no connection — line not sent");
         return;
     }
+    transcript.startTurn(line.text);
     apply(roboface::DeviceEvent::kTurnStarted);
     (void)now_ms;
 }
@@ -462,6 +479,7 @@ void loop() {
     pollPower(now_ms, /*force=*/false);
     updateChrome(now_ms, fault_active, fault_code);
     if (needs_push && now_ms - last_push_ms >= kMinPushIntervalMs) {
+        if (console.isOn()) console_view.draw(renderer.canvas(), transcript);
         chrome_view.draw(renderer.canvas(), chrome);
         renderer.push();
         last_push_ms = now_ms;
