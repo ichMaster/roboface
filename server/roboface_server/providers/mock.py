@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 
+from roboface_server.protocol import ErrorCode
 from roboface_server.providers.base import Message, ProviderError
 
 #: What a reply looks like when a test does not care about the words. Several fragments, not
@@ -89,3 +90,60 @@ class SilentLLMProvider:
     async def _stream(self) -> AsyncIterator[str]:
         return
         yield  # pragma: no cover -- unreachable; makes this an async generator
+
+
+#: Four chunks of silence, and **four is the point**: a single-chunk mock lets a consumer that
+#: accumulates before sending pass every test, and accumulating is exactly what this phase removes.
+#: Even byte counts, because PCM16 samples are two bytes and an odd split would be a malformed
+#: sample rather than a smaller one.
+DEFAULT_CHUNKS: tuple[bytes, ...] = (
+    b"\x00\x01" * 160,
+    b"\x00\x02" * 160,
+    b"\x00\x03" * 160,
+    b"\x00\x04" * 160,
+)
+
+
+class MockTTSProvider:
+    """A canned :class:`~roboface_server.providers.base.TTSProvider`.
+
+    Records the text it was asked to speak, so a test can assert that the *phrase* reached the
+    provider — not the whole reply, and not a half-word — rather than trusting that it did.
+    """
+
+    def __init__(
+        self,
+        chunks: Sequence[bytes] | None = None,
+        *,
+        delay_s: float = 0.0,
+        delay_before_index: int = 0,
+        fail_at_index: int | None = None,
+        error: ProviderError | None = None,
+    ) -> None:
+        self.chunks: tuple[bytes, ...] = tuple(DEFAULT_CHUNKS if chunks is None else chunks)
+        self.delay_s = delay_s
+        #: Which chunk the delay precedes. 0 stalls the *first* one (the first-audio budget should
+        #: fire); a higher index stalls mid-phrase (it should not).
+        self.delay_before_index = delay_before_index
+        self.fail_at_index = fail_at_index
+        self.error = (
+            error if error is not None else ProviderError("mock tts failure", ErrorCode.TTS_FAILED)
+        )
+
+        #: Every phrase this provider was asked to speak, in order.
+        self.calls: list[str] = []
+
+    def synthesize(self, text: str) -> AsyncIterator[bytes]:
+        self.calls.append(text)
+        return self._synthesize()
+
+    async def _synthesize(self) -> AsyncIterator[bytes]:
+        for index, chunk in enumerate(self.chunks):
+            if self.fail_at_index is not None and index == self.fail_at_index:
+                raise self.error
+            if self.delay_s and index == self.delay_before_index:
+                await asyncio.sleep(self.delay_s)
+            yield chunk
+
+        if self.fail_at_index is not None and self.fail_at_index >= len(self.chunks):
+            raise self.error

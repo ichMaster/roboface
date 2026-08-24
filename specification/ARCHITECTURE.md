@@ -251,6 +251,26 @@ Five seams carry the whole system. Each is pinned by a contract test, and each h
 | `ASRProvider` / `TTSProvider` | `server/…/providers/` | Deepgram (WS, interims + endpointing) / ElevenLabs (stream endpoint, `pcm_16000`) — both yield chunks as they arrive |
 | `IFaceRenderer` + skin manifest | `firmware/` + `assets/` | which skin draws the frame |
 
+The two streaming provider seams share one shape, and it is deliberate:
+
+```python
+class LLMProvider(Protocol):
+    def stream(self, system: str, messages: Sequence[Message]) -> AsyncIterator[str]: ...
+
+class TTSProvider(Protocol):          # from v1.1
+    def synthesize(self, text: str) -> AsyncIterator[bytes]: ...   # PCM16, 16 kHz, mono
+```
+
+**Neither is `async def`.** The method returns the iterator, so the caller holds it before awaiting
+anything and can put a budget on the *first* output alone — the LLM's first token, TTS's first
+audio chunk. An `async def` returning an iterator would move that choice into the implementation,
+which is exactly where it must not live.
+
+`TTSProvider` yields the device's playback format directly (`pcm_16000` from ElevenLabs), so nothing
+decodes on the server or on the device. An implementation that accumulated a whole phrase before
+yielding would satisfy the signature and defeat v1.1 entirely, so the contract test asserts the
+streaming shape rather than only the types.
+
 ## Data model
 
 Nothing is persisted before v4 beyond a device record and config. From v4, SQLite behind a thin repository:

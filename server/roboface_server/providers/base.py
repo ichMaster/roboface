@@ -79,3 +79,32 @@ class LLMProvider(Protocol):
         choice to the implementation, which is exactly where it must not live.
         """
         ...
+
+
+@runtime_checkable
+class TTSProvider(Protocol):
+    """Speech synthesis, streamed.
+
+    The second vendor seam, and the reason MISSION's "chat is Gemini and only Gemini" is not a
+    statement about the whole system: **speech is not chat**. ElevenLabs sits here, Deepgram sits
+    behind ``ASRProvider`` from v1.3, and swapping either is a provider change rather than an
+    architecture one.
+
+    Chunks are **PCM16, 16 kHz, mono** — the device's playback format, which is why the real
+    adapter asks ElevenLabs for ``pcm_16000`` rather than for MP3. Nothing decodes anywhere: what
+    arrives from the vendor is what goes on the wire and what the speaker plays.
+    """
+
+    def synthesize(self, text: str) -> AsyncIterator[bytes]:
+        """Yield PCM16 chunks as they are generated.
+
+        Not ``async def``, for the same reason :meth:`LLMProvider.stream` is not: the caller must
+        hold the iterator before awaiting anything, so it can put its *first-audio* budget on the
+        first chunk alone (ARCHITECTURE §Budgets and abort semantics). A stalled vendor then fails
+        fast while a slow-but-flowing one is never cut off mid-phrase.
+
+        Implementations must not accumulate. A provider that gathered the whole phrase before
+        yielding would satisfy every type in this signature and defeat the entire phase: the point
+        of v1.1 is that the mouth opens before the sentence exists.
+        """
+        ...
