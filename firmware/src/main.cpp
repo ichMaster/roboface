@@ -33,6 +33,22 @@ roboface::LineReader lines;
 roboface::DeviceState state = roboface::DeviceState::kBoot;
 
 constexpr uint32_t kStatusIntervalMs = 10000;
+
+// Nothing on this screen changes faster than DEVICE_UI's 120 ms chrome fade -- about 8 Hz. 30 Hz is
+// generous for a face that is currently static, and it is the difference between the loop serving
+// the network and the loop being one long sprite push: 320x240x16 is 153 KB, so the unconditional
+// push in every 5 ms iteration implied ~30 MB/s on a bus that carries about 5.
+constexpr uint32_t kMinPushIntervalMs = 33;
+uint32_t last_push_ms = 0;
+bool needs_push = true;
+
+// The AXP2101 answers over I2C, and a battery percentage moves on the scale of minutes. Polling it
+// at the loop rate was ~400 transactions a second, forever, on a bus that v2's IMU and v2.4's touch
+// controller also want.
+constexpr uint32_t kPowerPollIntervalMs = 2000;
+uint32_t last_power_poll_ms = 0;
+int battery_percent = 100;
+bool battery_charging = false;
 uint32_t last_status_ms = 0;
 bool reply_in_progress = false;
 bool debug_line = false;  // the tiny corner diagnostic; off by default
@@ -73,6 +89,7 @@ void apply(roboface::DeviceEvent event) {
     state = result.next;
     Serial.printf("\n[state] %s\n", roboface::toString(state));
     render();
+    needs_push = true;
 }
 
 roboface::LinkState linkStateNow() {
@@ -81,14 +98,32 @@ roboface::LinkState linkStateNow() {
     return roboface::LinkState::kOffline;
 }
 
+void pollPower(uint32_t now_ms, bool force) {
+    if (!force && now_ms - last_power_poll_ms < kPowerPollIntervalMs) return;
+    last_power_poll_ms = now_ms;
+    battery_percent = M5.Power.getBatteryLevel();
+    battery_charging = M5.Power.isCharging();
+}
+
 void updateChrome(uint32_t now_ms, bool fault_active, roboface::ErrorCode fault) {
+    const roboface::ChromeVisibility before = chrome.visibility();
+
     roboface::ChromeFacts facts;
     facts.link = linkStateNow();
-    facts.battery_percent = M5.Power.getBatteryLevel();
-    facts.charging = M5.Power.isCharging();
+    facts.battery_percent = battery_percent;
+    facts.charging = battery_charging;
     facts.fault_active = fault_active;
     facts.fault = fault;
     chrome.update(now_ms, facts);
+
+    const roboface::ChromeVisibility after = chrome.visibility();
+    // Repaint when what is shown changes, and while a fade is running -- the fade is the only thing
+    // that needs frames without a change behind it.
+    if (before.link != after.link || before.battery != after.battery || before.band != after.band) {
+        needs_push = true;
+    }
+    const uint32_t settled = chrome.settledForMs();
+    if (settled < roboface::kSettleHideMs + roboface::kChromeFadeOutMs) needs_push = true;
 }
 
 bool fault_active = false;
@@ -177,6 +212,7 @@ void stepSelfTest(uint32_t now_ms) {
     }
 
     state = kSelfTestStates[self_test_index];
+    needs_push = true;
     // Announced on serial because the screen deliberately never says which state it is in; this is
     // how a person checks that what they are looking at is what it should be.
     Serial.printf("[faces] %d/%d  %s\n", self_test_index + 1, count, roboface::toString(state));
@@ -248,6 +284,7 @@ void setup() {
     }
 
     const uint32_t now_ms = millis();
+    pollPower(now_ms, /*force=*/true);
     updateChrome(now_ms, false, roboface::ErrorCode::kUnknown);
     render();
 
@@ -282,18 +319,24 @@ void loop() {
         if (line.complete) handleLine(line, now_ms);
     }
 
-    // Chrome is redrawn every loop so its fades advance; the face is redrawn only on a state
-    // change, which is why show() clears the face area alone.
+    // Repaint on change or while a fade runs, and never faster than kMinPushIntervalMs. The face
+    // is redrawn only on a state change -- which is why show() clears the face area alone -- and
+    // chrome is composited over it here.
+    pollPower(now_ms, /*force=*/false);
     updateChrome(now_ms, fault_active, fault_code);
-    chrome_view.draw(renderer.canvas(), chrome);
-    renderer.push();
+    if (needs_push && now_ms - last_push_ms >= kMinPushIntervalMs) {
+        chrome_view.draw(renderer.canvas(), chrome);
+        renderer.push();
+        last_push_ms = now_ms;
+        needs_push = false;
+    }
 
     if (now_ms - last_status_ms >= kStatusIntervalMs) {
         last_status_ms = now_ms;
         Serial.printf("[status] %s · link %s %s · ws %s · batt %d%%%s · up %lus\n",
                       roboface::toString(state), net.isUp() ? "up" : "down", net.ipAddress(),
-                      ws.isConnected() ? "connected" : "disconnected", M5.Power.getBatteryLevel(),
-                      M5.Power.isCharging() ? " (charging)" : "",
+                      ws.isConnected() ? "connected" : "disconnected", battery_percent,
+                      battery_charging ? " (charging)" : "",
                       static_cast<unsigned long>(now_ms / 1000));
     }
 
