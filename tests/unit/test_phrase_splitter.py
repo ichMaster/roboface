@@ -83,7 +83,7 @@ def test_a_forced_flush_never_cuts_a_word_in_half() -> None:
         # words exactly, in order.
         assert not phrase.startswith(" ") and not phrase.endswith(" ")
     words = " ".join(emitted).split() + splitter.pending.split()
-    assert words == "альфа бета гама дельта епсилон дзета".split()
+    assert words == ["альфа", "бета", "гама", "дельта", "епсилон", "дзета"]
 
 
 def test_one_unbroken_word_longer_than_the_limit_is_left_whole() -> None:
