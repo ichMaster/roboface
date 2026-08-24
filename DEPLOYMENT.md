@@ -423,10 +423,15 @@ the ESP32-S3's *native* USB, so the port re-enumerates on every reset and `pio d
 at exactly the moment you want to be watching. `tools/board.py` reattaches:
 
 ```bash
-.venv/bin/python tools/board.py                 # watch, and type commands at it
-.venv/bin/python tools/board.py --for 40        # watch for 40s and exit
-.venv/bin/python tools/board.py --send /faces   # drive the self-test from a script
+.venv/bin/python tools/board.py                    # watch, and type commands at it
+.venv/bin/python tools/board.py --for 40           # watch for 40s and exit
+.venv/bin/python tools/board.py --send /faces      # drive the self-test from a script
+.venv/bin/python tools/board.py --send /chat-on    # put the conversation on the panel
 ```
+
+`/chat-on` turns the board into a chat console: what you type and the reply as it streams are drawn
+where the face usually is, in a font that covers Ukrainian. `/chat-off` restores the face and the
+device state it borrowed the screen from. See [TESTING.md](TESTING.md) §4 for what to look for.
 
 ## Pointing the board at a different server
 

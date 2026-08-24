@@ -163,6 +163,8 @@ Watch it (from the root). Use the repo's monitor, not `pio device monitor` — s
 | Command | What it proves |
 |---|---|
 | `/faces` | cycles the six states — **this is v0.4's DoD check** |
+| `/chat-on` | the conversation on the panel — **this is v0.5's DoD check** |
+| `/chat-off` | back to the face, and to the state it borrowed the screen from |
 | `/debug` | the corner state line, on/off |
 | `/help` | the rest |
 | any other text | becomes a `text_in` — needs a reachable server (§5) |
@@ -180,6 +182,46 @@ Watch it (from the root). Use the repo's monitor, not `pio device monitor` — s
 device state is a face, never a word — so the serial log is how you check that what you are looking
 at is what it should be. Six faces should be plainly different from each other, and each should
 appear whole rather than flickering into place.
+
+
+### The chat console — v0.5's DoD check
+
+The face shows a turn's *state*; the console shows its *content*. It borrows the screen the way
+`/faces` does, and gives it back:
+
+```bash
+.venv/bin/python tools/board.py
+```
+```
+/chat-on
+[chat] console on — type a message; /chat-off returns the face.
+chat> Склади одне речення зі словами: їжак, ґанок, єдність, місто.
+
+[state] thinking
+[state] replying
+  Їжак на ґанку спостерігав за містом, мріючи про єдність усіх його мешканців.
+[state] idle
+chat>
+```
+
+**Read that sentence off the panel, not off the serial log.** The serial half proves the turn
+worked; the DoD is about the screen. Four things to look at:
+
+- **The Ukrainian is legible** — no boxes, no half-characters at a line break. The question above is
+  built to force `ї`, `ґ`, `і` and `є`, the letters Russian does not use and that a font advertised
+  as "Cyrillic" can quietly omit.
+- **The question is dimmer than the answer.** That is the only thing distinguishing them: the screen
+  never labels what it is showing, so weight does the work a word would otherwise do.
+- **A long reply clips rather than overruns.** Ask for something lengthy — *"Розкажи детально про
+  історію Києва, щонайменше 8 речень"* — and the panel should show the tail of it, still inside the
+  face area, never touching the chrome bands.
+- **`/chat-off` gives back exactly what it took.** Not "idle" — whatever was showing. Entering the
+  mode while the board is still associating and leaving it should return you to `wifi_connecting`.
+
+**Known font gap.** The embedded face covers ASCII and `U+0400`–`U+0523`. General Punctuation is
+outside that, so an en dash (`–`), an em dash (`—`) or a typographic apostrophe (`’`) — all of which
+a model writing Ukrainian prose reaches for — draw as nothing rather than as a wrong letter. Words
+are unaffected.
 
 ### What a healthy boot looks like
 
