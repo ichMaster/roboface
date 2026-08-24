@@ -32,6 +32,11 @@
 // dark study is a lamp. 120 is legible in daylight without being one.
 #define SCREEN_BRIGHTNESS 120
 
+// --- Audio ----------------------------------------------------------------------------
+// 0..255. The Core S3's speaker is small and close to the listener; full volume is unpleasant
+// at desk distance and adds distortion that sounds like a bad voice rather than a loud one.
+#define SPEAKER_VOLUME 120
+
 // --- Identity --------------------------------------------------------------------------
 // Announced in `hello.device_id` and used to key every server log line for this device.
 #define DEVICE_ID "core-s3-01"

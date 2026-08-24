@@ -33,10 +33,16 @@ class Ws {
 
     using Handler = std::function<void(Event, const roboface::ServerFrame&)>;
 
+    //: A binary frame's payload. Separate from `Handler` because a binary frame carries no
+    //: envelope -- there is no `ServerFrame` to hand over, only bytes whose meaning comes from
+    //: what the connection is doing (`server_binary_meaning`). From v1.1 that means `tts_audio`.
+    using BinaryHandler = std::function<void(const uint8_t*, std::size_t)>;
+
     void begin(const char* url, const char* device_id, uint32_t now_ms);
     void loop(uint32_t now_ms);
 
     void onEvent(Handler handler) { handler_ = std::move(handler); }
+    void onBinary(BinaryHandler handler) { binary_handler_ = std::move(handler); }
 
     // Send a text_in. Returns false when there is no open socket, so the caller can say so rather
     // than pretending the turn started.
@@ -56,6 +62,7 @@ class Ws {
     void handleText(const char* payload, std::size_t length);
 
     Handler handler_;
+    BinaryHandler binary_handler_;
     const char* device_id_ = nullptr;
     std::string host_;
     std::string path_ = "/ws";

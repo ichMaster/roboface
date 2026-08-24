@@ -209,11 +209,24 @@ static void test_an_unknown_type_is_malformed() {
                           static_cast<int>(parseServerFrame(raw, std::strlen(raw)).result));
 }
 
+static void test_tts_end_parses_and_carries_nothing() {
+    // Its whole job is to close the speaking window. The binary frames before it were `tts_audio`
+    // because the server was speaking, not because anything labelled them -- so there is nothing
+    // for this frame to carry.
+    const char* raw = "{\"type\":\"tts_end\"}";
+    const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kTtsEnd), static_cast<int>(frame.result));
+    TEST_ASSERT_TRUE(frame.text.empty());
+}
+
 static void test_a_declared_but_unhandled_type_is_unsupported_not_malformed() {
-    // The distinction the server draws too. Every v1 and v2 frame arriving at a v0.3 build lands
-    // here, and calling them malformed would make a working server look broken.
+    // The distinction the server draws too. Every not-yet-handled frame arriving at this build
+    // lands here, and calling them malformed would make a working server look broken.
+    //
+    // `tts_end` used to be in this list and is not any more: v1.1 handles it. A type moving out of
+    // here is what "the phase landed" looks like from the parser's side.
     for (const char* raw : {"{\"type\":\"asr_partial\",\"text\":\"…\"}", "{\"type\":\"emotion\"}",
-                            "{\"type\":\"tts_end\"}", "{\"type\":\"restart\"}",
+                            "{\"type\":\"restart\"}",
                             "{\"type\":\"config_updated\"}", "{\"type\":\"asr\",\"text\":\"x\"}"}) {
         const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
         TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kUnsupported),
@@ -319,6 +332,7 @@ int main(int, char**) {
     RUN_TEST(test_malformed_json_is_malformed);
     RUN_TEST(test_a_non_object_is_malformed);
     RUN_TEST(test_an_unknown_type_is_malformed);
+    RUN_TEST(test_tts_end_parses_and_carries_nothing);
     RUN_TEST(test_a_declared_but_unhandled_type_is_unsupported_not_malformed);
     RUN_TEST(test_an_oversize_frame_is_refused_before_it_is_parsed);
     RUN_TEST(test_a_frame_at_the_limit_is_still_attempted);

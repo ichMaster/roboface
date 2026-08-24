@@ -13,6 +13,7 @@
 #include <M5Unified.h>
 #include <WiFi.h>
 
+#include "app/audio_io.h"
 #include "app/chrome_view.h"
 #include "app/console_view.h"
 #include "app/net.h"
@@ -35,6 +36,7 @@ app::Ws ws;
 app::StubRenderer renderer;
 app::ChromeView chrome_view;
 app::ConsoleView console_view;
+app::AudioIo audio;
 roboface::Chrome chrome;
 roboface::LineReader lines;
 roboface::DeviceState state = roboface::DeviceState::kBoot;
@@ -211,11 +213,21 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
                 needs_push = true;
                 return;
 
+        case roboface::ParseResult::kTtsEnd:
+            // The speaking window is closed. Drain what is buffered, then give the shared I2S bus
+            // back -- v1.2's capture path needs it, and a turn that kept it would break a
+            // subsystem that is working correctly.
+            audio.finish();
+            return;
+
         case roboface::ParseResult::kError:
             if (reply_in_progress) {
                 Serial.println();
                 reply_in_progress = false;
             }
+            // Speech that has been superseded is worse than silence: it answers a question
+            // nobody is still asking.
+            audio.abort();
             fault_active = true;
             fault_code = frame.code;
             Serial.printf("\n[error] %s: %s\n", roboface::toString(frame.code), frame.msg.c_str());
@@ -456,7 +468,24 @@ void setup() {
 
     apply(roboface::DeviceEvent::kBooted);
     net.begin(WIFI_SSID, WIFI_PASSWORD, now_ms);
+    audio.begin(SPEAKER_VOLUME);
+
     ws.onEvent(onSocketEvent);
+    // A binary frame is `tts_audio`: it carries no envelope, and what gives it meaning is that the
+    // server is speaking (`server_binary_meaning`). Taking the bus here rather than at the start of
+    // the turn means a turn that never speaks never touches the microphone.
+    ws.onBinary([](const uint8_t* payload, std::size_t length) {
+        audio.startSpeaking();
+        std::size_t offset = 0;
+        // Honour backpressure rather than dropping the tail. A buffer that discarded what did not
+        // fit would lose a few milliseconds of speech exactly when the network is struggling, and
+        // the symptom -- occasionally clipped words under load -- is indistinguishable from a bad
+        // voice model. Bounded, because this runs in the socket callback and must return.
+        for (int attempt = 0; attempt < 64 && offset < length; ++attempt) {
+            offset += audio.write(payload + offset, length - offset);
+            if (offset < length) audio.tick();
+        }
+    });
 }
 
 void loop() {
@@ -488,6 +517,9 @@ void loop() {
     // Repaint on change or while a fade runs, and never faster than kMinPushIntervalMs. The face
     // is redrawn only on a state change -- which is why show() clears the face area alone -- and
     // chrome is composited over it here.
+    // Before the screen: audio starving is audible and a late repaint is not.
+    audio.tick();
+
     pollPower(now_ms, /*force=*/false);
     updateChrome(now_ms, fault_active, fault_code);
     if (needs_push && now_ms - last_push_ms >= kMinPushIntervalMs) {

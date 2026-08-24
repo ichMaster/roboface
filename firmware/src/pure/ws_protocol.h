@@ -251,6 +251,7 @@ inline std::string buildPing() {
 
 enum class ParseResult {
     kReply,        // reply{text, final}
+    kTtsEnd,       // tts_end -- the speaking window is closed (v1.1)
     kError,        // error{code, msg}
     kPong,         // pong
     kUnsupported,  // a declared type this phase does not handle -- not a fault
@@ -333,12 +334,21 @@ inline ServerFrame parseServerFrame(const char* raw, std::size_t length) {
         return frame;
     }
 
+    // `tts_end` carries no fields. Its whole job is to close the speaking window that the binary
+    // frames before it belonged to -- they were `tts_audio` because the server was speaking, not
+    // because anything labelled them.
+    if (std::strcmp(name, toString(ServerMessage::kTtsEnd)) == 0) {
+        frame.result = ParseResult::kTtsEnd;
+        return frame;
+    }
+
     // Declared server->device types this phase does not handle: asr_partial, asr, emotion,
-    // tts_end, config_updated, restart. (tts_audio is binary and never arrives here.) Answering
-    // these with "malformed" would make every v1 and v2 frame look like a broken server.
+    // config_updated, restart. (tts_audio is binary and never arrives here; tts_end is handled
+    // above from v1.1.) Answering these with "malformed" would make every later frame look like a
+    // broken server.
     for (const auto declared : {ServerMessage::kAsrPartial, ServerMessage::kAsr,
-                                ServerMessage::kEmotion, ServerMessage::kTtsEnd,
-                                ServerMessage::kConfigUpdated, ServerMessage::kRestart}) {
+                                ServerMessage::kEmotion, ServerMessage::kConfigUpdated,
+                                ServerMessage::kRestart}) {
         if (std::strcmp(name, toString(declared)) == 0) {
             frame.result = ParseResult::kUnsupported;
             return frame;

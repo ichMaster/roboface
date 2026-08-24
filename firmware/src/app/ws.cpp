@@ -85,10 +85,12 @@ void Ws::begin(const char* url, const char* device_id, uint32_t now_ms) {
                 break;
 
             case WStype_BIN:
-                // Accepted and counted, not interpreted: binary frames carry no envelope and
-                // nothing gives them meaning until v1's audio. Counting them means a v1 bring-up
-                // can see they are arriving before anything can play them.
+                // A binary frame carries no envelope; its meaning comes from what the connection
+                // is doing (`server_binary_meaning`), which from v1.1 makes it `tts_audio`. The
+                // count stays -- a bring-up wants to see frames arriving even when nothing is
+                // playing them yet.
                 ++active->binary_frames_;
+                if (active->binary_handler_) active->binary_handler_(payload, length);
                 break;
 
             default:
