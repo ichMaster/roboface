@@ -9,6 +9,7 @@
 // `roboface::Chrome` says what is visible, `roboface::LineReader` says where a line ends. What is
 // left here is the order things happen in — the one thing a host test cannot check.
 
+#include <HTTPClient.h>
 #include <M5Unified.h>
 #include <WiFi.h>
 
@@ -230,6 +231,39 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
                       static_cast<unsigned>(line.text.size()));
     }
 
+    if (line.text == "/http") {
+        // The same question as /probe, asked with a library nobody can accuse of being
+        // hand-rolled: Arduino's HTTPClient, a plain GET, no WebSocket anywhere. If this fails
+        // too then neither the protocol nor this repository's code is the variable.
+        const roboface::WsUrl url = roboface::parseWsUrl(SERVER_URL);
+        char target[96];
+        snprintf(target, sizeof(target), "http://%s:%u/", url.host.c_str(),
+                 static_cast<unsigned>(url.port));
+        Serial.printf("[http] GET %s (Arduino HTTPClient)\n", target);
+
+        HTTPClient http;
+        http.setConnectTimeout(5000);
+        http.setTimeout(5000);
+        const uint32_t started = millis();
+        if (!http.begin(target)) {
+            Serial.println("[http] begin() refused the URL");
+            return;
+        }
+        const int code = http.GET();
+        const uint32_t took = millis() - started;
+        if (code > 0) {
+            const String body = http.getString();
+            Serial.printf("[http] HTTP %d in %lu ms, %u bytes back — the path WORKS\n", code,
+                          static_cast<unsigned long>(took),
+                          static_cast<unsigned>(body.length()));
+        } else {
+            Serial.printf("[http] failed in %lu ms: %d (%s)\n", static_cast<unsigned long>(took),
+                          code, HTTPClient::errorToString(code).c_str());
+        }
+        http.end();
+        return;
+    }
+
     if (line.text == "/probe") {
         // A raw TCP connect to the configured server, reporting what actually happened.
         // "connection refused" and "timed out" point at completely different problems -- one
@@ -298,7 +332,8 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
     }
     if (line.text == "/help") {
         Serial.println("  <text>   say something    /faces  cycle the six faces");
-        Serial.println("  /debug   corner state line /probe  test the path to the server");
+        Serial.println("  /debug   corner state line /probe  raw TCP path test");
+        Serial.println("  /http    plain HTTP GET test");
         Serial.println("  /help    this");
         return;
     }
