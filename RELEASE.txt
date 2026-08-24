@@ -1,6 +1,58 @@
 RoboFace -- release notes
 =========================
 
+Version 0.5.0 (2026-08-24)
+---------------------------
+Roadmap phase v0.5 -- the serial chat console. The face shows a turn's state;
+now the board can show its content, in Ukrainian, on the panel.
+
+- /chat-on turns the board into a chat console: what you type and the reply as it
+  streams are drawn where the face usually is. /chat-off gives the screen back.
+  It borrows the screen the way the /faces self-test does -- explicitly entered,
+  explicitly left -- and does not relax the rule it sits next to: MISSION forbids
+  showing a *state* as a word, and a transcript is content, not a state label.
+- Ukrainian renders on the panel. M5GFX bundles no Cyrillic face -- its efont set
+  is JA/CN/KR/TW and Font0 is ASCII -- but it accepts U8g2 font arrays through
+  lgfx::U8g2font, the same mechanism its own fonts use, and decodes UTF-8 when
+  drawing. So this is an embedded array rather than a text pipeline: -Misc-Fixed
+  10x20, public domain, 387 glyphs. Coverage was verified by decoding the array's
+  own glyph table rather than trusting its name -- the Ukrainian letters Russian
+  does not use are the ones a "Cyrillic" font quietly omits, and the omission only
+  shows on the first word that needs one.
+- pure/transcript.h wraps by codepoint, not by byte. Ukrainian is two bytes per
+  letter, so a byte-based wrap would fit half as many letters per line as it
+  thought and would cut characters in half at the break -- which draws as a box,
+  not as a bad line break. A reply frame can also end mid-character, because the
+  server streams bytes; an incomplete trailing sequence is held back until the
+  frame that finishes it. The test that matters splits a reply at every byte
+  offset and asserts the lines match appending it whole.
+- The console grid lives in pure/layout.h and is read by both the wrap and the
+  renderer, so they cannot drift. A host test pins it -- and caught the claim,
+  written in two comments, that 264/10 and 184/20 divide exactly. They do not.
+- Repaints keep v0.4's discipline: a delta marks the sprite dirty and the 33 ms
+  cap decides when to paint. The loop's push path had to learn to redraw the
+  console as well as chrome; without that a dirty transcript would never have
+  reached the panel.
+
+Review fixes, all in the glue layer the pure/glue split predicts defects in:
+
+- /chat-off no longer reverts the device state. It saved the state on entry and
+  put it back on exit, by analogy with the self-test -- but the self-test *drives*
+  state and the console does not. Lose the link while the console is open and the
+  old behaviour put the idle face back on a device with no socket. It now renders
+  whatever state the device is genuinely in.
+- Each drawer sets its own font. Nothing in the firmware set one, so once the
+  console had drawn its 20 px Cyrillic face into the sprite, chrome's fault code
+  and the debug line rendered in it too -- and kept doing so after /chat-off.
+- /chat-on refuses while the self-test is running. Two borrowers of one screen,
+  each with its own idea of what to give back, made the self-test invisible.
+
+Known gap: the font covers ASCII and U+0400..U+0523, so General Punctuation --
+en dash, em dash, the typographic apostrophe -- draws as nothing. The first long
+Ukrainian reply of the hardware check contained two of them. Words are
+unaffected, which is why the DoD passes; it is recorded in the font source,
+TESTING.md and DEPLOYMENT.md.
+
 Version 0.4.1 (2026-08-24)
 ---------------------------
 Post-release fixes on phase v0.4. The server moved off the development Mac, which
