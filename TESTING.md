@@ -81,14 +81,15 @@ on it.
 
 ## 3. Testing the server on its own
 
-Terminal 1:
+The server runs on the Linux box, not on this machine — [DEPLOYMENT.md](DEPLOYMENT.md) covers why
+and how. Start it and confirm it is answering:
 
 ```bash
-set -a && . ./server/.env && set +a
-PYTHONPATH=server .venv/bin/python -m roboface_server.app
+tools/remote.sh start
+tools/remote.sh health          # OK  …  port open, service answering
 ```
 
-Terminal 2 — `tools/chat.py` stands in for the device. It speaks the protocol through
+Then — `tools/chat.py` stands in for the device. It speaks the protocol through
 `protocol.py`, exactly as the firmware does, so a contract change breaks it loudly rather than
 letting it drift:
 
@@ -97,7 +98,7 @@ letting it drift:
 ```
 
 ```
-connected to ws://127.0.0.1:8000/ws  as terminal
+connected to ws://192.168.1.197:8000/ws  as terminal
 
 you › Привіт! Що ти вмієш?
    Привіт! Я можу тобі компанію скласти, почути, що ти кажеш, і реагувати своїм обличчям.
@@ -107,6 +108,23 @@ you › Привіт! Що ти вмієш?
 **`first 596 ms · complete 912 ms` is the thing to look at.** Time-to-first-delta is the number the
 whole architecture exists to keep small, and watching the reply arrive rather than appear is the
 property v0.2 delivers.
+
+### Running it on this machine instead
+
+For server work that does not involve the board, loopback here is fine — it is only *inbound LAN*
+connections this Mac refuses, and 127.0.0.1 is exempt from that:
+
+```bash
+PYTHONPATH=server .venv/bin/python -m roboface_server.app      # terminal 1
+.venv/bin/python tools/chat.py --url ws://127.0.0.1:8000/ws    # terminal 2
+```
+
+The `.env` is **not** sourced into the shell. `load_settings()` reads `server/.env` itself, by a
+path derived from the module's own location, so the server finds it from any working directory —
+and sourcing it is actively wrong: `WEATHER_URL`'s value contains unquoted `&`, so the shell
+backgrounds at the first one and the assignment is lost in a subshell. Silently, with exit code 0.
+
+The board cannot be tested this way; see §5.
 
 ### Exercising the error paths
 
@@ -135,8 +153,8 @@ cd firmware && pio run -e cores3 -t upload
 Watch it (from the root). Use the repo's monitor, not `pio device monitor` — see §6:
 
 ```bash
-.venv/bin/python tools/board.py                  # until Ctrl-C
-.venv/bin/python tools/board.py --send /faces    # and drive the self-test
+.venv/bin/python tools/board.py                  # watch, and type commands at it
+.venv/bin/python tools/board.py --send /faces    # drive the self-test from a script
 .venv/bin/python tools/board.py --for 30 --quiet
 ```
 
@@ -170,7 +188,7 @@ RoboFace firmware 0.4.0 on m5stack-cores3
 [state] wifi_connecting
 [net] connecting to "..." (attempt 1)
 [net] up, ip 192.168.1.131
-[ws] server 192.168.1.64:8000/ws
+[ws] server 192.168.1.197:8000/ws
 [status] wifi_connecting · link up 192.168.1.131 · ws disconnected · batt 100% · up 20s
 ```
 
@@ -182,36 +200,61 @@ the server is unreachable. Go to §5.
 
 ## 5. Testing both together
 
-The board needs to reach the server over the LAN. Point `SERVER_URL` in `firmware/src/config.h` at
-the machine running it — **not `localhost`**, which on the board means the board:
+The board dials the server over the LAN, so the server has to live somewhere the board can reach.
+It runs on the Linux box `ich-picobox` (`192.168.1.197`); [DEPLOYMENT.md](DEPLOYMENT.md) is the
+deployment and administration guide.
 
-```c
-#define SERVER_URL "ws://192.168.1.64:8000/ws"
+```bash
+tools/remote.sh start && tools/remote.sh health
+.venv/bin/python tools/board.py --for 40
 ```
 
-Find that address with `ipconfig getifaddr en0`. Then flash, start the server, and type a line into
-`tools/board.py`. A working turn looks like the reply streaming back over serial.
+A working link, on the board's serial output:
 
-### Known blocker on a managed Mac
+```
+[ws] server 192.168.1.197:8000/ws
+[ws] connected
+[state] idle
+```
 
-On this development machine it does not work, and the cause is not in the code: **the managed
-security policy refuses inbound LAN connections to the server process.** The board retries
-correctly and the server logs *zero* connection attempts. Diagnosed and confirmed:
+Confirm it from the server side — the board shows up as a live session, by address:
 
-- loopback works (`curl http://127.0.0.1:8000/ws` → 404, the correct answer for a WebSocket route)
-- the LAN address is refused in ~2 ms — an active reset, not a timeout or a dropped packet
-- the Mac can ping the board, and ARP resolves, so the network path is fine
-- `socketfilterfw` cannot be changed from the command line: *"Firewall settings cannot be modified
-  from command line on managed Mac computers"*
-- putting an allow-listed binary in front of it (a Node TCP relay) is refused the same way
+```bash
+tools/remote.sh status
+```
+```
+  sessions  1 established
+            <- 192.168.1.131:52565
+```
 
-Three ways round it, in order of least friction:
+`SERVER_URL` is compiled into the firmware and **must be a literal IP**. The firmware links no mDNS
+resolver, so `ich-picobox.local` — a name the host-side tools could otherwise use — never resolves
+there and the board simply never connects.
 
-1. **Run the server on another machine** on the same LAN — a Pi, a Linux box, a VM — and point
-   `SERVER_URL` there. Nothing to argue with.
-2. **An outbound tunnel**: `cloudflared tunnel --url http://localhost:8000`, then set `SERVER_URL`
-   to the public host. The laptop connects *outward*, so no inbound rule is needed.
-3. **Ask IT** to allow inbound connections to this Mac.
+### Why the server does not run on this Mac
+
+It cannot host the board's connection. The workstation's endpoint filtering accepts an inbound LAN
+connection and then destroys the socket before the application's first read:
+
+```
+ACCEPTED from 127.0.0.1:58600     -> read 77 bytes -> replied 200
+ACCEPTED from 192.168.1.64:58603  -> read/write FAILED: errno 57 (Socket is not connected)
+```
+
+It is a **socket**-layer filter, not a packet filter, which is what makes it so easy to misdiagnose:
+the TCP handshake completes in the kernel, so `nc -z` reports the port "open" and the board's own
+probe reported "connected" — only the first `read()` fails. What was established:
+
+- **not** the Application Firewall's per-app allowlist — an explicitly allowed binary (`node`) fails
+  identically on the same port
+- **not** the router, and nothing there needs changing — `route -n get 192.168.1.64` resolves to
+  `lo0`, so the Mac's probe of its own address never leaves the machine, and the board reaches a
+  *different* host on that same LAN perfectly
+- two managed-Mac network extensions are active — `GlobalProtectExtension` and
+  `com.sentinelone.network-monitoring`, both socket filters. Which of them does it was not
+  determined; interrogating either needs root.
+
+A public tunnel is not a way round it either: the firmware speaks `ws://` only, with no TLS.
 
 Everything on either side of that link is verified independently, by §3 and §4.
 
@@ -277,12 +320,19 @@ operation. `test_the_live_suite_cannot_run_by_accident` asserts both guards.
 
 | | |
 |---|---|
+| Server host | `ich-picobox` — `192.168.1.197`, driven by [tools/remote.sh](tools/remote.sh) |
 | Product server port | `8000` (`ROBOFACE_WS_PORT`) — `codegen/`'s dashboard owns `8420` |
+| Board address | `192.168.1.131` (DHCP), device id `core-s3-01` |
 | Board | `m5stack-cores3`, ESP32-S3, 16 MB flash, 8 MB PSRAM |
 | Transport | `ws://` — the server runs uvicorn with **no TLS**; see ARCHITECTURE §Contracts |
 | Protocol version | `1`, with no compatibility window |
 | Secrets | `server/.env`, `firmware/src/config.h` — both gitignored |
 
+```bash
+tools/remote.sh start | stop | restart | status | health | logs [-f] | ping | shell | help
+```
+
+- [DEPLOYMENT.md](DEPLOYMENT.md) — deploying and administering the server, and the firmware
 - [CLAUDE.md](CLAUDE.md) — the toolchain commands and the repository map
 - [specification/ARCHITECTURE.md](specification/ARCHITECTURE.md) — contracts, seams, testing policy
 - [specification/features/DEVICE_UI.md](specification/features/DEVICE_UI.md) — what the screen shows

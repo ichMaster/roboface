@@ -122,10 +122,13 @@ for one — it speaks the protocol through `protocol.py`, so a contract change b
 rather than letting it drift:
 
 ```bash
-set -a && . ./server/.env && set +a
 PYTHONPATH=server .venv/bin/python -m roboface_server.app     # terminal 1
 .venv/bin/python tools/chat.py                                # terminal 2
 ```
+
+`server/.env` is **not** sourced: `load_settings()` reads it directly, by a path derived from
+`config.py`'s own location. Sourcing it would also drop `WEATHER_URL`, whose value contains an
+unquoted `&` — the shell backgrounds there and loses the assignment, silently.
 
 Type a line to say it; `/help` lists the rest (`/ping`, `/bad`, `/raw`, `/binary`, `/hello 99`,
 `/stats`). It prints reply deltas as they arrive and reports time-to-first-delta, which is the
@@ -164,8 +167,8 @@ which is why `pio device monitor` dies at exactly the moment you want to be watc
 repo's own monitor instead, which reattaches:
 
 ```bash
-.venv/bin/python tools/board.py                    # watch until Ctrl-C
-.venv/bin/python tools/board.py --send /faces      # and drive the self-test
+.venv/bin/python tools/board.py                    # watch, and type commands at it
+.venv/bin/python tools/board.py --send /faces      # drive the self-test from a script
 ```
 
 **If the board joins WiFi but never connects** (`[ws] reconnecting in …` climbing to the ceiling
