@@ -89,6 +89,31 @@ Introduce `IFaceRenderer` and a **stub renderer**: a static face per device stat
 
 ---
 
+### v0.5 — Serial chat console
+
+**Goal:** hold a text conversation with the board as the display, before any audio exists — and prove the Ukrainian round trip renders on the panel.
+
+v0.4 closed the skeleton: a turn goes device → server → Gemini → device and the screen shows the turn *state* as a face. What it cannot show is the turn's **content**, so the only way to read a reply is over the serial cable. This phase adds a console mode that borrows the screen to show the conversation, the way `/faces` already borrows it for the self-test — an instrument, explicitly entered and explicitly left.
+
+**This does not relax the face rule.** MISSION's "a device state is a face, never a word" is about *state*: `thinking` must never appear as the word "thinking". A transcript is content, not a state label, and the mode announces itself rather than pretending to be the product. Outside it, nothing changes.
+
+**Ukrainian must render.** The product's language is Ukrainian ([MISSION](MISSION.md)) and the system prompt answers in it, so a console that can only show Latin text would be able to display the questions and not the answers. M5GFX bundles no Cyrillic font — its `efont` set is JA/CN/KR/TW and the built-in `Font0` is ASCII — but it accepts **U8g2 font arrays** through `lgfx::U8g2font`, which is the same mechanism its own bundled fonts use, and it already decodes UTF-8 when drawing. So the fix is an embedded font, not a text pipeline.
+
+**Tasks:**
+- `/chat-on` and `/chat-off` serial commands, also drivable from `tools/board.py --send`. `/chat-on` prints a prompt on serial and takes the screen; `/chat-off` restores the face **and the device state that was showing before**, the way the `/faces` self-test restores its saved state.
+- The transcript view: the message just sent, and the reply as its deltas arrive. Drawn into the existing full-screen sprite and pushed with it, so it cannot tear against chrome.
+- A Cyrillic-capable U8g2 bitmap font, embedded as an array and wrapped in `lgfx::U8g2font`. It must be licence-compatible with this repository (MIT) — a GPL-licensed font such as Unifont is not, whatever its coverage.
+- **Pure:** UTF-8-safe word wrapping and a bounded transcript buffer, in `pure/`, host-tested. Wrapping counts codepoints rather than bytes; a Ukrainian reply is two bytes per letter, so a byte-based wrap would both mis-measure every line and split a character in half.
+- **Glue:** the drawing, the font, and the command handling.
+- Chrome keeps its band and its rules — link and battery are facts, and a console that hid them would hide a dropped link at the moment it matters most.
+- The mode survives a WS reconnect and does not interfere with the existing "reply outside a turn" guard.
+
+**DoD:** `/chat-on` prints a prompt on serial and replaces the face with an empty transcript; a line typed at `tools/board.py` appears on the screen as the outgoing message and its reply appears there as it streams; **a Ukrainian reply is legible on the panel** — no boxes, no mojibake, no half-characters at a line break; a reply longer than the screen scrolls or truncates deliberately rather than overrunning the face area; `/chat-off` restores exactly the face and state that were showing before; chrome behaves as it does outside the mode.
+
+**Tests:** host — wrapping is total over the awkward inputs (empty, whitespace only, a single word longer than a line, mixed Latin/Cyrillic) and **never splits a UTF-8 sequence**; the transcript keeps its last N lines and cannot grow without bound however long the reply; the mode toggle restores the saved state. Manual DoD check on hardware, including a Ukrainian round trip read off the panel rather than off the serial log.
+
+---
+
 ## v1 — Voice
 
 The complete voice loop through the server, hands-free by the end. Output is built before input (validate the easy path first): TTS playback, then capture, then ASR, then VAD-driven active listening. At the end of v1 you can hold a spoken conversation with a face that still only shows states — the face itself comes in v2. Depends on: v0.
