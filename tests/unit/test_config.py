@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 from roboface_server.config import (
+    DEFAULT_ELEVENLABS_MODEL,
+    DEFAULT_ELEVENLABS_OUTPUT_FORMAT,
     DEFAULT_GEMINI_MODEL,
     DEFAULT_GEMINI_THINKING_BUDGET,
     DEFAULT_LOG_LEVEL,
@@ -30,6 +32,10 @@ def _settings(**overrides: object) -> Settings:
         "gemini_api_key": "",
         "gemini_model": DEFAULT_GEMINI_MODEL,
         "gemini_thinking_budget": DEFAULT_GEMINI_THINKING_BUDGET,
+        "elevenlabs_api_key": "",
+        "elevenlabs_voice_id": "",
+        "elevenlabs_model": DEFAULT_ELEVENLABS_MODEL,
+        "elevenlabs_output_format": DEFAULT_ELEVENLABS_OUTPUT_FORMAT,
     }
     fields.update(overrides)
     return Settings(**fields)  # type: ignore[arg-type]
@@ -117,13 +123,16 @@ def test_only_the_landed_phases_variables_are_read(tmp_path: Path) -> None:
 
     ARCHITECTURE §Configuration assigns each variable to the phase that introduces it, and
     reading one early would let an unset future key look configured. v0.2 added the three
-    Gemini keys, so they are now expected; the ASR/TTS/canon keys are not, and will arrive
-    with v1.1, v1.3 and v4.1.
+    Gemini keys and **v1.1 added the four ElevenLabs ones**, so those are now expected; the
+    ASR and canon keys are not, and will arrive with v1.3 and v4.1.
+
+    This test is meant to fail when a phase lands, and it did: it was asserting that
+    ``ELEVENLABS_API_KEY`` must not be read, which was true right up until RF-030. Updating it
+    is the deliberate act of moving a variable from "later" to "now".
     """
     settings = load_settings(
         {
             "DEEPGRAM_API_KEY": "should-never-be-read",
-            "ELEVENLABS_API_KEY": "should-never-be-read",
             "ROBOFACE_CANON_PATH": "should-never-be-read",
         },
         env_file=_no_file(tmp_path),
@@ -138,6 +147,10 @@ def test_only_the_landed_phases_variables_are_read(tmp_path: Path) -> None:
         "gemini_api_key",
         "gemini_model",
         "gemini_thinking_budget",
+        "elevenlabs_api_key",
+        "elevenlabs_voice_id",
+        "elevenlabs_model",
+        "elevenlabs_output_format",
     }
 
 
@@ -238,6 +251,39 @@ def test_repr_shows_whether_a_key_is_present_and_nothing_more(tmp_path: Path) ->
     assert "gemini_api_key=unset" in without
     assert SECRET[:6] not in with_key
     assert str(len(SECRET)) not in with_key
+
+
+TTS_SECRET = "sk_TOTALLY-SECRET-ELEVENLABS-KEY-99"
+
+
+def test_repr_never_contains_the_tts_key_either(tmp_path: Path) -> None:
+    """v1.1 added a second vendor, and a redaction covering only the first is one that fails
+    the moment the system grows -- which is exactly how the original finding happened."""
+    settings = load_settings(
+        {"GEMINI_API_KEY": SECRET, "ELEVENLABS_API_KEY": TTS_SECRET},
+        env_file=_no_file(tmp_path),
+    )
+
+    rendered = repr(settings)
+    assert SECRET not in rendered
+    assert TTS_SECRET not in rendered
+    assert "elevenlabs_api_key=***" in rendered
+
+
+def test_the_tts_key_absence_is_shown_the_same_way(tmp_path: Path) -> None:
+    assert "elevenlabs_api_key=unset" in repr(load_settings({}, env_file=_no_file(tmp_path)))
+
+
+def test_the_non_secret_tts_settings_are_still_visible(tmp_path: Path) -> None:
+    # The voice id and model are configuration, not credentials: redacting them would move the
+    # debugging problem without protecting anything.
+    settings = load_settings(
+        {"ELEVENLABS_VOICE_ID": "voice-xyz", "ELEVENLABS_MODEL": "eleven_turbo_v2_5"},
+        env_file=_no_file(tmp_path),
+    )
+    rendered = repr(settings)
+    assert "voice-xyz" in rendered
+    assert "eleven_turbo_v2_5" in rendered
 
 
 def test_repr_still_shows_the_non_secret_settings(tmp_path: Path) -> None:

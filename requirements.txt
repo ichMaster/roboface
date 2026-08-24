@@ -8,3 +8,7 @@ python-dotenv>=1.0
 # Chat and vision, and nothing else (MISSION: Gemini only). Imported lazily inside
 # providers/gemini.py so the default test suite runs without it.
 google-genai>=1.0
+# Speech, from v1.1. The ElevenLabs adapter streams over plain HTTP rather than through a vendor
+# SDK -- the endpoint is one POST and the response is a byte stream, so an SDK would add a
+# dependency without removing any code. Imported lazily inside the adapter.
+httpx>=0.27

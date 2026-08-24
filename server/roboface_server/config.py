@@ -41,6 +41,13 @@ DEFAULT_LOG_LEVEL = "info"
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_GEMINI_THINKING_BUDGET = 0
 
+#: ElevenLabs defaults, from v1.1. ``pcm_16000`` is not a preference -- it is the device's playback
+#: format (``AUDIO_FMT`` in ``protocol.py``), so asking for it means nothing decodes anywhere: what
+#: the vendor streams is what goes on the wire and what the speaker plays. Asking for MP3 would put
+#: a decoder on an ESP32 in the middle of a latency budget.
+DEFAULT_ELEVENLABS_MODEL = "eleven_turbo_v2_5"
+DEFAULT_ELEVENLABS_OUTPUT_FORMAT = "pcm_16000"
+
 #: The accepted values of ``ROBOFACE_LOG_LEVEL``. Lower-case on the wire and in the
 #: file; the logging module maps them upward when it configures itself (RF-005).
 LOG_LEVELS = frozenset({"debug", "info", "warning", "error", "critical"})
@@ -69,6 +76,10 @@ class Settings:
     gemini_api_key: str
     gemini_model: str
     gemini_thinking_budget: int
+    elevenlabs_api_key: str
+    elevenlabs_voice_id: str
+    elevenlabs_model: str
+    elevenlabs_output_format: str
 
     def __repr__(self) -> str:
         """Never render the key.
@@ -85,11 +96,19 @@ class Settings:
         whether it is there at all.
         """
         key = "***" if self.gemini_api_key else "unset"
+        # Every key gets the same treatment. v1.1 added a second vendor, and a redaction that
+        # covered only the first would be a redaction that fails the moment the system grows --
+        # which is exactly how the original finding happened.
+        tts_key = "***" if self.elevenlabs_api_key else "unset"
         return (
             f"Settings(ws_host={self.ws_host!r}, ws_port={self.ws_port!r}, "
             f"log_level={self.log_level!r}, gemini_api_key={key}, "
             f"gemini_model={self.gemini_model!r}, "
-            f"gemini_thinking_budget={self.gemini_thinking_budget!r})"
+            f"gemini_thinking_budget={self.gemini_thinking_budget!r}, "
+            f"elevenlabs_api_key={tts_key}, "
+            f"elevenlabs_voice_id={self.elevenlabs_voice_id!r}, "
+            f"elevenlabs_model={self.elevenlabs_model!r}, "
+            f"elevenlabs_output_format={self.elevenlabs_output_format!r})"
         )
 
     def require_gemini_api_key(self) -> str:
@@ -187,6 +206,11 @@ def load_settings(
     model = _resolve("GEMINI_MODEL", resolved_environ, file_values)
     raw_budget = _resolve("GEMINI_THINKING_BUDGET", resolved_environ, file_values)
 
+    tts_key = _resolve("ELEVENLABS_API_KEY", resolved_environ, file_values)
+    voice_id = _resolve("ELEVENLABS_VOICE_ID", resolved_environ, file_values)
+    tts_model = _resolve("ELEVENLABS_MODEL", resolved_environ, file_values)
+    tts_format = _resolve("ELEVENLABS_OUTPUT_FORMAT", resolved_environ, file_values)
+
     return Settings(
         ws_host=host,
         ws_port=DEFAULT_WS_PORT if raw_port is None else _parse_port(raw_port),
@@ -199,4 +223,10 @@ def load_settings(
             if raw_budget is None
             else _parse_thinking_budget(raw_budget)
         ),
+        # Absent is not an error here either: the suite must load settings with no keys at all,
+        # and a missing TTS key becomes an enumerated failure at the moment speech is attempted.
+        elevenlabs_api_key=tts_key or "",
+        elevenlabs_voice_id=voice_id or "",
+        elevenlabs_model=tts_model or DEFAULT_ELEVENLABS_MODEL,
+        elevenlabs_output_format=tts_format or DEFAULT_ELEVENLABS_OUTPUT_FORMAT,
     )
