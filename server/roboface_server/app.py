@@ -40,6 +40,10 @@ class WebSocketTransport:
     async def send(self, data: str) -> None:
         await self._websocket.send_text(data)
 
+    async def send_bytes(self, data: bytes) -> None:
+        """A binary frame -- `tts_audio` from v1.1, with no envelope by contract."""
+        await self._websocket.send_bytes(data)
+
     async def receive(self) -> str | bytes:
         """The next frame, text or binary.
 

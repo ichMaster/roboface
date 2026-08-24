@@ -56,6 +56,42 @@ class ReplyStream:
         return len(self.deltas)
 
 
+@dataclass(frozen=True, slots=True)
+class TurnStream:
+    """One turn's frames and audio payloads, **in arrival order**.
+
+    The order is the assertion. A server that collected a turn's audio and flushed it at the end
+    emits the same set of frames as one that streams; only the sequence tells them apart.
+    """
+
+    events: tuple[Frame | bytes, ...]
+
+    @property
+    def audio(self) -> tuple[bytes, ...]:
+        return tuple(event for event in self.events if isinstance(event, bytes))
+
+    @property
+    def frames(self) -> tuple[Frame, ...]:
+        return tuple(event for event in self.events if not isinstance(event, bytes))
+
+    def first_audio_index(self) -> int | None:
+        for index, event in enumerate(self.events):
+            if isinstance(event, bytes):
+                return index
+        return None
+
+    def last_delta_index(self) -> int | None:
+        """Where the final `reply` delta sits. The DoD compares this against the first audio."""
+        found = None
+        for index, event in enumerate(self.events):
+            if isinstance(event, Reply) and not event.final:
+                found = index
+        return found
+
+    def __len__(self) -> int:
+        return len(self.events)
+
+
 FrameT = TypeVar("FrameT", bound=Frame)
 
 # NOTE there is deliberately no per-receive timeout here. `WebSocketTestSession.receive_text`
@@ -113,6 +149,42 @@ class FakeDevice:
     def recv(self) -> Frame:
         """The next frame from the server, decoded by `protocol`."""
         return decode(self._session.receive_text())
+
+    def recv_any(self) -> Frame | bytes:
+        """The next frame, **text or binary**, in arrival order.
+
+        `recv` decodes text and would choke on a binary frame; this one returns the raw payload
+        instead. From v1.1 the server sends both on the same socket and the *order* between them
+        is the property under test -- audio for an early phrase leaves while later text is still
+        being generated -- so a helper that could only see one kind would make the thing this
+        phase exists to prove untestable.
+        """
+        message = self._session.receive()
+        payload = message.get("bytes")
+        if payload is not None:
+            return bytes(payload)
+        text = message.get("text")
+        if text is None:
+            raise AssertionError(f"expected a text or binary frame, got {message}")
+        return decode(text)
+
+    def collect_turn(self, *, limit: int = 500) -> TurnStream:
+        """Everything a turn emits, in arrival order, until the terminal `reply`.
+
+        Returns the frames and the payloads interleaved exactly as they arrived. Asserting on
+        that order is how a test distinguishes "streamed" from "collected then sent": a server
+        that gathered all the audio and flushed it at the end produces the same *set* of frames
+        and a completely different sequence.
+        """
+        events: list[Frame | bytes] = []
+        for _ in range(limit):
+            item = self.recv_any()
+            events.append(item)
+            if isinstance(item, ErrorFrame):
+                return TurnStream(tuple(events))
+            if isinstance(item, Reply) and item.final:
+                return TurnStream(tuple(events))
+        raise AssertionError(f"no terminal frame within {limit}; got {len(events)}")
 
     def recv_until(self, kind: type[FrameT], *, limit: int = 20) -> FrameT:
         """The next frame of type ``kind``, skipping anything before it.

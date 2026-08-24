@@ -35,15 +35,16 @@ from roboface_server.router import (
     EchoResponder,
     Router,
 )
+from roboface_server.turn import ReplyDelta, TurnEvent
 
 
 class _NoHistoryResponder:
     """A responder for tests that only care about frames, not about state."""
 
-    def respond(self, session_id: str, text: str) -> AsyncIterator[str]:
+    def respond(self, session_id: str, text: str) -> AsyncIterator[TurnEvent]:
         return self._stream(text)
 
-    async def _stream(self, text: str) -> AsyncIterator[str]:
+    async def _stream(self, text: str) -> AsyncIterator[TurnEvent]:
         yield text
 
     def forget(self, session_id: str) -> None:
@@ -185,9 +186,9 @@ async def test_ping_is_answered_with_pong() -> None:
 @pytest.mark.asyncio
 async def test_text_in_is_answered_through_the_injected_responder() -> None:
     class Shouting(_NoHistoryResponder):
-        async def _stream(self, text: str) -> AsyncIterator[str]:
+        async def _stream(self, text: str) -> AsyncIterator[TurnEvent]:
             for word in text.split():
-                yield word.upper()
+                yield ReplyDelta(text=word.upper())
 
     router = Router(responder=Shouting(), session_id_factory=lambda: "s")
     transport = ScriptedTransport([_hello(), encode(TextIn(text="hello there"))])
@@ -224,12 +225,12 @@ async def test_the_responder_is_told_which_session_it_is_serving() -> None:
     seen: list[str] = []
 
     class Recording(_NoHistoryResponder):
-        def respond(self, session_id: str, text: str) -> AsyncIterator[str]:
+        def respond(self, session_id: str, text: str) -> AsyncIterator[TurnEvent]:
             seen.append(session_id)
             return self._stream(text)
 
-        async def _stream(self, text: str) -> AsyncIterator[str]:
-            yield "ok"
+        async def _stream(self, text: str) -> AsyncIterator[TurnEvent]:
+            yield ReplyDelta(text="ok")
 
     router = Router(responder=Recording(), session_id_factory=lambda: "session-under-test")
     await router.serve(ScriptedTransport([_hello(), encode(TextIn(text="x"))]))
@@ -242,8 +243,8 @@ async def test_a_turn_that_aborts_sends_an_error_and_no_terminal_reply() -> None
     """A `final: true` after a failure would present half a sentence as a finished answer."""
 
     class Failing(_NoHistoryResponder):
-        async def _stream(self, text: str) -> AsyncIterator[str]:
-            yield "почина"
+        async def _stream(self, text: str) -> AsyncIterator[TurnEvent]:
+            yield ReplyDelta(text="почина")
             raise TurnAborted("provider died", ErrorCode.LLM_FAILED)
 
     router = Router(responder=Failing(), session_id_factory=lambda: "s")
@@ -488,8 +489,8 @@ async def test_a_second_hello_is_the_devices_fault() -> None:
 class _BuggyResponder(_NoHistoryResponder):
     """Any bug a responder can have: a KeyError, an untranslated vendor type."""
 
-    async def _stream(self, text: str) -> AsyncIterator[str]:
-        yield "почина"
+    async def _stream(self, text: str) -> AsyncIterator[TurnEvent]:
+        yield ReplyDelta(text="почина")
         raise KeyError("a bug nobody translated")
 
 
@@ -517,11 +518,11 @@ async def test_the_connection_survives_a_responder_bug() -> None:
     calls = {"n": 0}
 
     class SometimesBuggy(_NoHistoryResponder):
-        async def _stream(self, text: str) -> AsyncIterator[str]:
+        async def _stream(self, text: str) -> AsyncIterator[TurnEvent]:
             calls["n"] += 1
             if calls["n"] == 1:
                 raise ValueError("first turn explodes")
-            yield "second turn is fine"
+            yield ReplyDelta(text="second turn is fine")
 
     router = Router(responder=SometimesBuggy(), session_id_factory=lambda: "s")
     transport = ScriptedTransport(
@@ -543,7 +544,7 @@ async def test_cancellation_is_not_swallowed_as_a_server_fault() -> None:
     """
 
     class Cancelling(_NoHistoryResponder):
-        async def _stream(self, text: str) -> AsyncIterator[str]:
+        async def _stream(self, text: str) -> AsyncIterator[TurnEvent]:
             raise asyncio.CancelledError
             yield  # pragma: no cover -- unreachable; makes this an async generator
 

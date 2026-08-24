@@ -18,6 +18,7 @@ from roboface_server.orchestrator import (
 )
 from roboface_server.protocol import ErrorCode
 from roboface_server.providers import Message, MockLLMProvider, ProviderError, SilentLLMProvider
+from roboface_server.turn import ReplyDelta
 
 
 def _orchestrator(provider: object, **kwargs: object) -> Orchestrator:
@@ -33,7 +34,7 @@ def _orchestrator(provider: object, **kwargs: object) -> Orchestrator:
 async def test_a_turn_yields_the_provider_deltas_in_order() -> None:
     orchestrator = _orchestrator(MockLLMProvider(deltas=["При", "віт", "!"]))
 
-    deltas = [delta async for delta in orchestrator.respond("s", "hi")]
+    deltas = [event.text async for event in orchestrator.respond("s", "hi")]
 
     assert deltas == ["При", "віт", "!"]
 
@@ -50,7 +51,7 @@ async def test_the_first_delta_is_available_before_the_stream_ends() -> None:
     first = await anext(stream)
     elapsed = asyncio.get_running_loop().time() - started
 
-    assert first == "a"
+    assert first == ReplyDelta(text="a")
     assert elapsed < 0.2, "the first delta waited for the rest of the stream"
 
 
@@ -68,7 +69,7 @@ async def test_the_provider_receives_the_system_prompt_and_the_history() -> None
     provider = MockLLMProvider()
     orchestrator = _orchestrator(provider, system_prompt="SYSTEM")
 
-    [delta async for delta in orchestrator.respond("s", "привіт")]
+    [event.text async for event in orchestrator.respond("s", "привіт")]
 
     system, messages = provider.calls[0]
     assert system == "SYSTEM"
@@ -86,7 +87,7 @@ async def test_the_budget_fires_when_the_provider_never_starts() -> None:
     orchestrator = _orchestrator(provider, first_token_budget_s=0.05)
 
     with pytest.raises(TurnAborted) as raised:
-        [delta async for delta in orchestrator.respond("s", "hi")]
+        [event.text async for event in orchestrator.respond("s", "hi")]
 
     assert raised.value.code is ErrorCode.LLM_TIMEOUT
 
@@ -102,7 +103,7 @@ async def test_the_budget_does_not_fire_on_a_slow_middle() -> None:
     provider = MockLLMProvider(deltas=["a", "b", "c"], delay_s=0.15, delay_before_index=1)
     orchestrator = _orchestrator(provider, first_token_budget_s=0.05)
 
-    deltas = [delta async for delta in orchestrator.respond("s", "hi")]
+    deltas = [event.text async for event in orchestrator.respond("s", "hi")]
 
     assert deltas == ["a", "b", "c"]
 
@@ -121,7 +122,7 @@ def test_the_default_budget_matches_the_architecture() -> None:
 async def test_history_accumulates_user_and_model_messages() -> None:
     orchestrator = _orchestrator(MockLLMProvider(deltas=["ві", "таю"]))
 
-    [delta async for delta in orchestrator.respond("s", "привіт")]
+    [event.text async for event in orchestrator.respond("s", "привіт")]
 
     assert orchestrator.history("s") == (
         Message(role="user", text="привіт"),
@@ -133,7 +134,7 @@ async def test_history_accumulates_user_and_model_messages() -> None:
 async def test_the_model_message_is_the_joined_deltas() -> None:
     orchestrator = _orchestrator(MockLLMProvider(deltas=["one ", "two ", "three"]))
 
-    [delta async for delta in orchestrator.respond("s", "count")]
+    [event.text async for event in orchestrator.respond("s", "count")]
 
     assert orchestrator.history("s")[-1].text == "one two three"
 
@@ -143,8 +144,8 @@ async def test_a_second_turn_sees_the_first() -> None:
     provider = MockLLMProvider(deltas=["ok"])
     orchestrator = _orchestrator(provider)
 
-    [delta async for delta in orchestrator.respond("s", "first")]
-    [delta async for delta in orchestrator.respond("s", "second")]
+    [event.text async for event in orchestrator.respond("s", "first")]
+    [event.text async for event in orchestrator.respond("s", "second")]
 
     _, messages = provider.calls[1]
     assert [message.text for message in messages] == ["first", "ok", "second"]
@@ -154,8 +155,8 @@ async def test_a_second_turn_sees_the_first() -> None:
 async def test_two_sessions_do_not_share_a_history() -> None:
     orchestrator = _orchestrator(MockLLMProvider(deltas=["ok"]))
 
-    [delta async for delta in orchestrator.respond("session-a", "from a")]
-    [delta async for delta in orchestrator.respond("session-b", "from b")]
+    [event.text async for event in orchestrator.respond("session-a", "from a")]
+    [event.text async for event in orchestrator.respond("session-b", "from b")]
 
     assert [m.text for m in orchestrator.history("session-a")] == ["from a", "ok"]
     assert [m.text for m in orchestrator.history("session-b")] == ["from b", "ok"]
@@ -164,7 +165,7 @@ async def test_two_sessions_do_not_share_a_history() -> None:
 @pytest.mark.asyncio
 async def test_forget_drops_a_session() -> None:
     orchestrator = _orchestrator(MockLLMProvider(deltas=["ok"]))
-    [delta async for delta in orchestrator.respond("s", "hi")]
+    [event.text async for event in orchestrator.respond("s", "hi")]
 
     orchestrator.forget("s")
 
@@ -174,10 +175,10 @@ async def test_forget_drops_a_session() -> None:
 @pytest.mark.asyncio
 async def test_history_is_returned_as_a_copy() -> None:
     orchestrator = _orchestrator(MockLLMProvider(deltas=["ok"]))
-    [delta async for delta in orchestrator.respond("s", "hi")]
+    [event.text async for event in orchestrator.respond("s", "hi")]
 
     snapshot = orchestrator.history("s")
-    [delta async for delta in orchestrator.respond("s", "again")]
+    [event.text async for event in orchestrator.respond("s", "again")]
 
     assert len(snapshot) == 2, "a caller's snapshot changed underneath it"
 
@@ -193,7 +194,7 @@ async def test_an_unhinted_provider_failure_becomes_llm_failed() -> None:
     orchestrator = _orchestrator(provider)
 
     with pytest.raises(TurnAborted) as raised:
-        [delta async for delta in orchestrator.respond("s", "hi")]
+        [event.text async for event in orchestrator.respond("s", "hi")]
 
     assert raised.value.code is ErrorCode.LLM_FAILED
 
@@ -204,7 +205,7 @@ async def test_a_hinted_provider_failure_keeps_its_code() -> None:
     orchestrator = _orchestrator(MockLLMProvider(fail_at_index=0, error=error))
 
     with pytest.raises(TurnAborted) as raised:
-        [delta async for delta in orchestrator.respond("s", "hi")]
+        [event.text async for event in orchestrator.respond("s", "hi")]
 
     assert raised.value.code is ErrorCode.RATE_LIMITED
 
@@ -215,7 +216,7 @@ async def test_a_silent_provider_ends_the_turn_cleanly() -> None:
     # llm_failed would put an error face on the device for a turn that had nothing to say.
     orchestrator = _orchestrator(SilentLLMProvider())
 
-    deltas = [delta async for delta in orchestrator.respond("s", "hi")]
+    deltas = [event.text async for event in orchestrator.respond("s", "hi")]
 
     assert deltas == []
 
@@ -236,7 +237,7 @@ async def test_a_failure_before_the_first_delta_rolls_the_user_message_back() ->
     orchestrator = _orchestrator(MockLLMProvider(fail_at_index=0))
 
     with pytest.raises(TurnAborted):
-        [delta async for delta in orchestrator.respond("s", "питання без відповіді")]
+        [event.text async for event in orchestrator.respond("s", "питання без відповіді")]
 
     assert orchestrator.history("s") == ()
 
@@ -248,7 +249,7 @@ async def test_a_timeout_rolls_the_user_message_back() -> None:
     )
 
     with pytest.raises(TurnAborted):
-        [delta async for delta in orchestrator.respond("s", "hi")]
+        [event.text async for event in orchestrator.respond("s", "hi")]
 
     assert orchestrator.history("s") == ()
 
@@ -260,8 +261,8 @@ async def test_a_mid_stream_failure_rolls_back_and_keeps_no_partial_reply() -> N
 
     seen: list[str] = []
     with pytest.raises(TurnAborted):
-        async for delta in orchestrator.respond("s", "привіт"):
-            seen.append(delta)
+        async for event in orchestrator.respond("s", "привіт"):
+            seen.append(event.text)
 
     assert seen == ["почина"], "the deltas that did arrive should still have arrived"
     assert orchestrator.history("s") == ()
@@ -273,10 +274,10 @@ async def test_the_next_turn_after_a_failure_sees_a_consistent_history() -> None
     orchestrator = _orchestrator(provider)
 
     with pytest.raises(TurnAborted):
-        [delta async for delta in orchestrator.respond("s", "цей провалиться")]
+        [event.text async for event in orchestrator.respond("s", "цей провалиться")]
 
     provider.fail_at_index = None
-    [delta async for delta in orchestrator.respond("s", "цей спрацює")]
+    [event.text async for event in orchestrator.respond("s", "цей спрацює")]
 
     _, messages = provider.calls[-1]
     assert [message.text for message in messages] == ["цей спрацює"], (
@@ -289,11 +290,11 @@ async def test_the_next_turn_after_a_failure_sees_a_consistent_history() -> None
 async def test_a_failure_does_not_disturb_earlier_successful_turns() -> None:
     provider = MockLLMProvider(deltas=["ok"])
     orchestrator = _orchestrator(provider)
-    [delta async for delta in orchestrator.respond("s", "перше")]
+    [event.text async for event in orchestrator.respond("s", "перше")]
 
     provider.fail_at_index = 0
     with pytest.raises(TurnAborted):
-        [delta async for delta in orchestrator.respond("s", "друге")]
+        [event.text async for event in orchestrator.respond("s", "друге")]
 
     assert [message.text for message in orchestrator.history("s")] == ["перше", "ok"]
 
@@ -307,7 +308,7 @@ async def test_a_silent_reply_keeps_the_user_message() -> None:
     """
     orchestrator = _orchestrator(SilentLLMProvider())
 
-    deltas = [delta async for delta in orchestrator.respond("s", "тиша")]
+    deltas = [event.text async for event in orchestrator.respond("s", "тиша")]
 
     assert deltas == []
     assert [message.text for message in orchestrator.history("s")] == ["тиша"]
@@ -322,12 +323,12 @@ async def test_rollback_removes_this_turns_message_not_merely_the_last_one() -> 
     """
     provider = MockLLMProvider(deltas=["ok"])
     orchestrator = _orchestrator(provider)
-    [delta async for delta in orchestrator.respond("s", "перше")]
+    [event.text async for event in orchestrator.respond("s", "перше")]
 
     failing = MockLLMProvider(fail_at_index=0)
     orchestrator.provider = failing
     with pytest.raises(TurnAborted):
-        [delta async for delta in orchestrator.respond("s", "друге")]
+        [event.text async for event in orchestrator.respond("s", "друге")]
 
     history = orchestrator.history("s")
     assert [message.text for message in history] == ["перше", "ok"]
@@ -371,8 +372,8 @@ async def test_an_abandoned_turn_rolls_back_rather_than_stranding_the_question()
 
     stream = orchestrator.respond("s", "питання")
     seen = []
-    async for delta in stream:
-        seen.append(delta)
+    async for event in stream:
+        seen.append(event.text)
         if len(seen) == 2:
             break
     await stream.aclose()
@@ -399,7 +400,7 @@ async def test_an_abandoned_turn_closes_the_provider_stream() -> None:
 @pytest.mark.asyncio
 async def test_an_abandoned_turn_leaves_earlier_turns_intact() -> None:
     orchestrator = _orchestrator(MockLLMProvider(deltas=["ok"]))
-    [delta async for delta in orchestrator.respond("s", "перше")]
+    [event.text async for event in orchestrator.respond("s", "перше")]
 
     stream = orchestrator.respond("s", "друге")
     async for _delta in stream:
@@ -414,7 +415,7 @@ async def test_a_completed_turn_is_not_treated_as_abandoned() -> None:
     # The finally runs on every path; only the unhandled ending must trigger a rollback.
     orchestrator = _orchestrator(MockLLMProvider(deltas=["ві", "таю"]))
 
-    [delta async for delta in orchestrator.respond("s", "привіт")]
+    [event.text async for event in orchestrator.respond("s", "привіт")]
 
     assert [message.text for message in orchestrator.history("s")] == ["привіт", "вітаю"]
 
@@ -425,7 +426,7 @@ async def test_a_silent_turn_is_not_treated_as_abandoned() -> None:
     # correct. The abandonment branch must not undo it.
     orchestrator = _orchestrator(SilentLLMProvider())
 
-    [delta async for delta in orchestrator.respond("s", "тиша")]
+    [event.text async for event in orchestrator.respond("s", "тиша")]
 
     assert [message.text for message in orchestrator.history("s")] == ["тиша"]
 
@@ -492,7 +493,7 @@ async def test_history_is_bounded_by_the_window() -> None:
     orchestrator = _orchestrator(MockLLMProvider(deltas=["ok"]))
 
     for index in range(MAX_HISTORY_MESSAGES):  # two messages per turn
-        [delta async for delta in orchestrator.respond("s", f"turn {index}")]
+        [event.text async for event in orchestrator.respond("s", f"turn {index}")]
 
     assert len(orchestrator.history("s")) == MAX_HISTORY_MESSAGES
 
@@ -504,7 +505,7 @@ async def test_the_window_keeps_the_recent_messages_not_the_first_ones() -> None
     orchestrator = _orchestrator(MockLLMProvider(deltas=["ok"]))
 
     for index in range(30):
-        [delta async for delta in orchestrator.respond("s", f"turn {index}")]
+        [event.text async for event in orchestrator.respond("s", f"turn {index}")]
 
     texts = [message.text for message in orchestrator.history("s")]
     assert texts[-2:] == ["turn 29", "ok"]
@@ -521,7 +522,7 @@ async def test_the_provider_never_receives_more_than_the_window() -> None:
     orchestrator = _orchestrator(provider)
 
     for index in range(40):
-        [delta async for delta in orchestrator.respond("s", f"turn {index}")]
+        [event.text async for event in orchestrator.respond("s", f"turn {index}")]
 
     largest = max(len(messages) for _system, messages in provider.calls)
     assert largest <= MAX_HISTORY_MESSAGES
@@ -537,7 +538,7 @@ async def test_a_turns_own_message_is_never_the_one_trimmed() -> None:
     orchestrator = _orchestrator(provider)
 
     for index in range(MAX_HISTORY_MESSAGES + 5):
-        [delta async for delta in orchestrator.respond("s", f"turn {index}")]
+        [event.text async for event in orchestrator.respond("s", f"turn {index}")]
 
     _system, messages = provider.calls[-1]
     assert messages[-1].text == f"turn {MAX_HISTORY_MESSAGES + 4}"
@@ -554,11 +555,11 @@ async def test_rollback_still_works_at_the_window_boundary() -> None:
     provider = MockLLMProvider(deltas=["ok"])
     orchestrator = _orchestrator(provider)
     for index in range(MAX_HISTORY_MESSAGES):
-        [delta async for delta in orchestrator.respond("s", f"turn {index}")]
+        [event.text async for event in orchestrator.respond("s", f"turn {index}")]
 
     provider.fail_at_index = 0
     with pytest.raises(TurnAborted):
-        [delta async for delta in orchestrator.respond("s", "this one fails")]
+        [event.text async for event in orchestrator.respond("s", "this one fails")]
 
     texts = [message.text for message in orchestrator.history("s")]
     assert "this one fails" not in texts
@@ -570,7 +571,7 @@ async def test_the_window_is_per_session() -> None:
     orchestrator = _orchestrator(MockLLMProvider(deltas=["ok"]))
 
     for index in range(30):
-        [delta async for delta in orchestrator.respond("busy", f"turn {index}")]
-    [delta async for delta in orchestrator.respond("quiet", "one turn")]
+        [event.text async for event in orchestrator.respond("busy", f"turn {index}")]
+    [event.text async for event in orchestrator.respond("quiet", "one turn")]
 
     assert len(orchestrator.history("quiet")) == 2

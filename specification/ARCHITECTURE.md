@@ -271,6 +271,42 @@ decodes on the server or on the device. An implementation that accumulated a who
 yielding would satisfy the signature and defeat v1.1 entirely, so the contract test asserts the
 streaming shape rather than only the types.
 
+### The transport seam, and audio on it (v1.1)
+
+`Transport` is the socket reduced to what the router needs. Until v1.1 it could carry only text:
+
+```python
+class Transport(Protocol):
+    async def send(self, data: str) -> None: ...
+    async def send_bytes(self, data: bytes) -> None: ...    # v1.1
+    async def receive(self) -> str | bytes: ...
+    async def close(self, code: int = WS_CLOSE_NORMAL) -> None: ...
+```
+
+`tts_audio`, `tts_end` and `tts_failed` were declared in v0.1 and mirrored in the firmware from
+v0.3, and `server_binary_meaning(SPEAKING) → TTS_AUDIO` already gave an unlabelled binary frame its
+meaning — but there was no way to put bytes on the wire at all. That gap, not the vocabulary, is
+what v1.1 opened.
+
+`send_bytes` is a separate method rather than a `str | bytes` parameter because the two are
+different frame kinds on the wire, and a caller that got the union wrong would send a JSON string
+where the device expects PCM.
+
+**A turn emits events, not strings.** `Responder.respond` yields `ReplyDelta | AudioChunk`
+(`turn.py`), because text and audio are *interleaved* — a phrase's audio leaves while later words
+are still being generated. Two separate iterators would have to be merged by the consumer, and the
+merge is exactly where the interleaving would be lost. The router translates: `ReplyDelta` becomes a
+`reply` text frame, `AudioChunk` becomes an unlabelled binary one. The orchestrator does not know
+how a chunk is framed, only that it exists and is ready now.
+
+**The speaking window opens on the first chunk and closes on every exit path.** `BinaryPhase.SPEAKING`
+is set before the first `tts_audio` — not at the start of the turn — so a device seeing binary
+outside the window it was told about is right to treat it as a protocol violation. `tts_end` closes
+it before the turn ends, and also before an `error`: the device switches its shared I2S bus to the
+speaker when audio starts and back on `tts_end`, so a turn that aborted mid-audio without closing
+the window would leave the bus on the speaker and the device unable to listen — a fault whose
+symptom appears one turn later, in a subsystem that is working correctly.
+
 ## Data model
 
 Nothing is persisted before v4 beyond a device record and config. From v4, SQLite behind a thin repository:

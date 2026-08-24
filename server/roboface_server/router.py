@@ -45,11 +45,13 @@ from roboface_server.protocol import (
     ProtocolError,
     Reply,
     TextIn,
+    TtsEnd,
     decode,
     device_binary_meaning,
     encode,
     negotiate,
 )
+from roboface_server.turn import AudioChunk, ReplyDelta, TurnEvent
 
 #: Normal closure. A rejected ``hello`` still closes normally: the device is not broken, it
 #: is simply speaking a version this server does not, and it should back off rather than
@@ -66,6 +68,17 @@ class Transport(Protocol):
     """The socket, reduced to what the state machine actually needs."""
 
     async def send(self, data: str) -> None: ...
+
+    async def send_bytes(self, data: bytes) -> None:
+        """A binary frame, with **no envelope**.
+
+        Widened in v1.1. Until then the seam could only carry text, so there was no way to put
+        audio on the wire at all -- the message types existed from v0.1 and the transport did not.
+        Kept as a separate method rather than a `str | bytes` parameter because the two are
+        different frame kinds on the wire, and a caller that got the union wrong would send a JSON
+        string where the device expects PCM.
+        """
+        ...
 
     async def receive(self) -> str | bytes: ...
 
@@ -85,7 +98,7 @@ class Responder(Protocol):
     conversation this is, and nothing else about the socket.
     """
 
-    def respond(self, session_id: str, text: str) -> AsyncIterator[str]: ...
+    def respond(self, session_id: str, text: str) -> AsyncIterator[TurnEvent]: ...
 
     def forget(self, session_id: str) -> None:
         """Release whatever this session accumulated. Called once, at teardown.
@@ -105,12 +118,12 @@ class EchoResponder:
     change exists to prevent.
     """
 
-    def respond(self, session_id: str, text: str) -> AsyncIterator[str]:
+    def respond(self, session_id: str, text: str) -> AsyncIterator[TurnEvent]:
         return self._stream(text)
 
-    async def _stream(self, text: str) -> AsyncIterator[str]:
+    async def _stream(self, text: str) -> AsyncIterator[TurnEvent]:
         for delta in echo_deltas(text):
-            yield delta
+            yield ReplyDelta(text=delta)
 
     def forget(self, session_id: str) -> None:
         """Nothing to release -- an echo keeps no history."""
@@ -144,6 +157,11 @@ class Connection:
     phase: ConnectionPhase = ConnectionPhase.AWAITING_HELLO
     device_id: str | None = None
     caps: frozenset[Capability] = frozenset()
+
+    #: What an unlabelled binary frame means on this connection right now. `SPEAKING` is the only
+    #: phase in which the server sends one, and the device is entitled to treat binary outside the
+    #: window it was told about as a protocol violation.
+    binary_phase: BinaryPhase = BinaryPhase.IDLE
 
     def accept(self, hello: Hello) -> None:
         self.device_id = hello.device_id
@@ -323,11 +341,23 @@ class Router:
         answer, and the device would have no way to know otherwise.
         """
         deltas = 0
+        chunks = 0
         try:
-            async for delta in self.responder.respond(conn.session_id, text):
-                await transport.send(encode(Reply(text=delta, final=False)))
-                deltas += 1
+            async for event in self.responder.respond(conn.session_id, text):
+                match event:
+                    case ReplyDelta():
+                        await transport.send(encode(Reply(text=event.text, final=False)))
+                        deltas += 1
+                    case AudioChunk():
+                        # The phase is what gives an unlabelled binary frame its meaning
+                        # (`server_binary_meaning`), so it is opened before the first chunk rather
+                        # than at the start of the turn: a device that saw binary outside the
+                        # speaking window would be right to treat it as a protocol violation.
+                        conn.binary_phase = BinaryPhase.SPEAKING
+                        await transport.send_bytes(event.data)
+                        chunks += 1
         except TurnAborted as exc:
+            await self._close_speaking(conn, transport)
             await self._send_error(transport, exc.code, str(exc))
             return
         except Exception as exc:
@@ -348,13 +378,32 @@ class Router:
                 deltas=deltas,
                 level="error",
             )
+            await self._close_speaking(conn, transport)
             await self._send_error(
                 transport, ErrorCode.INTERNAL, f"the turn failed: {type(exc).__name__}"
             )
             return
 
+        # The speaking window closes before the turn does: the device drains and gives the bus
+        # back, then sees the turn end.
+        await self._close_speaking(conn, transport)
         await transport.send(encode(Reply(text="", final=True)))
-        log("turn.streamed", deltas=deltas)
+        log("turn.streamed", deltas=deltas, chunks=chunks)
+
+    async def _close_speaking(self, conn: Connection, transport: Transport) -> bool:
+        """End the speaking window, if one is open. Returns whether it did.
+
+        Called on **every** exit from a turn, not only the successful one. The device switches its
+        shared I2S bus from microphone to speaker when audio starts and switches back on
+        `tts_end`; a turn that aborted after sending a chunk and never sent `tts_end` would leave
+        the bus on the speaker and the device unable to listen -- a fault whose symptom appears one
+        turn later, in a subsystem that is working correctly.
+        """
+        if conn.binary_phase is not BinaryPhase.SPEAKING:
+            return False
+        conn.binary_phase = BinaryPhase.IDLE
+        await transport.send(encode(TtsEnd()))
+        return True
 
     async def _send_error(self, transport: Transport, code: ErrorCode, msg: str) -> None:
         # Note every enumerated code this class chooses is `bad_frame`: everything the router

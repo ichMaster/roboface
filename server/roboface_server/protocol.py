@@ -270,6 +270,17 @@ class Reply:
 
 
 @dataclass(frozen=True, slots=True)
+class TtsEnd:
+    """``tts_end`` -- the speaking window is closed, server -> device.
+
+    Carries nothing. The binary frames that preceded it were `tts_audio` **because the connection
+    was speaking**, not because anything labelled them (``server_binary_meaning``), so this frame's
+    whole job is to end that phase. A device that has drained its buffer on seeing this can switch
+    the shared I2S bus back to the microphone.
+    """
+
+
+@dataclass(frozen=True, slots=True)
 class ErrorFrame:
     """``error{code, msg}`` -- ``msg`` is for a human reading a log; ``code`` is the contract."""
 
@@ -278,7 +289,7 @@ class ErrorFrame:
 
 
 #: Everything :func:`decode` can return and :func:`encode` accepts.
-Frame = Hello | TextIn | Ping | Pong | Reply | ErrorFrame
+Frame = Hello | TextIn | Ping | Pong | Reply | TtsEnd | ErrorFrame
 
 #: Which message type each typed frame is. One table, so encode and the tests agree.
 FRAME_TYPES: Final[dict[type[Frame], DeviceMessage | ServerMessage]] = {
@@ -287,6 +298,7 @@ FRAME_TYPES: Final[dict[type[Frame], DeviceMessage | ServerMessage]] = {
     Ping: DeviceMessage.PING,
     Pong: ServerMessage.PONG,
     Reply: ServerMessage.REPLY,
+    TtsEnd: ServerMessage.TTS_END,
     ErrorFrame: ServerMessage.ERROR,
 }
 
@@ -315,7 +327,7 @@ def encode(frame: Frame) -> str:
             payload |= {"text": frame.text, "final": frame.final}
         case ErrorFrame():
             payload |= {"code": str(frame.code), "msg": frame.msg}
-        case Ping() | Pong():
+        case Ping() | Pong() | TtsEnd():
             pass
 
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -470,6 +482,7 @@ _DECODERS: Final[dict[DeviceMessage | ServerMessage, _Decoder]] = {
     DeviceMessage.PING: lambda _payload: Ping(),
     ServerMessage.PONG: lambda _payload: Pong(),
     ServerMessage.REPLY: _decode_reply,
+    ServerMessage.TTS_END: lambda _payload: TtsEnd(),
     ServerMessage.ERROR: _decode_error,
 }
 

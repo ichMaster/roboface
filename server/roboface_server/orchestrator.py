@@ -32,6 +32,7 @@ from roboface_server.logging import chars, log
 from roboface_server.prompt import build_system_prompt
 from roboface_server.protocol import ErrorCode
 from roboface_server.providers.base import LLMProvider, Message, ProviderError
+from roboface_server.turn import ReplyDelta, TurnEvent
 
 #: The rolling conversation window, in messages. ARCHITECTURE §Data model specifies this
 #: number -- *"``SessionMessage{...}`` -- the rolling 40-message window"* -- as part of the v4
@@ -96,7 +97,7 @@ class Orchestrator:
         """Drop a session's history. Called when its connection ends."""
         self._history.pop(session_id, None)
 
-    def respond(self, session_id: str, text: str) -> AsyncIterator[str]:
+    def respond(self, session_id: str, text: str) -> AsyncIterator[TurnEvent]:
         """Run a turn and yield its deltas.
 
         Not ``async def``: the caller gets the iterator immediately and awaits deltas one at a
@@ -105,7 +106,7 @@ class Orchestrator:
         """
         return self._run_turn(session_id, text)
 
-    async def _run_turn(self, session_id: str, text: str) -> AsyncIterator[str]:
+    async def _run_turn(self, session_id: str, text: str) -> AsyncIterator[TurnEvent]:
         user_message = Message(role="user", text=text)
         self._remember(session_id, user_message)
         history = self._history[session_id]
@@ -153,12 +154,12 @@ class Orchestrator:
                 raise self._abort_turn(session_id, user_message, self._translate(exc)) from exc
 
             collected.append(first)
-            yield first
+            yield ReplyDelta(text=first)
 
             try:
                 async for delta in stream:
                     collected.append(delta)
-                    yield delta
+                    yield ReplyDelta(text=delta)
             except ProviderError as exc:
                 # Mid-stream death. The deltas already sent stay sent -- they were true when
                 # they left -- but the turn must not be closed as if it had finished, and the
