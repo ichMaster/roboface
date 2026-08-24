@@ -1,6 +1,63 @@
 RoboFace -- release notes
 =========================
 
+Version 0.4.0 (2026-08-24)
+---------------------------
+Roadmap phase v0.4 -- Face stub and the renderer interface. **Phase v0 is
+complete**: a server, a wire, a board, and a face.
+
+The screen now says something, and it never says it in words. A device state is
+an expression; the only text this firmware puts on a panel is an enumerated error
+code, which is an identifier rather than a state.
+
+- pure/face.h: the state -> face recipe table. Five normalised numbers per state,
+  no colours and no pixels, so v2's five skins can share one expression grammar.
+  Total over all eight states including listening, which v1 drives -- a table
+  covering only the reachable ones would have failed on the screen. Every pair of
+  the six DoD faces is provably distinct, with headroom, so a later tweak cannot
+  silently make two of them alike.
+- pure/chrome.h: what is visible and when it fades. The rules are almost entirely
+  about time, so they live where a fake clock proves the three-second settle in
+  microseconds. "A fault never auto-dismisses" is implemented as an omission and
+  tested by advancing an hour; that omission is what makes the fading safe for
+  everything else.
+- pure/layout.h: the screen geometry. "Never block the face" is a property of the
+  numbers, so a host test proves the bands cannot overlap -- including the
+  negative case, without which every other assertion would be vacuous.
+- IFaceRenderer (begin/show/setAudioLevel/tick), fixed now while the renderer
+  behind it is a stub. That is the point of a stub: v2 implements this interface
+  rather than inventing one. setAudioLevel exists and does nothing until v1.
+- StubRenderer: a full-screen sprite in PSRAM, drawn into and pushed whole, which
+  is why "no tearing" is true rather than hoped.
+- Chrome on screen: the status cluster and the fault line, in the outer 28 px
+  bands, with the overlap rule enforced by static_assert in the module that could
+  violate it.
+- A /faces self-test that cycles the six states, announcing each on serial while
+  the screen shows only the face -- which is how a person checks a screen that
+  deliberately never says what it is showing.
+
+main.cpp no longer draws: the DoD's "the renderer interface is the only way the
+app draws a face" is now true and checkable by grep, where before it was false.
+
+Three bugs, each caught somewhere different: the chrome view drew invented facts
+(caught in review before the commit); the self-test claimed "back to the real
+state" and left the device in error (caught by reading the serial output of a
+real run); and main.cpp's direct drawing (caught by the reconciliation step,
+before any code was written).
+
+Code review fixed two more, both the same defect in two forms -- the loop doing
+expensive work at 200 Hz for facts that change at 8 Hz or slower: the whole
+153 KB sprite pushed every iteration, implying 30 MB/s on a bus that carries
+about 5, and the AXP2101 polled ~400 times a second for a battery percentage that
+moves on the scale of minutes.
+
+Definition of Done: met, including the clause only a person can judge -- six
+visibly distinct faces switching cleanly with no tearing, confirmed on the board.
+
+Still outstanding from v0.3, and not this version's to fix: the firmware-to-server
+turn is unverified because this development machine's managed policy refuses
+inbound LAN connections to the server process.
+
 Version 0.3.0 (2026-08-24)
 ---------------------------
 Roadmap phase v0.3 -- Firmware skeleton: Core S3 as a WSS client. The first C++
