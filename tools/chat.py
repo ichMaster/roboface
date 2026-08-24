@@ -50,7 +50,10 @@ from roboface_server.protocol import (  # noqa: E402 -- after the sys.path boots
     encode,
 )
 
-DEFAULT_URL: Final = "ws://127.0.0.1:8000/ws"
+#: The server runs on the Linux box, not on this machine -- the workstation's endpoint
+#: filtering accepts an inbound LAN connection and then tears the socket down before the
+#: first read, so nothing here can host it. See DEPLOYMENT.md. Override with --url.
+DEFAULT_URL: Final = "ws://192.168.1.197:8000/ws"
 
 #: How long to wait for a turn to finish before giving up and handing the prompt back. Generous:
 #: the first-token budget alone is ~8 s, and a slow-but-flowing reply is not a failure.

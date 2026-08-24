@@ -20,7 +20,12 @@
 //
 // The host is the machine running the server, reachable from the board's WiFi network — not
 // `localhost`, which on the board means the board.
-#define SERVER_URL "ws://192.168.1.64:8000/ws"
+//
+// It must be a literal IP address. This firmware links no mDNS resolver, so a `.local` name — the
+// form the host-side tools default to — does not resolve here and the board would simply never
+// connect. The server currently runs on the Linux box `ich-picobox` (see DEPLOYMENT.md); if its
+// DHCP lease changes, this line changes and the board is reflashed.
+#define SERVER_URL "ws://192.168.1.197:8000/ws"
 
 // --- Screen ---------------------------------------------------------------------------
 // 0..255. The face is the product's whole presence, and a desk companion at full brightness in a
