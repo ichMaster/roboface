@@ -1,6 +1,27 @@
 RoboFace -- release notes
 =========================
 
+Version 0.5.1 (2026-08-24)
+---------------------------
+The end-of-phase hardening sweep for v0. One deferred MEDIUM finding, fixed.
+
+- The transcript's wrap is cached instead of rebuilt on every repaint. It used to
+  wrap the whole accumulated reply and discard all but the last nine lines, per
+  frame: at 26 columns and a 2048-byte buffer that is up to ~80 std::string
+  allocations, and while a reply streams the repaints run at the 33 ms cap, so
+  roughly 2400 short-lived allocations a second on a heap that is not compacted.
+  The wrap is pure and its inputs change only on append, so it is now computed
+  once per change.
+
+  A cache's failure mode is staleness, so five host tests assert the invalidation
+  and each reads *before* the mutation -- the order the repaint loop uses. They
+  were checked against the bug they exist for: removing the invalidation from
+  appendReply fails two of them. Verified on hardware as well, with a streaming
+  Ukrainian reply growing on the panel as it arrived.
+
+This closes every HIGH and MEDIUM finding raised across phase v0 -- v0.1 through
+v0.5. The two remaining LOW findings stay deferred to their documented homes.
+
 Version 0.5.0 (2026-08-24)
 ---------------------------
 Roadmap phase v0.5 -- the serial chat console. The face shows a turn's state;
