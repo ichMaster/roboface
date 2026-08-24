@@ -219,6 +219,79 @@ void test_clear_empties_everything() {
     TEST_ASSERT_TRUE(t.empty());
 }
 
+
+// --- the wrap cache ---------------------------------------------------------------------
+//
+// The wrap is computed once per change rather than once per repaint. That is a cache, and the
+// failure a cache introduces is staleness: reading before a mutation and again after it must not
+// return the first answer twice. Each of these reads *first*, so a missing invalidation fails here
+// rather than on the panel as a transcript that stops updating mid-reply.
+
+void test_appending_after_a_read_invalidates_the_cache() {
+    Transcript t(20, 9);
+    t.startTurn("q");
+    t.appendReply("first");
+    const std::size_t before = t.replyLines().size();
+    TEST_ASSERT_EQUAL_STRING("first", t.replyLines()[0].c_str());
+
+    t.appendReply(" and second and third and fourth");
+    TEST_ASSERT_TRUE(t.replyLines().size() > before);
+    // The first line must now reflect the longer text, not the cached "first".
+    TEST_ASSERT_TRUE(t.replyLines()[0] != std::string("first"));
+}
+
+void test_starting_a_turn_after_a_read_invalidates_the_cache() {
+    Transcript t(20, 9);
+    t.startTurn("first question");
+    t.appendReply("an answer");
+    TEST_ASSERT_EQUAL_STRING("an answer", t.replyLines()[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("first question", t.outgoingLines()[0].c_str());
+
+    t.startTurn("second question");
+    TEST_ASSERT_EQUAL_UINT32(0, t.replyLines().size());
+    TEST_ASSERT_EQUAL_STRING("second question", t.outgoingLines()[0].c_str());
+}
+
+void test_clearing_after_a_read_invalidates_the_cache() {
+    Transcript t(20, 9);
+    t.startTurn("q");
+    t.appendReply("something");
+    TEST_ASSERT_EQUAL_UINT32(1, t.replyLines().size());
+
+    t.clear();
+    TEST_ASSERT_EQUAL_UINT32(0, t.replyLines().size());
+    TEST_ASSERT_EQUAL_UINT32(0, t.outgoingLines().size());
+}
+
+void test_repeated_reads_without_a_mutation_are_stable() {
+    // The renderer reads these on every repaint; two reads with nothing in between must agree.
+    Transcript t(12, 9);
+    t.startTurn("питання");
+    t.appendReply(kUkrainian);
+    const std::vector<std::string> first = t.replyLines();
+    const std::vector<std::string> second = t.replyLines();
+    TEST_ASSERT_EQUAL_UINT32(first.size(), second.size());
+    for (std::size_t i = 0; i < first.size(); ++i) {
+        TEST_ASSERT_EQUAL_STRING(first[i].c_str(), second[i].c_str());
+    }
+}
+
+void test_a_streamed_reply_updates_on_every_delta() {
+    // The panel must grow as the reply arrives. Reading between every append is exactly what the
+    // repaint loop does, so a stale cache would freeze the transcript at the first delta.
+    Transcript t(30, 9);
+    t.startTurn("q");
+    std::size_t previous = 0;
+    for (int i = 0; i < 12; ++i) {
+        t.appendReply("слово ");
+        const std::size_t now = t.reply().size();
+        TEST_ASSERT_TRUE(now > previous);
+        previous = now;
+        TEST_ASSERT_TRUE(t.replyLines().size() >= 1);
+    }
+    TEST_ASSERT_TRUE(t.replyLines().size() > 1);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_length_counts_characters_not_bytes);
@@ -243,5 +316,10 @@ int main(int, char**) {
     RUN_TEST(test_a_new_turn_drops_the_previous_reply);
     RUN_TEST(test_a_new_turn_drops_a_character_left_in_flight);
     RUN_TEST(test_clear_empties_everything);
+    RUN_TEST(test_appending_after_a_read_invalidates_the_cache);
+    RUN_TEST(test_starting_a_turn_after_a_read_invalidates_the_cache);
+    RUN_TEST(test_clearing_after_a_read_invalidates_the_cache);
+    RUN_TEST(test_repeated_reads_without_a_mutation_are_stable);
+    RUN_TEST(test_a_streamed_reply_updates_on_every_delta);
     return UNITY_END();
 }

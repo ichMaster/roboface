@@ -191,6 +191,7 @@ class Transcript {
         outgoing_ = outgoing;
         reply_.clear();
         pending_.clear();
+        dirty_ = true;
     }
 
     // One `reply` delta. Whatever completes a character is kept; a truncated tail waits for the
@@ -201,26 +202,39 @@ class Transcript {
         reply_.append(pending_, 0, complete);
         pending_.erase(0, complete);
         trimReply();
+        dirty_ = true;
     }
 
     void clear() {
         outgoing_.clear();
         reply_.clear();
         pending_.clear();
+        dirty_ = true;
     }
 
     const std::string& outgoing() const { return outgoing_; }
     const std::string& reply() const { return reply_; }
     bool empty() const { return outgoing_.empty() && reply_.empty(); }
 
-    std::vector<std::string> outgoingLines() const { return wrapUtf8(outgoing_, columns_); }
-    std::vector<std::string> replyLines() const { return lastLines(wrapUtf8(reply_, columns_)); }
+    // Both return references into the cache: the renderer asks for these on every repaint, and
+    // re-wrapping there meant rebuilding up to ~80 strings per frame while a reply streamed --
+    // roughly 2400 short-lived allocations a second on a heap that is not compacted.
+    const std::vector<std::string>& outgoingLines() const {
+        rewrapIfNeeded();
+        return outgoing_lines_;
+    }
+    const std::vector<std::string>& replyLines() const {
+        rewrapIfNeeded();
+        return reply_view_;
+    }
 
     // Everything, bounded. What the renderer draws is `outgoingLines()` then `replyLines()`, so
     // the two can be styled differently; this is the whole-transcript view the bound is stated in.
+    // Trimmed from the *combined* list, which is why the untrimmed reply wrap is cached too.
     std::vector<std::string> lines() const {
-        std::vector<std::string> all = wrapUtf8(outgoing_, columns_);
-        for (const std::string& line : wrapUtf8(reply_, columns_)) all.push_back(line);
+        rewrapIfNeeded();
+        std::vector<std::string> all = outgoing_lines_;
+        for (const std::string& line : reply_wrapped_) all.push_back(line);
         return lastLines(all);
     }
 
@@ -228,6 +242,19 @@ class Transcript {
     std::size_t maxLines() const { return max_lines_; }
 
   private:
+    // The wrap is pure and the inputs only change on append, so it is computed once per change
+    // rather than once per repaint. `mutable` because this is a cache of a value the object
+    // already logically has -- callers see a const object whose answers never change without a
+    // mutation. The risk a cache introduces is staleness, so every mutator sets `dirty_` and the
+    // host tests assert the invalidation rather than only the contents.
+    void rewrapIfNeeded() const {
+        if (!dirty_) return;
+        outgoing_lines_ = wrapUtf8(outgoing_, columns_);
+        reply_wrapped_ = wrapUtf8(reply_, columns_);
+        reply_view_ = lastLines(reply_wrapped_);
+        dirty_ = false;
+    }
+
     std::vector<std::string> lastLines(std::vector<std::string> all) const {
         if (all.size() > max_lines_) {
             all.erase(all.begin(), all.begin() + static_cast<std::ptrdiff_t>(all.size() - max_lines_));
@@ -252,6 +279,11 @@ class Transcript {
     std::string outgoing_;
     std::string reply_;
     std::string pending_;
+
+    mutable bool dirty_ = true;
+    mutable std::vector<std::string> outgoing_lines_;
+    mutable std::vector<std::string> reply_wrapped_;  // untrimmed, for `lines()`
+    mutable std::vector<std::string> reply_view_;     // trimmed to the bound, for the renderer
 };
 
 }  // namespace roboface
