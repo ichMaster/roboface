@@ -18,6 +18,11 @@ Ws* active = nullptr;
 // again, so every boot threw away its first attempt.
 constexpr uint32_t kConnectTimeoutMs = 8000;
 
+// The library will not attempt a connection sooner than its reconnect interval, so this is the
+// delay before the *first* attempt as well as the floor for later ones. Small: the first attempt
+// should be prompt, and everything after it is paced by our own backoff.
+constexpr uint32_t kInitialReconnectMs = 200;
+
 constexpr uint32_t kPingIntervalMs = 15000;
 constexpr uint32_t kPongTimeoutMs = 5000;
 constexpr uint8_t kMissedPongsBeforeDrop = 2;
@@ -57,6 +62,7 @@ void Ws::begin(const char* url, const char* device_id, uint32_t now_ms) {
             case WStype_CONNECTED:
                 active->connected_ = true;
                 active->backoff_.reset();
+                client.setReconnectInterval(kInitialReconnectMs);
                 Serial.println("[ws] connected");
                 // hello first, always: the server answers any other opening frame with
                 // bad_frame, and a wrong proto_ver with proto_unsupported and a close.
@@ -100,9 +106,20 @@ void Ws::connect(uint32_t now_ms) {
     (void)now_ms;
     client.begin(host_.c_str(), port_, path_.c_str());
     client.enableHeartbeat(kPingIntervalMs, kPongTimeoutMs, kMissedPongsBeforeDrop);
-    // The library reconnects on its own schedule; ours is the one that is tested, so it is the
-    // one that decides. Setting a huge interval here keeps the library from racing us.
-    client.setReconnectInterval(0xFFFFFFFF);
+    // **The library's loop() is what opens the connection at all**, not merely what reopens it:
+    //
+    //     if (!clientIsConnected(&_client)) {
+    //         if ((millis() - _lastConnectionFail) < _reconnectInterval) return;   // <-- gate
+    //         ... connect ...
+    //     }
+    //
+    // `_lastConnectionFail` starts at 0, so a huge interval makes that gate true from the first
+    // millisecond and the client never connects even once. An earlier version set 0xFFFFFFFF here
+    // to "stop the library racing us" and thereby stopped it working entirely.
+    //
+    // The schedule still comes from `roboface::Backoff` -- `loop()` feeds each computed delay in
+    // below -- so the tested logic remains the logic that runs. This is just the floor.
+    client.setReconnectInterval(kInitialReconnectMs);
 }
 
 void Ws::handleText(const char* payload, std::size_t length) {
@@ -157,13 +174,16 @@ void Ws::loop(uint32_t now_ms) {
     if (!connected_ && now_ms >= retry_at_ms_) {
         const uint32_t delay_ms = backoff_.nextDelayMs(static_cast<uint16_t>(esp_random() % 1001));
         retry_at_ms_ = now_ms + delay_ms;
+        // Hand our schedule to the library rather than calling begin() again. begin() resets the
+        // whole client, which would abandon a handshake already in flight -- and the library is
+        // the thing that actually opens the socket, so the delay it honours has to be ours.
+        client.setReconnectInterval(delay_ms);
         // Say what happened and when the next one is due, rather than announcing a delay that is
         // not being waited. Serial is the only diagnostic channel this device has, and a log that
         // misdescribes the code costs the reader the time to disprove it.
-        Serial.printf("[ws] attempt %lu failed; retrying now, next in %lu ms\n",
+        Serial.printf("[ws] attempt %lu failed; next in %lu ms\n",
                       static_cast<unsigned long>(backoff_.attempts()),
                       static_cast<unsigned long>(delay_ms));
-        connect(now_ms);
     }
 }
 

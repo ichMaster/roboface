@@ -10,6 +10,7 @@
 // left here is the order things happen in — the one thing a host test cannot check.
 
 #include <M5Unified.h>
+#include <WiFi.h>
 
 #include "app/chrome_view.h"
 #include "app/net.h"
@@ -21,6 +22,7 @@
 #include "pure/state.h"
 #include "pure/version.h"
 #include "pure/ws_protocol.h"
+#include "pure/ws_url.h"
 
 namespace {
 
@@ -228,6 +230,62 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
                       static_cast<unsigned>(line.text.size()));
     }
 
+    if (line.text == "/probe") {
+        // A raw TCP connect to the configured server, reporting what actually happened.
+        // "connection refused" and "timed out" point at completely different problems -- one
+        // means nothing is listening, the other that the packets are not arriving at all -- and
+        // the WebSocket client's own retry log cannot tell them apart.
+        const roboface::WsUrl url = roboface::parseWsUrl(SERVER_URL);
+        if (!url.valid) {
+            Serial.printf("[probe] SERVER_URL is not usable: %s\n", SERVER_URL);
+            return;
+        }
+        Serial.printf("[probe] TCP connect to %s:%u ...\n", url.host.c_str(),
+                      static_cast<unsigned>(url.port));
+        WiFiClient probe;
+        const uint32_t started = millis();
+        const int ok = probe.connect(url.host.c_str(), url.port, 5000);
+        const uint32_t took = millis() - started;
+        if (ok == 1) {
+            // A completed TCP handshake proves almost nothing. A filtering middlebox will accept
+            // the connection and reset the payload, so "connected" was reported for a path that
+            // could not carry a single byte -- which is exactly how this probe misled its author.
+            // Send a real request and require a real answer.
+            probe.printf("GET %s HTTP/1.1\r\nHost: %s:%u\r\nConnection: close\r\n\r\n",
+                         url.path.c_str(), url.host.c_str(), static_cast<unsigned>(url.port));
+            const uint32_t wait_until = millis() + 4000;
+            String reply;
+            while (millis() < wait_until && reply.length() < 40) {
+                while (probe.available()) reply += static_cast<char>(probe.read());
+                delay(10);
+            }
+            probe.stop();
+            const uint32_t total = millis() - started;
+            if (reply.length() == 0) {
+                Serial.printf("[probe] TCP connected in %lu ms but the server sent NOTHING back "
+                              "(%lu ms total)\n",
+                              static_cast<unsigned long>(took),
+                              static_cast<unsigned long>(total));
+                Serial.println("[probe] a middlebox is accepting the connection and dropping the "
+                               "payload — the host is reachable, the service is not");
+            } else {
+                reply.replace("\r", "");
+                const int line_end = reply.indexOf('\n');
+                Serial.printf("[probe] OK in %lu ms — server said: %s\n",
+                              static_cast<unsigned long>(total),
+                              reply.substring(0, line_end > 0 ? line_end : 40).c_str());
+            }
+        } else {
+            Serial.printf("[probe] FAILED after %lu ms (errno %d: %s)\n",
+                          static_cast<unsigned long>(took), errno, strerror(errno));
+            Serial.println("[probe] fast failure = refused (nothing listening / blocked by the "
+                           "host); ~5000 ms = no reply at all (blocked in the network)");
+        }
+        Serial.printf("[probe] this board is %s, gateway %s\n",
+                      WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str());
+        return;
+    }
+
     if (line.text == "/faces") {
         startSelfTest();
         return;
@@ -240,7 +298,8 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
     }
     if (line.text == "/help") {
         Serial.println("  <text>   say something    /faces  cycle the six faces");
-        Serial.println("  /debug   corner state line /help   this");
+        Serial.println("  /debug   corner state line /probe  test the path to the server");
+        Serial.println("  /help    this");
         return;
     }
 
