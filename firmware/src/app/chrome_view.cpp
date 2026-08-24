@@ -102,6 +102,11 @@ void ChromeView::drawFaultLine(M5Canvas& canvas, roboface::ErrorCode code) {
     // state -- it is an identifier. `kUnknown` still prints something searchable rather than a
     // blank band.
     canvas.setTextColor(kFaultColour, kBandBackground);
+    // Set the face explicitly rather than inheriting whatever drew last. Nothing used to set a font
+    // at all, so once v0.5's console had drawn its 20 px Cyrillic face into this sprite, the fault
+    // code rendered in it too -- in a 28 px band, and for the rest of the session, because the
+    // sprite keeps the setting. (v0.5 review, finding 2.)
+    canvas.setFont(&fonts::Font0);
     canvas.setTextSize(1);
     canvas.setTextDatum(middle_left);
     canvas.drawString(roboface::toString(code), 8,

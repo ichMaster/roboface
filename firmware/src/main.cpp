@@ -100,6 +100,9 @@ void render() {
     chrome_view.draw(renderer.canvas(), chrome);
     if (debug_line && renderer.canvas() != nullptr) {
         renderer.canvas()->setTextColor(0x39E7, 0x0000);
+        // Explicit, for the same reason chrome_view.cpp is: this line inherited the console's font
+        // and was drawn at twice its intended size. (v0.5 review, finding 2.)
+        renderer.canvas()->setFont(&fonts::Font0);
         renderer.canvas()->setTextSize(1);
         renderer.canvas()->setTextDatum(top_left);
         renderer.canvas()->drawString(roboface::toString(state), 4, 4);
