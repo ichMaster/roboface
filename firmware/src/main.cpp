@@ -19,6 +19,7 @@
 #include "app/ws.h"
 #include "config.h"
 #include "pure/chrome.h"
+#include "pure/console.h"
 #include "pure/line_reader.h"
 #include "pure/state.h"
 #include "pure/version.h"
@@ -55,6 +56,17 @@ bool battery_charging = false;
 uint32_t last_status_ms = 0;
 bool reply_in_progress = false;
 bool debug_line = false;  // the tiny corner diagnostic; off by default
+
+// The serial chat console (v0.5). It borrows the screen the way the self-test does, and gives back
+// the state it took -- the discipline lives in `pure/console.h` where a host test proves it is
+// total over the state enum.
+roboface::ConsoleMode console;
+
+// The prompt is printed after entering the mode and after each reply settles, so the serial
+// session reads as a conversation rather than as a log you occasionally type into.
+void printConsolePrompt() {
+    if (console.isOn()) Serial.print("\nchat> ");
+}
 
 // The self-test. Without a reachable server, idle/thinking/replying cannot be entered by any
 // natural route — and DEVICE_UI's whole point is that the screen never says which state it is in,
@@ -166,6 +178,9 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
                 if (reply_in_progress) Serial.println();
                 reply_in_progress = false;
                 apply(roboface::DeviceEvent::kTurnEnded);
+                // The turn is over; invite the next one. Only when the console is on -- outside it
+                // the serial session is a log, and a prompt would be noise in it.
+                printConsolePrompt();
                 return;
             }
             if (!reply_in_progress) {
@@ -320,6 +335,32 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
         return;
     }
 
+    if (line.text == "/chat-on") {
+        if (!console.enable(state)) {
+            Serial.println("[chat] already on");
+            printConsolePrompt();
+            return;
+        }
+        Serial.println("\n[chat] console on — type a message; /chat-off returns the face.");
+        render();
+        needs_push = true;
+        printConsolePrompt();
+        return;
+    }
+    if (line.text == "/chat-off") {
+        if (!console.disable()) {
+            Serial.println("[chat] already off");
+            return;
+        }
+        // Give back exactly what was borrowed. Announcing the state on serial matters because the
+        // screen deliberately never says which one it is in.
+        state = console.savedState();
+        Serial.printf("\n[chat] console off — back to %s.\n", roboface::toString(state));
+        render();
+        needs_push = true;
+        return;
+    }
+
     if (line.text == "/faces") {
         startSelfTest();
         return;
@@ -334,6 +375,8 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
         Serial.println("  <text>   say something    /faces  cycle the six faces");
         Serial.println("  /debug   corner state line /probe  raw TCP path test");
         Serial.println("  /http    plain HTTP GET test");
+        Serial.println("  /chat-on  show the conversation on the panel");
+        Serial.println("  /chat-off return to the face");
         Serial.println("  /help    this");
         return;
     }
