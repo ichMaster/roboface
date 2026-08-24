@@ -1,6 +1,45 @@
 RoboFace -- release notes
 =========================
 
+Version 0.4.1 (2026-08-24)
+---------------------------
+Post-release fixes on phase v0.4. The server moved off the development Mac, which
+cannot host it, onto a Linux box on the same LAN. The board now reaches it and a
+text turn completes end to end: typed at the board, answered by Gemini, rendered
+as a state on the panel.
+
+- The Mac cannot serve the board, and this is not a bug in the firmware. Its
+  endpoint filtering accepts an inbound LAN connection and then destroys the
+  socket before the application's first read (errno 57, ENOTCONN). It is a
+  socket-layer filter, which is why it was so hard to see: the TCP handshake
+  completes, so `nc -z` calls the port open and only the first read fails. Not the
+  Application Firewall's per-app allowlist -- an explicitly allowed binary fails
+  identically -- and not the router, which needs no changes at all.
+- tools/remote.sh: deploy and administer the server on a remote box over plain
+  SSH -- deploy, start, stop, restart, status, health, logs, ping, shell. No
+  systemd and no sudo; start/stop is a PID file and a log file. `health` asks its
+  two questions from the workstation, because a listener the board cannot reach is
+  not a running service.
+- DEPLOYMENT.md: the server's lifecycle, the same operations written out in plain
+  ssh for a machine with no checkout, and the firmware's build/flash/config half.
+- tools/board.py never read stdin, so every line typed at it was discarded; only
+  --send worked. It is two-way now. Transient CDC read failures after a write are
+  absorbed rather than treated as a disconnect -- reattaching threw away exactly
+  the output that mattered, the reply to the command just sent. The drop message
+  no longer claims the board reset, which the uptime counter disproves.
+- server/.env is no longer sourced into the shell anywhere. It was redundant --
+  load_settings() reads the file itself, by a path derived from config.py's own
+  location -- and lossy: WEATHER_URL's value contains an unquoted `&`, so the
+  shell backgrounds there and the assignment never arrives. Exit code 0, no
+  message. As _resolve() reads the environment before the file, a mangled value
+  would have overridden the correct one rather than merely going missing.
+- chat.py and firmware/src/config.example.h point at the server box. The firmware
+  needs a literal address: it links no mDNS resolver, so the .local name the
+  host-side tools could use would never resolve there.
+- TESTING.md 5 rewritten. It had described the link as an unresolved blocker and
+  suggested a tunnel that cannot work -- the firmware speaks ws:// only -- and its
+  account of the failure named the wrong mechanism.
+
 Version 0.4.0 (2026-08-24)
 ---------------------------
 Roadmap phase v0.4 -- Face stub and the renderer interface. **Phase v0 is
