@@ -31,8 +31,14 @@ from typing import Final
 from roboface_server.logging import chars, log
 from roboface_server.prompt import build_system_prompt
 from roboface_server.protocol import ErrorCode
-from roboface_server.providers.base import LLMProvider, Message, ProviderError
-from roboface_server.turn import ReplyDelta, TurnEvent
+from roboface_server.providers.base import (
+    LLMProvider,
+    Message,
+    ProviderError,
+    TTSProvider,
+)
+from roboface_server.sentence import PhraseSplitter
+from roboface_server.turn import AudioChunk, ReplyDelta, TurnEvent
 
 #: The rolling conversation window, in messages. ARCHITECTURE §Data model specifies this
 #: number -- *"``SessionMessage{...}`` -- the rolling 40-message window"* -- as part of the v4
@@ -49,6 +55,12 @@ MAX_HISTORY_MESSAGES: Final = 40
 #: semantics puts the LLM's first-token budget at ~8 s. Nothing bounds the deltas after it --
 #: a model mid-sentence is working, and cutting it off is worse than waiting.
 DEFAULT_FIRST_TOKEN_BUDGET_S: Final = 8.0
+
+#: How long TTS has to produce the **first chunk of a phrase**. ARCHITECTURE §Budgets and abort
+#: semantics: the budget sits on the stage's first output, so a stalled vendor fails fast while a
+#: slow-but-flowing one is never cut off mid-phrase. Shorter than the LLM's, because by the time a
+#: phrase is ready to speak the person has already been waiting for the model to write it.
+DEFAULT_FIRST_AUDIO_BUDGET_S: Final = 3.0
 
 
 class TurnAborted(Exception):
@@ -76,6 +88,10 @@ class Orchestrator:
     provider: LLMProvider
     system_prompt: str = field(default_factory=build_system_prompt)
     first_token_budget_s: float = DEFAULT_FIRST_TOKEN_BUDGET_S
+    #: Absent means a silent device, not a broken one: v0 had no speech and its tests still pass
+    #: unchanged. Speech is added alongside the text, never instead of it.
+    tts: TTSProvider | None = None
+    first_audio_budget_s: float = DEFAULT_FIRST_AUDIO_BUDGET_S
     _history: dict[str, list[Message]] = field(default_factory=dict)
 
     def _remember(self, session_id: str, message: Message) -> None:
@@ -156,14 +172,34 @@ class Orchestrator:
             collected.append(first)
             yield ReplyDelta(text=first)
 
+            # The splitter decides when enough text exists to speak. Fed *after* the delta is
+            # yielded, so the text never waits behind the audio: a phrase closing here is spoken
+            # while the model is still writing the next one, which is the whole of v1.1.
+            splitter = PhraseSplitter()
             try:
+                for phrase in splitter.feed(first):
+                    async for chunk in self._speak(phrase):
+                        yield chunk
+
                 async for delta in stream:
                     collected.append(delta)
                     yield ReplyDelta(text=delta)
+                    for phrase in splitter.feed(delta):
+                        async for chunk in self._speak(phrase):
+                            yield chunk
+
+                # The tail. Most replies from a desk companion are a sentence or two and end
+                # without terminal punctuation ever arriving, so without this the last -- often
+                # only -- phrase is never spoken.
+                tail = splitter.flush()
+                if tail:
+                    async for chunk in self._speak(tail):
+                        yield chunk
             except ProviderError as exc:
-                # Mid-stream death. The deltas already sent stay sent -- they were true when
-                # they left -- but the turn must not be closed as if it had finished, and the
-                # partial exchange must not enter history as though it were a complete one.
+                # Mid-stream death, from either provider. The deltas and chunks already sent stay
+                # sent -- they were true when they left -- but the turn must not be closed as if
+                # it had finished, and the partial exchange must not enter history as though it
+                # were a complete one.
                 settled = True
                 raise self._abort_turn(session_id, user_message, self._translate(exc)) from exc
 
@@ -178,6 +214,34 @@ class Orchestrator:
                     TurnAborted("the turn was abandoned before it finished", ErrorCode.INTERNAL),
                 )
                 await _close_quietly(stream)
+
+    async def _speak(self, phrase: str) -> AsyncIterator[AudioChunk]:
+        """Synthesize one phrase, yielding chunks as they arrive.
+
+        Raises :class:`ProviderError` carrying ``tts_failed`` rather than aborting the turn itself:
+        the caller already has one place that rolls a turn back, and a second would be a second
+        chance to get the rollback wrong.
+        """
+        if self.tts is None:
+            return
+
+        stream = self.tts.synthesize(phrase)
+        try:
+            first = await asyncio.wait_for(anext(stream), timeout=self.first_audio_budget_s)
+        except TimeoutError as exc:
+            raise ProviderError(
+                f"no audio within {self.first_audio_budget_s}s", ErrorCode.TTS_FAILED
+            ) from exc
+        except StopAsyncIteration:
+            # Nothing to say for this phrase. Not a failure -- punctuation alone can close a
+            # phrase that carries no speakable text.
+            return
+
+        yield AudioChunk(data=first)
+        # No budget past the first chunk: a vendor mid-phrase is working, and cutting it off
+        # would truncate a word rather than save any latency.
+        async for chunk in stream:
+            yield AudioChunk(data=chunk)
 
     def _abort_turn(
         self,

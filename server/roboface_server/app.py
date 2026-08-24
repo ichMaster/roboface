@@ -17,7 +17,7 @@ from fastapi import FastAPI, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from roboface_server.config import Settings, load_settings
-from roboface_server.logging import configure
+from roboface_server.logging import configure, log
 from roboface_server.router import (
     WS_CLOSE_NORMAL,
     ConnectionRegistry,
@@ -103,7 +103,25 @@ def build_responder(settings: Settings) -> Responder:
         model=settings.gemini_model,
         thinking_budget=settings.gemini_thinking_budget,
     )
-    return Orchestrator(provider=provider)
+
+    # Speech is optional, and its absence is a quiet device rather than a broken one. A missing
+    # ElevenLabs key must not stop a text conversation working: v0's whole loop predates speech,
+    # and a server that refused to start without a TTS key would make v1.1 a regression for
+    # anyone who only wanted text.
+    tts = None
+    if settings.elevenlabs_api_key and settings.elevenlabs_voice_id:
+        from roboface_server.providers.elevenlabs import ElevenLabsProvider
+
+        tts = ElevenLabsProvider(
+            settings.elevenlabs_api_key,
+            settings.elevenlabs_voice_id,
+            settings.elevenlabs_model,
+            settings.elevenlabs_output_format,
+        )
+    else:
+        log("tts.disabled", reason="no ELEVENLABS_API_KEY or ELEVENLABS_VOICE_ID", level="warning")
+
+    return Orchestrator(provider=provider, tts=tts)
 
 
 def create_app(
