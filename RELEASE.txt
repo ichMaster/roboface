@@ -1,6 +1,67 @@
 RoboFace -- release notes
 =========================
 
+Version 1.1.0 (2026-08-25)
+---------------------------
+Roadmap phase v1.1 -- streaming TTS playback. **A typed line is answered out
+loud, and the mouth opens before the sentence exists.**
+
+Measured on hardware: speech began 3.3 s before the model finished writing on a
+short reply, and 14.8 s before on a long one.
+
+- sentence.py -- the PhraseSplitter. A phrase closes at a sentence or clause
+  boundary **only when the boundary is followed by whitespace**, and the
+  whitespace is the whole point: it turns "is this a sentence end?" from a guess
+  into an observation, and makes "not yet" an answer distinct from "no". Without
+  that distinction "3.5" becomes two spoken phrases, in two synthesis calls, with
+  a pause between them. Eighteen Ukrainian abbreviations are matched at a word
+  boundary so "ст." does not fire inside "віст.".
+- The TTSProvider seam, and ElevenLabs behind it. Speech is not chat, so this is
+  a second vendor seam rather than a breach of the Gemini-only rule. pcm_16000 is
+  exactly the device's playback format, so nothing decodes on the server or on
+  the board.
+- Transport widened to carry bytes. The message types tts_audio, tts_end and
+  tts_failed had existed since v0.1, and server_binary_meaning already gave an
+  unlabelled binary frame its meaning -- but Transport.send() took only str, so
+  there was no way to put audio on the wire at all. That gap, not the vocabulary,
+  is what this phase opened. A turn now emits ReplyDelta | AudioChunk, because
+  the two interleave and a merge done by the consumer is where the interleaving
+  would be lost.
+- The orchestrator speaks while it writes: each delta is yielded first, then fed
+  to the splitter, so text never waits behind audio. The first-audio budget sits
+  on each phrase's first chunk -- a stalled vendor fails fast, a slow-but-flowing
+  one is never cut off mid-phrase.
+- Firmware audio_io: PCM arriving over the socket comes out of the speaker as it
+  arrives. The shared I2S bus is claimed once per turn and given back on tts_end.
+
+Four device faults were found on hardware, none reachable from a host test, and
+each sounded like a different problem than it was:
+
+- Silence while the server logged hundreds of chunks sent -- PSRAM reports zero
+  free on this board, so the backlog never allocated, and write() discarded every
+  chunk while telling the caller it had accepted them. It now falls back to
+  internal RAM, reports what it got, and counts what it drops.
+- "The beginning is good and then the sound breaks up" -- M5.Speaker.playRaw does
+  not wait for a free slot: it returns false and drops the chunk. The network
+  outruns 16 kHz within a second, so everything after that was discarded. The
+  backlog is now fed only as fast as playRaw accepts, and a refused chunk goes
+  back to the *front* of the ring, because appending it would reorder the reply.
+- Distortion -- playRaw keeps the pointer rather than copying, and was handed a
+  stack buffer; channel -1 also let consecutive chunks sound together rather than
+  queue.
+- The speaker held the I2S bus for the rest of the session -- ws.cpp whitelists
+  which parse results become a frame event, and tts_end was not on the list, so
+  it was discarded one layer below main.cpp.
+
+Review fixes: a failed phrase now closes its TTS stream (it leaked an open HTTP
+response per failure, the same defect v0.2 closed for the LLM stream), and the
+device no longer reports success for audio it discarded.
+
+Known, deferred: PSRAM reports zero free despite qio_opi and BOARD_HAS_PSRAM.
+Audio runs on a 48 KB internal fallback. **v2's renderer and v3's JPEG buffers
+assume PSRAM exists**, so this is carried to v3.1 and is a candidate for the
+end-of-phase hardening sweep.
+
 Version 0.5.1 (2026-08-24)
 ---------------------------
 The end-of-phase hardening sweep for v0. One deferred MEDIUM finding, fixed.
