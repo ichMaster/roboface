@@ -353,6 +353,13 @@ class Router:
                         # (`server_binary_meaning`), so it is opened before the first chunk rather
                         # than at the start of the turn: a device that saw binary outside the
                         # speaking window would be right to treat it as a protocol violation.
+                        if conn.binary_phase is not BinaryPhase.SPEAKING:
+                            # Logged once per turn, and it is the DoD's evidence: this line must
+                            # be timestamped *before* `turn.reply`, which the orchestrator writes
+                            # after the model's last delta. If it is not, the pipeline is
+                            # accumulating somewhere and the phase has not met its goal however
+                            # good the audio sounds.
+                            log("turn.speaking", deltas_so_far=deltas)
                         conn.binary_phase = BinaryPhase.SPEAKING
                         await transport.send_bytes(event.data)
                         chunks += 1

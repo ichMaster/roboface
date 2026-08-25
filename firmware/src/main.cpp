@@ -468,23 +468,25 @@ void setup() {
 
     apply(roboface::DeviceEvent::kBooted);
     net.begin(WIFI_SSID, WIFI_PASSWORD, now_ms);
-    audio.begin(SPEAKER_VOLUME);
+    if (!audio.begin(SPEAKER_VOLUME)) {
+        Serial.println("[audio] PSRAM backlog allocation FAILED — the device will be mute");
+    } else {
+        Serial.printf("[audio] backlog %u KB (psram free %u KB, internal free %u KB), volume %d\n",
+                      static_cast<unsigned>(audio.backlogCapacity() / 1024),
+                      static_cast<unsigned>(ESP.getFreePsram() / 1024),
+                      static_cast<unsigned>(ESP.getFreeHeap() / 1024), SPEAKER_VOLUME);
+    }
 
     ws.onEvent(onSocketEvent);
     // A binary frame is `tts_audio`: it carries no envelope, and what gives it meaning is that the
     // server is speaking (`server_binary_meaning`). Taking the bus here rather than at the start of
     // the turn means a turn that never speaks never touches the microphone.
+    // A binary frame is `tts_audio`: it carries no envelope, and what gives it meaning is that the
+    // server is speaking (`server_binary_meaning`). The bus is taken here rather than at the start
+    // of the turn, so a turn that never speaks never touches the microphone.
     ws.onBinary([](const uint8_t* payload, std::size_t length) {
         audio.startSpeaking();
-        std::size_t offset = 0;
-        // Honour backpressure rather than dropping the tail. A buffer that discarded what did not
-        // fit would lose a few milliseconds of speech exactly when the network is struggling, and
-        // the symptom -- occasionally clipped words under load -- is indistinguishable from a bad
-        // voice model. Bounded, because this runs in the socket callback and must return.
-        for (int attempt = 0; attempt < 64 && offset < length; ++attempt) {
-            offset += audio.write(payload + offset, length - offset);
-            if (offset < length) audio.tick();
-        }
+        audio.write(payload, length);
     });
 }
 
@@ -505,7 +507,9 @@ void loop() {
         }
     }
 
-    ws.loop(now_ms);
+    // Throttle the socket rather than throw audio away. The speaker paces the backlog and the
+    // backlog paces the socket; TCP holds the rest on the server, where it costs nothing.
+    if (!audio.isBackpressured()) ws.loop(now_ms);
     renderer.tick(now_ms);
     stepSelfTest(now_ms);
 
@@ -518,7 +522,7 @@ void loop() {
     // is redrawn only on a state change -- which is why show() clears the face area alone -- and
     // chrome is composited over it here.
     // Before the screen: audio starving is audible and a late repaint is not.
-    audio.tick();
+    audio.tick(now_ms);
 
     pollPower(now_ms, /*force=*/false);
     updateChrome(now_ms, fault_active, fault_code);
@@ -532,11 +536,15 @@ void loop() {
 
     if (now_ms - last_status_ms >= kStatusIntervalMs) {
         last_status_ms = now_ms;
-        Serial.printf("[status] %s · link %s %s · ws %s · batt %d%%%s · up %lus\n",
-                      roboface::toString(state), net.isUp() ? "up" : "down", net.ipAddress(),
-                      ws.isConnected() ? "connected" : "disconnected", battery_percent,
-                      battery_charging ? " (charging)" : "",
-                      static_cast<unsigned long>(now_ms / 1000));
+        Serial.printf(
+            "[status] %s · link %s %s · ws %s · batt %d%%%s · audio %s buf=%u q=%u ref=%u · up %lus\n",
+            roboface::toString(state), net.isUp() ? "up" : "down", net.ipAddress(),
+            ws.isConnected() ? "connected" : "disconnected", battery_percent,
+            battery_charging ? " (charging)" : "",
+            audio.isSpeaking() ? "on" : "off", static_cast<unsigned>(audio.buffered()),
+            static_cast<unsigned>(audio.bytesQueued()),
+            static_cast<unsigned>(audio.chunksRefused()),
+            static_cast<unsigned long>(now_ms / 1000));
     }
 
     delay(5);

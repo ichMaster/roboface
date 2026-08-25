@@ -1,63 +1,109 @@
 // Streaming playback: PCM arriving over the socket comes out of the speaker as it arrives.
 //
-// Glue, because it owns the hardware. The arithmetic that decides whether a byte is lost or a word
-// is clipped lives in `pure/ring_buffer.h`, where a host test proves it.
+// **`M5.Speaker.playRaw` does not wait for a free slot — it returns false and drops the chunk.**
+// (`Speaker_Class::_set_next_wav` returns false when both slots on the channel are claimed.) The
+// network delivers a reply far faster than 16 kHz real time, so the slots fill within about a
+// second and every chunk after that is discarded. The audible symptom is precise: the reply starts
+// cleanly and then breaks up.
 //
-// **The Core S3 shares one I2S bus between the microphone and the speaker**, so claiming it is not
-// free and must not happen per frame. `startSpeaking()` switches once, on the first chunk of a
-// turn; `finish()` drains and gives it back. A turn that took the bus and never returned it would
-// leave the device unable to listen -- and the symptom appears one turn later, in v1.2's capture
-// path, which is working correctly.
+// So the backlog is held in a **PSRAM ring** and fed to the speaker only as fast as it accepts —
+// `playRaw`'s return value is the pacing signal, and a chunk it refuses is retried rather than
+// lost. A fifteen-second reply is about 480 KB of PCM, which is why the ring cannot live in
+// internal RAM.
+//
+// Two further hazards, both real on this stack:
+//
+// * **`playRaw` keeps the pointer, it does not copy** (`info.data = data`). The I2S task reads it
+//   after the call returns, so each chunk is copied into a pool slot that outlives the call.
+// * **Channel −1 means "any free channel"**, so consecutive chunks land on different channels and
+//   sound *together*. That is a chord, not a queue. The channel is pinned.
+//
+// The Core S3 shares one I2S bus between microphone and speaker, so it is claimed once per turn
+// and given back on `tts_end`.
 
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 
-#include "pure/ring_buffer.h"
+#include "pure/pcm_ring.h"
 
 namespace app {
 
-//: About half a second of 16 kHz PCM16. Large enough that a slow frame does not starve playback,
-//: small enough to leave PSRAM for the face's sprite -- and the ring buffer reports backpressure
-//: rather than dropping, so a bigger buffer buys smoothness, never correctness.
-inline constexpr std::size_t kPlaybackBufferBytes = 16384;
+//: About sixteen seconds of 16 kHz PCM16, in PSRAM. Sized for a whole reply so the socket is
+//: rarely throttled; when it is, the ring reports it and `main` stops pumping, which turns the
+//: overflow into TCP backpressure instead of lost speech.
+inline constexpr std::size_t kBacklogBytes = 256 * 1024;
+
+//: Stop reading the socket once free space drops below this.
+inline constexpr std::size_t kBackpressureMargin = 16 * 1024;
+
+//: Used when PSRAM cannot provide the full backlog. Small, but the pacing does not depend on the
+//: size -- a shorter buffer only means the socket is throttled sooner.
+inline constexpr std::size_t kFallbackBacklogBytes = 48 * 1024;
+
+//: Bytes handed to the speaker per queued buffer. ~32 ms at 16 kHz: short enough that `tts_end`
+//: is acted on promptly, long enough that queueing is not the dominant cost.
+inline constexpr std::size_t kChunkBytes = 1024;
+
+//: Buffers in flight. `playRaw` queues two per channel, so three is one more than can be pending
+//: and a refill never lands on memory the I2S task is still reading.
+inline constexpr std::size_t kChunkSlots = 3;
+
+//: How long after the last queued buffer the bus is given back regardless. `isPlaying(channel)`
+//: counts *occupied slots*, and a slot can stay claimed after its audio has finished playing --
+//: waiting on it alone left the speaker enabled forever, which would deny v1.2's microphone the
+//: bus it needs. The timeout is generous: it only has to outlast one queued buffer (~32 ms).
+inline constexpr uint32_t kDrainTimeoutMs = 1500;
 
 class AudioIo {
   public:
-    // Sets the volume and prepares the speaker without claiming the bus.
+    // Allocates the PSRAM backlog. Returns false if it could not -- a renderer that failed to
+    // allocate must say so rather than presenting a mute device as a working one.
     bool begin(uint8_t volume);
 
     // Take the bus for playback. Idempotent: the second chunk of a turn must not re-switch.
     void startSpeaking();
 
-    // Buffer PCM16. Returns how many bytes were accepted -- a short return is backpressure, and
-    // the caller offers the rest again after `tick()` has drained some.
+    // Buffer one `tts_audio` payload. Returns what was accepted; a short return is backpressure.
     std::size_t write(const uint8_t* data, std::size_t length);
 
-    // Move buffered audio to the speaker. Call every loop.
-    void tick();
+    // Feed the speaker as fast as it will take. Call every loop.
+    void tick(uint32_t now_ms);
 
-    // `tts_end`: play what is left, then give the bus back.
+    // `tts_end`: play out the backlog, then give the bus back.
     void finish();
 
-    // `restart` or an error: stop now, discard what is buffered, give the bus back. Speech that
-    // has been superseded is worse than silence -- it answers a question nobody is still asking.
+    // `restart` or an error: stop now and discard. Speech that has been superseded is worse than
+    // silence -- it answers a question nobody is still asking.
     void abort();
 
     bool isSpeaking() const { return speaking_; }
-    bool isDraining() const { return draining_; }
-    std::size_t buffered() const { return buffer_.size(); }
-    uint32_t bytesPlayed() const { return bytes_played_; }
+    //: Only while actually speaking, and only with a backlog to fill. An unattached ring reports
+    //: zero free, so an unguarded version throttled the socket **permanently** -- the device never
+    //: reached the server at all, which looks like a network fault rather than an audio one.
+    bool isBackpressured() const {
+        return speaking_ && backlog_.attached() && backlog_.free() < kBackpressureMargin;
+    }
+    std::size_t buffered() const { return backlog_.size(); }
+    std::size_t backlogCapacity() const { return backlog_.capacity(); }
+    uint32_t bytesQueued() const { return bytes_queued_; }
+    uint32_t chunksRefused() const { return chunks_refused_; }
 
   private:
     void releaseBus();
 
-    roboface::RingBuffer<kPlaybackBufferBytes> buffer_;
+    roboface::PcmRing backlog_;
+    uint8_t pool_[kChunkSlots][kChunkBytes] = {};
+    std::size_t slot_ = 0;
     bool speaking_ = false;
     bool draining_ = false;
-    uint8_t volume_ = 128;
-    uint32_t bytes_played_ = 0;
+    uint8_t volume_ = 120;
+    uint32_t bytes_queued_ = 0;
+    uint32_t last_queued_ms_ = 0;
+    //: How often the speaker refused a buffer. Not a fault -- it is the pacing working -- but a
+    //: count of zero across a long reply would mean the ring is not being exercised at all.
+    uint32_t chunks_refused_ = 0;
 };
 
 }  // namespace app

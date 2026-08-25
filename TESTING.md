@@ -240,6 +240,54 @@ the server is unreachable. Go to §5.
 
 ---
 
+
+### Speech — v1.1's DoD check
+
+From v1.1 a turn is answered **out loud**. The check has two halves, and the second is the one that
+can silently regress:
+
+```bash
+tools/remote.sh start
+.venv/bin/python tools/board.py
+```
+Then type a line and listen:
+```
+Привіт! Розкажи коротко, хто ти такий.
+[state] thinking
+[state] replying
+  Привіт! Я — RoboFace, твій настільний компаньйон з живим обличчям…
+```
+
+**1. It speaks.** Sound comes out of the board's speaker while the text is still arriving. The first
+spoken phrase should be a whole word — if it begins mid-word the phrase splitter cut early.
+
+**2. It speaks *before* it has finished writing.** This is the property v1.1 exists for, and by ear
+it is indistinguishable from a fast request/response pipeline. Read it off the log instead:
+
+```bash
+tools/remote.sh logs -n 40 | grep -E 'turn\.(speaking|reply)'
+```
+```
+"ts": "…T17:16:26.620Z", "event": "turn.speaking", "deltas_so_far": 2
+"ts": "…T17:16:29.491Z", "event": "turn.reply",    "deltas": 3
+```
+
+`turn.speaking` is written when the first `tts_audio` frame leaves; `turn.reply` when the model's
+last delta arrives. **`turn.speaking` must come first.** Above it does, by 2.9 s, with only two of
+three deltas written. If the order ever reverses, something in the pipeline has started
+accumulating and the phase has regressed however good the audio sounds.
+
+**This check costs money.** The suite is fully mocked and always will be, but hearing the board
+speak means a real ElevenLabs call. It is the only paid step in this document, and it is a manual
+DoD check rather than a test.
+
+**If it is silent but the text works,** the server is running without TTS configured — which is a
+deliberate state, not a fault. Look for it:
+
+```bash
+tools/remote.sh logs -n 100 | grep tts.disabled
+```
+
 ## 5. Testing both together
 
 The board dials the server over the LAN, so the server has to live somewhere the board can reach.

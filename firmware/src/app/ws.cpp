@@ -143,6 +143,7 @@ void Ws::handleText(const char* payload, std::size_t length) {
 
     switch (frame.result) {
         case roboface::ParseResult::kReply:
+        case roboface::ParseResult::kTtsEnd:
         case roboface::ParseResult::kError:
         case roboface::ParseResult::kPong:
             if (handler_) handler_(Event::kFrame, frame);

@@ -327,6 +327,24 @@ exception instead of a clean `llm_timeout`. `tools/chat.py` has two more of thes
 The repos offer only a release *candidate* of 3.11 and nothing newer, which is the other reason not
 to use apt here.
 
+## Speech (v1.1)
+
+The server synthesizes replies through ElevenLabs when it is configured to, and is silent when it is
+not. Both are valid: a missing key is a quiet device, not a broken one, and a server that refused to
+start without one would make v1.1 a regression for anyone who only wanted text.
+
+```bash
+tools/remote.sh logs -n 100 | grep tts.disabled     # present => speech is off, and why
+```
+
+Four variables in `server/.env` control it — `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`,
+`ELEVENLABS_MODEL`, `ELEVENLABS_OUTPUT_FORMAT`. The output format is `pcm_16000` and should stay
+that way: it is exactly the device's playback format, so nothing decodes on the server or on the
+board. Asking for MP3 would put a decoder on an ESP32 in the middle of a latency budget.
+
+Speech is the first thing in this project that **costs money to exercise**. The test suite never
+calls the vendor; hearing the board speak does. See [TESTING.md](TESTING.md) §4.
+
 ## Where things live on the box
 
 | Path | What |
