@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from fake_device import connect
 from roboface_server.app import create_app
-from roboface_server.orchestrator import Orchestrator
+from roboface_server.orchestrator import Orchestrator, TurnAborted
 from roboface_server.protocol import ErrorCode, ErrorFrame, Reply, TextIn, TtsEnd
 from roboface_server.providers.mock import DEFAULT_CHUNKS, MockLLMProvider, MockTTSProvider
 
@@ -177,7 +177,7 @@ async def test_a_failed_phrase_closes_its_tts_stream() -> None:
     tts = ClosingTTS(fail_at=1)
     orchestrator = Orchestrator(provider=MockLLMProvider(deltas=DELTAS), tts=tts)
 
-    with pytest.raises(Exception):
+    with pytest.raises(TurnAborted):
         async for _ in orchestrator.respond("s", "привіт"):
             pass
 
@@ -192,7 +192,7 @@ async def test_a_stalled_phrase_closes_its_tts_stream() -> None:
         provider=MockLLMProvider(deltas=DELTAS), tts=tts, first_audio_budget_s=0.05
     )
 
-    with pytest.raises(Exception):
+    with pytest.raises(TurnAborted):
         async for _ in orchestrator.respond("s", "привіт"):
             pass
 
