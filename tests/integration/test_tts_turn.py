@@ -134,3 +134,76 @@ def test_a_server_with_no_tts_still_answers_in_text() -> None:
 def test_audio_payloads_reach_the_device_verbatim() -> None:
     turn = _turn(_app(MockLLMProvider(deltas=("Привіт", ". "))))
     assert turn.audio == DEFAULT_CHUNKS
+
+
+class ClosingTTS:
+    """A TTS provider that records whether its stream was closed.
+
+    The leak this catches is invisible to every other assertion: the audio is correct, the error
+    code is correct, and an HTTP response stays open.
+    """
+
+    def __init__(self, *, fail_at: int | None = None, stall_s: float = 0.0) -> None:
+        self.fail_at = fail_at
+        self.stall_s = stall_s
+        self.closed = 0
+        self.opened = 0
+
+    def synthesize(self, text: str):
+        self.opened += 1
+        return self._stream()
+
+    async def _stream(self):
+        import asyncio
+
+        from roboface_server.protocol import ErrorCode as _EC
+        from roboface_server.providers.base import ProviderError as _PE
+
+        try:
+            for index in range(4):
+                if self.fail_at is not None and index == self.fail_at:
+                    raise _PE("mock tts failure", _EC.TTS_FAILED)
+                if self.stall_s and index == 0:
+                    await asyncio.sleep(self.stall_s)
+                yield b"\x00\x01" * 16
+        finally:
+            self.closed += 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_phrase_closes_its_tts_stream() -> None:
+    # Otherwise each failure leaks an open HTTP response, and a vendor having a bad minute
+    # exhausts the pool -- reporting tts_failed on turns whose synthesis would have worked.
+    tts = ClosingTTS(fail_at=1)
+    orchestrator = Orchestrator(provider=MockLLMProvider(deltas=DELTAS), tts=tts)
+
+    with pytest.raises(Exception):
+        async for _ in orchestrator.respond("s", "привіт"):
+            pass
+
+    assert tts.opened > 0
+    assert tts.closed == tts.opened, "a failed phrase left its stream open"
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_phrase_closes_its_tts_stream() -> None:
+    tts = ClosingTTS(stall_s=0.5)
+    orchestrator = Orchestrator(
+        provider=MockLLMProvider(deltas=DELTAS), tts=tts, first_audio_budget_s=0.05
+    )
+
+    with pytest.raises(Exception):
+        async for _ in orchestrator.respond("s", "привіт"):
+            pass
+
+    assert tts.closed == tts.opened, "a timed-out phrase left its stream open"
+
+
+@pytest.mark.asyncio
+async def test_a_successful_turn_closes_every_stream_it_opened() -> None:
+    tts = ClosingTTS()
+    orchestrator = Orchestrator(provider=MockLLMProvider(deltas=DELTAS), tts=tts)
+    async for _ in orchestrator.respond("s", "привіт"):
+        pass
+    assert tts.opened >= 2, "the reply should have produced more than one phrase"
+    assert tts.closed == tts.opened

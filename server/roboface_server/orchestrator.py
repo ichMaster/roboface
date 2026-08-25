@@ -26,7 +26,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Final
+from typing import Any, Final
 
 from roboface_server.logging import chars, log
 from roboface_server.prompt import build_system_prompt
@@ -226,22 +226,31 @@ class Orchestrator:
             return
 
         stream = self.tts.synthesize(phrase)
+        # Every early exit closes the stream. In the real adapter it owns an `httpx` streaming
+        # response and its connection, so a failed phrase that simply raised would leak one --
+        # and a vendor having a bad minute would leak one per attempt until the pool was empty,
+        # reporting `tts_failed` on turns whose synthesis would have worked. v0.2's review closed
+        # exactly this for the LLM stream; a generator does clean up after itself, but only when
+        # the *consumer* stops it, and here the producer is what raises.
         try:
-            first = await asyncio.wait_for(anext(stream), timeout=self.first_audio_budget_s)
-        except TimeoutError as exc:
-            raise ProviderError(
-                f"no audio within {self.first_audio_budget_s}s", ErrorCode.TTS_FAILED
-            ) from exc
-        except StopAsyncIteration:
-            # Nothing to say for this phrase. Not a failure -- punctuation alone can close a
-            # phrase that carries no speakable text.
-            return
+            try:
+                first = await asyncio.wait_for(anext(stream), timeout=self.first_audio_budget_s)
+            except TimeoutError as exc:
+                raise ProviderError(
+                    f"no audio within {self.first_audio_budget_s}s", ErrorCode.TTS_FAILED
+                ) from exc
+            except StopAsyncIteration:
+                # Nothing to say for this phrase. Not a failure -- punctuation alone can close a
+                # phrase that carries no speakable text.
+                return
 
-        yield AudioChunk(data=first)
-        # No budget past the first chunk: a vendor mid-phrase is working, and cutting it off
-        # would truncate a word rather than save any latency.
-        async for chunk in stream:
-            yield AudioChunk(data=chunk)
+            yield AudioChunk(data=first)
+            # No budget past the first chunk: a vendor mid-phrase is working, and cutting it off
+            # would truncate a word rather than save any latency.
+            async for chunk in stream:
+                yield AudioChunk(data=chunk)
+        finally:
+            await _close_quietly(stream)
 
     def _abort_turn(
         self,
@@ -281,12 +290,16 @@ class Orchestrator:
         return TurnAborted(str(exc), exc.code if exc.code is not None else ErrorCode.LLM_FAILED)
 
 
-async def _close_quietly(stream: AsyncIterator[str]) -> None:
+async def _close_quietly(stream: AsyncIterator[Any]) -> None:
     """Close a provider stream, swallowing whatever it says on the way out.
 
     Cleanup runs on the failure path, which is exactly where a second exception would replace
     the first and lose the reason the turn ended. A provider that objects to being closed is
     not worth telling anyone about.
+
+    Typed on ``Any`` because both streams pass through here -- the LLM's ``str`` deltas and TTS's
+    ``bytes`` chunks. What is being closed is the iterator, and its element type is irrelevant to
+    closing it.
     """
     closer = getattr(stream, "aclose", None)
     if closer is None:
