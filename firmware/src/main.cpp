@@ -537,13 +537,14 @@ void loop() {
     if (now_ms - last_status_ms >= kStatusIntervalMs) {
         last_status_ms = now_ms;
         Serial.printf(
-            "[status] %s · link %s %s · ws %s · batt %d%%%s · audio %s buf=%u q=%u ref=%u · up %lus\n",
+            "[status] %s · link %s %s · ws %s · batt %d%%%s · audio %s buf=%u q=%u ref=%u drop=%u · up %lus\n",
             roboface::toString(state), net.isUp() ? "up" : "down", net.ipAddress(),
             ws.isConnected() ? "connected" : "disconnected", battery_percent,
             battery_charging ? " (charging)" : "",
             audio.isSpeaking() ? "on" : "off", static_cast<unsigned>(audio.buffered()),
             static_cast<unsigned>(audio.bytesQueued()),
             static_cast<unsigned>(audio.chunksRefused()),
+            static_cast<unsigned>(audio.bytesDropped()),
             static_cast<unsigned long>(now_ms / 1000));
     }
 

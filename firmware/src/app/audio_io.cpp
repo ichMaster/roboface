@@ -47,7 +47,16 @@ void AudioIo::startSpeaking() {
 }
 
 std::size_t AudioIo::write(const uint8_t* data, std::size_t length) {
-    if (!backlog_.attached()) return length;  // nowhere to put it; drop rather than crash
+    if (!backlog_.attached()) {
+        // Zero, not `length`. Returning `length` said "I accepted all of it" when nothing had,
+        // and that is precisely how this phase's hardest bug hid: PSRAM reported zero free, the
+        // ring never attached, and the device sat silent while the server logged hundreds of
+        // chunks sent and the board's own counters read q=0. Every layer had been told the audio
+        // was fine. Counting the loss makes a device that cannot allocate say so continuously
+        // rather than once at boot.
+        bytes_dropped_ += static_cast<uint32_t>(length);
+        return 0;
+    }
     return backlog_.write(data, length);
 }
 

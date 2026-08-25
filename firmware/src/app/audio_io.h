@@ -89,6 +89,9 @@ class AudioIo {
     std::size_t backlogCapacity() const { return backlog_.capacity(); }
     uint32_t bytesQueued() const { return bytes_queued_; }
     uint32_t chunksRefused() const { return chunks_refused_; }
+    //: Audio that had nowhere to go. Non-zero means the backlog never allocated, and the device
+    //: is mute for a reason it can state rather than for no visible reason at all.
+    uint32_t bytesDropped() const { return bytes_dropped_; }
 
   private:
     void releaseBus();
@@ -104,6 +107,7 @@ class AudioIo {
     //: How often the speaker refused a buffer. Not a fault -- it is the pacing working -- but a
     //: count of zero across a long reply would mean the ring is not being exercised at all.
     uint32_t chunks_refused_ = 0;
+    uint32_t bytes_dropped_ = 0;
 };
 
 }  // namespace app
