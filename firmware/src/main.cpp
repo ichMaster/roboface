@@ -352,6 +352,17 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
 
         case roboface::ParseResult::kAsr:
             Serial.printf("\n[heard] %s\n", frame.text.c_str());
+            // **The utterance is over** -- the recogniser said so, and it knew before this device
+            // did (§Turn lifecycle: it endpoints at ~500 ms while the local end-pause is still
+            // waiting out a longer, deliberately forgiving one). Without closing here the device
+            // keeps capturing into a window the server has already closed: it shows a listening
+            // face while the reply is being spoken, streams audio that is dropped at the far end,
+            // and enters half-duplex late.
+            //
+            // Through `endListening` rather than a second closing path, so the voice route, the
+            // finger route and this one cannot drift apart. The `listen_stop` it sends is the
+            // duplicate the server was made idempotent for.
+            if (audio.isListening()) endListening();
             return;
 
         case roboface::ParseResult::kTtsEnd:

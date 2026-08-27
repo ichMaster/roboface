@@ -36,6 +36,16 @@ static const DeviceEvent kAllEvents[] = {
     DeviceEvent::kFaultCleared,  DeviceEvent::kListenStarted, DeviceEvent::kListenStopped,
 };
 
+//: The transition the server-driven close relies on. v1.4 lets the *recogniser* end an utterance:
+//: the device receives `asr`, closes its window, and must land in `kThinking` -- the same place a
+//: released finger and an elapsed end-pause land it. Three routes into one transition, which is
+//: exactly why it is worth pinning that the transition exists and is accepted.
+static void test_a_window_closed_by_the_server_lands_in_thinking() {
+    const auto closed = roboface::transition(DeviceState::kListening, DeviceEvent::kListenStopped);
+    TEST_ASSERT_TRUE(closed.accepted);
+    TEST_ASSERT_TRUE(closed.next == DeviceState::kThinking);
+}
+
 static void test_the_transition_table_is_total() {
     // Every (state, event) pair is answered — accepted with a next state, or explicitly
     // rejected. A machine with holes does not crash; it sits in the wrong state, which on a
@@ -324,6 +334,7 @@ static void test_clear_drops_a_partial_line() {
 
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_a_window_closed_by_the_server_lands_in_thinking);
     RUN_TEST(test_the_transition_table_is_total);
     RUN_TEST(test_every_state_has_a_name);
     RUN_TEST(test_the_state_names_are_the_specified_ones);
