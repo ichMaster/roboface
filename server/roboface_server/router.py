@@ -34,11 +34,11 @@ from uuid import uuid4
 from roboface_server.logging import bind_device, chars, connection_context, log
 from roboface_server.orchestrator import TurnAborted
 from roboface_server.protocol import (
-    AsrPartial,
     FRAME_TYPES,
     MAX_UTTERANCE_BYTES,
     Accepted,
     Asr,
+    AsrPartial,
     BinaryPhase,
     Capability,
     DeviceMessage,
