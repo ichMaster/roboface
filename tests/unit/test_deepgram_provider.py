@@ -183,3 +183,36 @@ async def test_a_send_failure_maps_to_asr_failed() -> None:
     with pytest.raises(ProviderError) as raised:
         await session.push(b"\x00\x01")
     assert raised.value.code is ErrorCode.ASR_FAILED
+
+
+@pytest.mark.asyncio
+async def test_reading_and_pushing_share_one_connection() -> None:
+    """Both directions connect lazily and start concurrently by design.
+
+    Without a lock each saw the socket as unset and opened its **own** connection: audio went to
+    one and the reader listened on the other, so nothing came back and nothing failed. It presents
+    as a vendor that silently ignores you, which is the hardest kind of fault to attribute.
+    """
+    import asyncio
+
+    opened = 0
+    socket = FakeSocket([transcript("Привіт.", True)])
+
+    async def connector(url: str, headers: dict[str, str]) -> FakeSocket:
+        nonlocal opened
+        opened += 1
+        await asyncio.sleep(0.01)  # a real connect is not instant, which is what opens the window
+        return socket
+
+    p = DeepgramProvider(
+        "key", model="nova-2", language="uk", encoding="linear16",
+        sample_rate=16000, connector=connector,
+    )
+    session = p.open()
+
+    async def read() -> None:
+        async for _ in session.results():
+            pass
+
+    await asyncio.gather(read(), session.push(b"\x00\x01" * 320))
+    assert opened == 1, f"opened {opened} connections; audio and transcripts would not meet"

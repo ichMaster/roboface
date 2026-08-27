@@ -10,6 +10,7 @@ package-level import would make every test in the repository depend on it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
@@ -186,14 +187,26 @@ class _LazySocket:
         self._api_key = api_key
         self._connector = connector
         self._socket: Any = None
+        # Both directions call `_ensure`, and they run concurrently by design: the reader task
+        # starts before the first frame is pushed. Without this lock each one saw `_socket` as None
+        # and opened its **own** connection -- audio went to one socket and the reader listened on
+        # the other, so nothing ever came back and nothing ever failed. It presents as a vendor that
+        # silently ignores you.
+        self._lock = asyncio.Lock()
 
     async def _ensure(self) -> Any:
         if self._socket is not None:
             return self._socket
+        async with self._lock:
+            # Re-check inside the lock: the task that waited here may find the socket already made.
+            if self._socket is None:
+                self._socket = await self._connect()
+            return self._socket
+
+    async def _connect(self) -> Any:
         headers = {"Authorization": f"Token {self._api_key}"}
         if self._connector is not None:
-            self._socket = await self._connector(self._url, headers)
-            return self._socket
+            return await self._connector(self._url, headers)
         try:
             import websockets
         except ImportError as exc:  # pragma: no cover -- environment problem
@@ -201,10 +214,9 @@ class _LazySocket:
                 "websockets is not installed; the Deepgram adapter needs it", ErrorCode.ASR_FAILED
             ) from exc
         try:
-            self._socket = await websockets.connect(self._url, additional_headers=headers)
+            return await websockets.connect(self._url, additional_headers=headers)
         except Exception as exc:
             raise ProviderError(f"deepgram connect failed: {exc}", ErrorCode.ASR_FAILED) from exc
-        return self._socket
 
     async def send(self, data: str | bytes) -> None:
         socket = await self._ensure()
