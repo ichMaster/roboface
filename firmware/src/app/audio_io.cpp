@@ -190,37 +190,44 @@ void AudioIo::drainCapturedFrame() {
     const std::size_t completed = capture_slot_;
     capture_slot_ = capture_slot_ == 0 ? 1 : 0;
 
-    // Re-arm the freed slot **before** sending it onward, so the microphone is back to two
-    // queued while this frame is on the wire. Sending first would leave the queue one deep
-    // for the duration of the send, which is the same gap in a smaller form.
-    M5.Mic.record(capture_[completed], roboface::kCaptureFrameSamples,
-                  roboface::kCaptureSampleRate);
-
+    // **Everything that reads this buffer happens before it is handed back**, because `record`
+    // gives it to the DMA immediately and the recorder then owns it. The peak, the endpointer's
+    // scan of all 320 samples, and the copy into the pre-roll are microseconds of local work; done
+    // after the re-arm they read a blend of two moments, and the pre-roll that results sounds
+    // nearly right -- the failure mode that cost an evening in v1.3, where audio had a plausible
+    // level, a plausible frame count and no intelligible speech in it.
     const float peak = roboface::peakLevel(capture_[completed], roboface::kCaptureFrameSamples);
     if (peak > peak_seen_) peak_seen_ = peak;
     level_ = roboface::decayToward(level_, peak);
 
     // The observer sees every frame, window or not -- it is what decides whether there should be
-    // a window at all. It runs before the send so the decision is never a frame behind.
+    // a window at all.
     if (observer_ != nullptr) {
         observer_(capture_[completed], roboface::kCaptureFrameSamples, roboface::kCaptureFrameMs);
     }
 
-    if (listening_) {
-        if (sink_ != nullptr && sink_(frame, roboface::kCaptureFrameBytes)) {
-            tally_.recordFrame(roboface::kCaptureFrameBytes);
-        }
-        return;
-    }
-
     // No window: keep the frame in case one opens in a moment. How many are kept is the ring's
     // business -- a shorter pre-roll setting caps it without the storage changing.
-    const std::size_t slot = pre_roll_slots_.writeSlot();
-    if (slot >= kPreRollFrames) return;  // pre-roll disabled: no slot to write
-    for (std::size_t i = 0; i < roboface::kCaptureFrameSamples; ++i) {
-        pre_roll_[slot][i] = capture_[completed][i];
+    if (!listening_) {
+        const std::size_t slot = pre_roll_slots_.writeSlot();
+        if (slot < kPreRollFrames) {
+            for (std::size_t i = 0; i < roboface::kCaptureFrameSamples; ++i) {
+                pre_roll_[slot][i] = capture_[completed][i];
+            }
+        }
+    }
+
+    // Re-armed once the reading is done, and **before the send** -- which is the only slow step
+    // here and the one the queue depth actually matters for. A socket write is milliseconds; the
+    // recorder must not sit one deep for that long.
+    M5.Mic.record(capture_[completed], roboface::kCaptureFrameSamples,
+                  roboface::kCaptureSampleRate);
+
+    if (listening_ && sink_ != nullptr && sink_(frame, roboface::kCaptureFrameBytes)) {
+        tally_.recordFrame(roboface::kCaptureFrameBytes);
     }
 }
+
 
 void AudioIo::tick(uint32_t now_ms) {
     if (listening_ || monitoring_) drainCapturedFrame();
