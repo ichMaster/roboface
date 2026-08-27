@@ -18,6 +18,7 @@ from roboface_server.protocol import (
     Ping,
     Pong,
 )
+from roboface_server.router import ConnectionRegistry
 
 
 def test_audio_outside_a_window_is_refused() -> None:
@@ -116,3 +117,19 @@ def test_the_window_reopens_after_an_oversize_utterance() -> None:
         device.send(ListenStop())
         device.send(Ping())
         assert isinstance(device.recv(), Pong)
+
+
+def test_a_disconnect_mid_utterance_releases_the_buffer() -> None:
+    # The cap bounds a live utterance; it does not bound how many abandoned ones may accumulate.
+    # A device on a flaky link reconnecting mid-sentence would leave one behind per attempt.
+    registry = ConnectionRegistry()
+    app = create_app(registry=registry)
+    with connect(app) as device:
+        device.hello()
+        device.send(ListenStart())
+        device.send_binary(b"\x00\x01" * 4096)
+        device.send(Ping())
+        device.recv()  # the pong proves the audio was accepted before we drop the socket
+
+    # The connection is gone, and with it the audio it was assembling.
+    assert len(registry) == 0

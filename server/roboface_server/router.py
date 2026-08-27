@@ -241,6 +241,13 @@ class Router:
                 self.registry.remove(connection)
                 # The responder holds this session's conversation; without this every
                 # connection that ever happened would stay in memory for the process's life.
+                # An utterance in flight dies with the socket. `forget` was v0.1's fix for
+                # exactly this shape on the history side; the audio buffer is the same problem
+                # with a bigger number attached -- up to MAX_UTTERANCE_BYTES held until the
+                # Connection is collected, and a device on a flaky link reconnecting mid-sentence
+                # accumulates one per attempt. The cap bounds a *live* utterance, not how many
+                # dead ones may pile up.
+                self._end_utterance(connection)
                 self.responder.forget(connection.session_id)
                 log("connection.closed", reason=reason, active=len(self.registry))
 
