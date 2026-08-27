@@ -33,7 +33,28 @@ bool AudioIo::begin(uint8_t volume, uint8_t mic_gain) {
     if (storage == nullptr) return false;
 
     backlog_.attach(storage, wanted);
-    return true;
+    return enterMicMode();
+}
+
+bool AudioIo::enterMicMode() {
+    // Input is this board's **resting** state, and it is left running between windows rather than
+    // torn down after each one. Stopping and restarting the codec around every utterance is what
+    // the two-peripherals-one-bus shape seems to ask for, and it is where the capture faults came
+    // from: a restart that reports success while the port is still held for output, or a config
+    // applied to a driver that reads it back at the wrong moment.
+    //
+    // So: release the speaker if it holds the bus, and start the microphone only if it is not
+    // already running. Both guarded, because the no-op case is the common one.
+    if (M5.Speaker.isEnabled()) M5.Speaker.end();
+    if (M5.Mic.isEnabled()) return true;
+
+    // The library's default magnification of 16 leaves this board's ES7210 reading about 1% of
+    // full scale for speech at desk distance -- audible to nothing. Set before `begin`, because
+    // the config is read when the driver starts.
+    auto mic_cfg = M5.Mic.config();
+    mic_cfg.magnification = mic_gain_;
+    M5.Mic.config(mic_cfg);
+    return M5.Mic.begin();
 }
 
 void AudioIo::startSpeaking() {
@@ -66,27 +87,19 @@ bool AudioIo::startListening(FrameSink sink) {
     // One bus, two peripherals -- the mirror of `startSpeaking`. Anything the speaker still holds
     // is abandoned: a person pressing to talk has superseded whatever was being said to them.
     if (speaking_) abort();
-    if (M5.Speaker.isEnabled()) M5.Speaker.end();
-
-    // The library's default magnification of 16 leaves this board's ES7210 reading about 1% of
-    // full scale for speech at desk distance -- audible to nothing. Set before `begin`, because
-    // the config is read when the driver starts.
-    auto mic_cfg = M5.Mic.config();
-    mic_cfg.magnification = mic_gain_;
-    M5.Mic.config(mic_cfg);
-    if (!M5.Mic.begin()) return false;
+    if (!enterMicMode()) return false;
 
     sink_ = sink;
     tally_.reset();
     peak_seen_ = 0.0f;
-    capture_slot_ = 0;
+    slots_.reset();
     listening_ = true;
 
-    // **Both** slots armed. The microphone has a two-deep queue (`isRecording()` returns 0, 1 or
-    // 2), and arming one at a time leaves it idle from the moment a frame completes until `tick`
-    // notices and re-arms -- a gap in every frame. Measured, that cost a quarter of the audio: a
-    // three-second window produced 2260 ms. With both armed the recorder never stops, and the
-    // loop's job is only to drain and re-arm the slot that freed.
+    // **Both** queue slots armed. The microphone has a two-deep queue (`isRecording()` returns 0,
+    // 1 or 2), and arming one at a time leaves it idle from the moment a frame completes until
+    // `tick` notices and re-arms -- a gap in every frame. Measured, that cost a quarter of the
+    // audio: a three-second window produced 2260 ms. With both armed the recorder never stops.
+    // The third buffer stays free so `tick` never has to re-arm the one it is reading.
     M5.Mic.record(capture_[0], roboface::kCaptureFrameSamples, roboface::kCaptureSampleRate);
     M5.Mic.record(capture_[1], roboface::kCaptureFrameSamples, roboface::kCaptureSampleRate);
     return true;
@@ -97,7 +110,9 @@ void AudioIo::stopListening() {
     listening_ = false;
     sink_ = nullptr;
     level_ = 0.0f;  // the meter must not hold the last word's level after the window closes
-    if (M5.Mic.isEnabled()) M5.Mic.end();
+    // The microphone is **left running**: capture is this board's resting state, and stopping the
+    // codec here only to start it again for the next window is the restart churn the capture
+    // faults came out of. `startSpeaking` releases it when the bus is genuinely needed for output.
 }
 
 void AudioIo::playBacklog() {
@@ -124,18 +139,26 @@ void AudioIo::tick(uint32_t now_ms) {
         // A frame is ready when the recorder has stopped filling it. Sending happens here, in the
         // loop, rather than in an interrupt: the socket write can block, and blocking inside the
         // I2S callback would drop the samples arriving behind it.
-        // Fewer than two queued means one has completed, and the slots complete in the order they
-        // were armed -- so the one that freed is `capture_slot_`.
+        // Fewer than two queued means one has completed, and buffers complete in the order they
+        // were armed -- so the one that freed is `read_slot_`.
         if (M5.Mic.isRecording() < 2) {
-            const auto* frame = reinterpret_cast<const uint8_t*>(capture_[capture_slot_]);
-            const std::size_t completed = capture_slot_;
-            capture_slot_ = capture_slot_ == 0 ? 1 : 0;
+            const std::size_t completed = slots_.readSlot();
 
-            // Re-arm the freed slot **before** sending it onward, so the microphone is back to two
-            // queued while this frame is on the wire. Sending first would leave the queue one deep
-            // for the duration of the send, which is the same gap in a smaller form.
-            M5.Mic.record(capture_[completed], roboface::kCaptureFrameSamples,
+            // Arm the **spare**, never the buffer just completed. Re-arming the completed one is
+            // what the queue depth seems to ask for, and it is silent data corruption: `record`
+            // hands the buffer to the DMA immediately, so the samples arriving for the next frame
+            // are written over the frame still being measured and sent. Every frame then leaves
+            // as a blend of two moments in time.
+            //
+            // Nothing reports it. The frame count is right, the byte count is right, the level
+            // meter moves, and the peak is plausible -- but the audio carries no intelligible
+            // speech, and recognition returns an empty string as though the room were silent.
+            // Only the energy envelope shows it: flat where speech should modulate, with all its
+            // energy below 100 Hz.
+            M5.Mic.record(capture_[slots_.spareSlot()], roboface::kCaptureFrameSamples,
                           roboface::kCaptureSampleRate);
+            const auto* frame = reinterpret_cast<const uint8_t*>(capture_[completed]);
+            slots_.advance();
 
             const float peak =
                 roboface::peakLevel(capture_[completed], roboface::kCaptureFrameSamples);

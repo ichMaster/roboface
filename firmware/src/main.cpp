@@ -559,6 +559,34 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
         return;
     }
 
+    if (line.text.rfind("/mic-gain", 0) == 0) {
+        const std::size_t space = line.text.find(' ');
+        if (space != std::string::npos) {
+            const int parsed = std::atoi(line.text.c_str() + space + 1);
+            if (parsed > 0 && parsed <= 255) audio.setMicGain(static_cast<uint8_t>(parsed));
+        }
+        Serial.printf("[mic] gain %u\n", static_cast<unsigned>(audio.micGain()));
+        return;
+    }
+
+    if (line.text == "/mic-info") {
+        // What the driver actually resolved, not what we believe we asked for. A capture that is
+        // constant low-frequency rumble at every gain has the signature of a port reading a pin
+        // nothing is connected to, and the pin numbers are the only place that is visible.
+        const auto c = M5.Mic.config();
+        Serial.printf("[mic] enabled=%d recording=%d\n", M5.Mic.isEnabled(), M5.Mic.isRecording());
+        Serial.printf("[mic] pin_data_in=%d bck=%d ws=%d mck=%d\n", c.pin_data_in, c.pin_bck,
+                      c.pin_ws, c.pin_mck);
+        Serial.printf("[mic] rate=%u stereo=%d over_sampling=%u magnification=%u noise=%u\n",
+                      (unsigned)c.sample_rate, (int)c.stereo, (unsigned)c.over_sampling,
+                      (unsigned)c.magnification, (unsigned)c.noise_filter_level);
+        Serial.printf("[mic] i2s_port=%d dma_buf_len=%u dma_buf_count=%u use_adc=%d\n",
+                      (int)c.i2s_port, (unsigned)c.dma_buf_len, (unsigned)c.dma_buf_count,
+                      (int)c.use_adc);
+        Serial.printf("[spk] enabled=%d\n", M5.Speaker.isEnabled());
+        return;
+    }
+
     if (line.text == "/faces") {
         startSelfTest();
         return;
@@ -602,6 +630,11 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
 
 void setup() {
     auto config = M5.config();
+    //: The board's own microphone, asked for explicitly. The default depends on the build's board
+    //: detection, and a capture path that silently reads a peripheral nobody enabled looks exactly
+    //: like a working one -- right frame count, right level, no voice in it.
+    config.internal_mic = true;
+    config.internal_spk = true;
     M5.begin(config);
 
     Serial.begin(115200);

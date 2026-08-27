@@ -23,11 +23,15 @@ breaking, and the ``llm_*`` codes arrive already classified from the turn.
 from __future__ import annotations
 
 import hashlib
+import math
+import os
 import time
+import wave
 from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
@@ -200,21 +204,58 @@ class Connection:
         self.phase = ConnectionPhase.READY
 
 
-def _peak_percent(pcm: bytes) -> int:
-    """The loudest sample in an utterance, as a percentage of full scale.
+def _levels(pcm: bytes) -> tuple[int, int]:
+    """``(peak percent, RMS dBFS)`` for an utterance.
 
-    Cheap, and it separates two failures that look identical from the server's side: a device that
-    sent nothing audible, and a vendor that heard nothing in perfectly good audio.
+    Both, because they answer different questions and **peak alone is actively misleading**. A
+    capture measured at 99% peak recognised fine, and one at 19% peak recognised as nothing at all:
+    the first was ordinary speech with one loud transient, the second was speech 13 dB too quiet
+    with a door closing in it. Peak found a microphone gain that made recognition *worse*.
+
+    RMS is the number that predicts recognition -- roughly -20 dBFS transcribes, roughly -34 dBFS
+    does not -- so it is what an empty transcript should be read against. Peak stays for the one
+    thing RMS cannot see: clipping.
     """
     if len(pcm) < 2:
-        return 0
+        return 0, -120
     peak = 0
-    for index in range(0, len(pcm) - 1, 2):
+    total = 0.0
+    count = len(pcm) // 2
+    for index in range(0, count * 2, 2):
         sample = int.from_bytes(pcm[index : index + 2], "little", signed=True)
+        total += float(sample) * sample
         magnitude = -sample if sample < 0 else sample
         if magnitude > peak:
             peak = magnitude
-    return int(peak * 100 / 32767)
+    rms = math.sqrt(total / count)
+    dbfs = -120 if rms < 1 else int(20 * math.log10(rms / 32768))
+    return int(peak * 100 / 32767), dbfs
+
+
+def _dump_utterance(chunks: list[bytes]) -> None:
+    """Write the utterance to a WAV when `ROBOFACE_DUMP_AUDIO` names a directory. Debug only.
+
+    When recognition comes back empty there are two candidate explanations -- the microphone heard
+    nothing intelligible, or the audio was fine and something between here and the vendor mangled
+    it -- and no amount of reading either side's code separates them. The bytes do, because they
+    are playable.
+    """
+    directory = os.environ.get("ROBOFACE_DUMP_AUDIO")
+    if not directory or not chunks:
+        return
+    audio = b"".join(chunks)
+    try:
+        target = Path(directory)
+        target.mkdir(parents=True, exist_ok=True)
+        path = target / f"utterance-{len(audio)}.wav"
+        with wave.open(str(path), "wb") as out:
+            out.setnchannels(1)
+            out.setsampwidth(2)
+            out.setframerate(16000)
+            out.writeframes(audio)
+        log("audio.dumped", path=str(path), bytes=len(audio))
+    except OSError as problem:  # pragma: no cover -- a debug aid must never break a turn
+        log("audio.dump_failed", problem=str(problem), level="warning")
 
 
 class ConnectionRegistry:
@@ -420,6 +461,7 @@ class Router:
         disconnect, and a fault -- and an invariant with four endings written four times is an
         invariant that will disagree with itself.
         """
+        _dump_utterance(conn.utterance)
         conn.binary_phase = BinaryPhase.IDLE
         conn.utterance.clear()
         conn.utterance_bytes = 0
@@ -495,6 +537,7 @@ class Router:
                 # reporting different digests for the same words is a capture bug, not an ASR one.
                 assembled = b"".join(conn.utterance)
                 stopped_at = time.monotonic()
+                peak_pct, rms_dbfs = _levels(assembled)
                 log(
                     "listen.stop",
                     device_id=conn.device_id,
@@ -502,7 +545,8 @@ class Router:
                     bytes=conn.utterance_bytes,
                     frames=len(conn.utterance),
                     digest=hashlib.sha256(assembled).hexdigest()[:16],
-                    peak_pct=_peak_percent(assembled),
+                    peak_pct=peak_pct,
+                    rms_dbfs=rms_dbfs,
                 )
                 session = conn.listening
                 conn.listening = None

@@ -27,6 +27,7 @@
 #include <cstdint>
 
 #include "pure/capture.h"
+#include "pure/capture_slots.h"
 #include "pure/level.h"
 #include "pure/pcm_ring.h"
 
@@ -68,6 +69,15 @@ class AudioIo {
     // Allocates the PSRAM backlog. Returns false if it could not -- a renderer that failed to
     // allocate must say so rather than presenting a mute device as a working one.
     bool begin(uint8_t volume, uint8_t mic_gain = 16);
+
+    //: The capture magnification, changeable at runtime. Finding the right value means comparing
+    //: recordings, and a reflash between each one makes the comparison worthless: the board reboots
+    //: and the room, the distance and the speaker all change with it.
+    //: Put the shared bus into capture mode, the board's resting state. Idempotent.
+    bool enterMicMode();
+
+    void setMicGain(uint8_t gain) { mic_gain_ = gain; }
+    uint8_t micGain() const { return mic_gain_; }
 
     // Take the bus for playback. Idempotent: the second chunk of a turn must not re-switch.
     void startSpeaking();
@@ -144,8 +154,9 @@ class AudioIo {
     //: Two capture frames, alternating: the microphone records into one while the other is being
     //: sent. A single buffer would either drop the samples arriving during the send or make the
     //: send wait for the next frame, and both show up as gaps in the middle of words.
-    int16_t capture_[2][roboface::kCaptureFrameSamples] = {};
-    std::size_t capture_slot_ = 0;
+    //: **Three** buffers, not two. `CaptureSlots` carries the reason and the rotation.
+    int16_t capture_[roboface::CaptureSlots::kCount][roboface::kCaptureFrameSamples] = {};
+    roboface::CaptureSlots slots_;
     bool listening_ = false;
     FrameSink sink_ = nullptr;
     roboface::CaptureTally tally_;

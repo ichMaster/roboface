@@ -23,6 +23,7 @@ rolling window and the SQLite table arrive with it.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -335,6 +336,9 @@ class ListeningTurn:
         #: arrives, evenly sampled, and recognition returns nothing at all -- which reads as a
         #: vendor that cannot hear rather than as a transport problem.
         self._outbound: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._queued_bytes = 0
+        self._sent_bytes = 0
+        self._first_push: float | None = None
         self._writer = asyncio.create_task(self._write())
         self._done = asyncio.Event()
         self._error: ProviderError | None = None
@@ -346,6 +350,7 @@ class ListeningTurn:
         Synchronous by design: the caller is the frame-receive path, and anything it awaits here
         becomes backpressure on the device that is still speaking.
         """
+        self._queued_bytes += len(audio)
         self._outbound.put_nowait(audio)
 
     async def _write(self) -> None:
@@ -355,7 +360,10 @@ class ListeningTurn:
                 frame = await self._outbound.get()
                 if frame is None:
                     return
+                if self._first_push is None:
+                    self._first_push = time.monotonic()
                 await self._session.push(frame)
+                self._sent_bytes += len(frame)
         except asyncio.CancelledError:
             raise
         except ProviderError as exc:
@@ -381,8 +389,28 @@ class ListeningTurn:
         # Drain what is queued before telling the vendor the audio is over, or the tail of the
         # utterance is discarded with the writer.
         self._outbound.put_nowait(None)
-        with suppress(Exception):
+        drain_started = time.monotonic()
+        drained = True
+        try:
             await asyncio.wait_for(self._writer, timeout=self._budget_s)
+        except TimeoutError:
+            drained = False
+        except Exception:  # noqa: BLE001 -- the writer records its own failure in `_error`
+            pass
+        log(
+            "asr.drained",
+            queued_bytes=self._queued_bytes,
+            sent_bytes=self._sent_bytes,
+            audio_ms=self._sent_bytes // 32,
+            stream_ms=(
+                int((time.monotonic() - self._first_push) * 1000)
+                if self._first_push is not None
+                else 0
+            ),
+            ms=int((time.monotonic() - drain_started) * 1000),
+            complete=drained,
+            level="info" if drained else "warning",
+        )
         await self._session.finish()
         try:
             await asyncio.wait_for(self._done.wait(), timeout=self._budget_s)

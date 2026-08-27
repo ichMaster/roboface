@@ -12,13 +12,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from typing import Any, Final
 from urllib.parse import urlencode
 
+from roboface_server.logging import log
 from roboface_server.protocol import ErrorCode
 from roboface_server.providers.base import ASRChunk, ProviderError
+
+#: Every frame the vendor sends, logged verbatim. A transcript that comes back empty looks
+#: identical whether the vendor heard nothing, rejected the audio, or answered in a shape the
+#: parser drops -- and only the raw frame separates those.
+_TRACE: Final = os.environ.get("ROBOFACE_TRACE_ASR") == "1"
 
 API_BASE: Final = "wss://api.deepgram.com/v1/listen"
 
@@ -100,6 +107,8 @@ class DeepgramSession:
     async def _results(self) -> AsyncIterator[ASRChunk]:
         try:
             async for message in self._socket:
+                if _TRACE:
+                    log("asr.raw", body=str(message)[:400])
                 chunk = _parse_message(message)
                 if chunk is not None:
                     yield chunk
