@@ -1,3 +1,21 @@
+Version 1.3.1 (2026-08-28)
+---------------------------
+- Fixed the capture race: `tick` re-armed the buffer it was about to read, so the
+  DMA overwrote every frame while it was being measured and sent. Three buffers
+  now, with the rotation in pure `CaptureSlots` and five host tests on the
+  invariant that the slot being read is never the slot being armed.
+- Capture is the resting state of the shared bus; the codec is no longer stopped
+  and restarted around every window.
+- `listen.stop` reports RMS dBFS alongside peak. Peak alone is misleading, and
+  acting on it produced a microphone gain that made recognition worse.
+- An empty transcript closes the turn instead of stranding the device in
+  `thinking`, where it refused every later hold.
+- The level meter repaints ten times a second, not thirty: a full sprite push at
+  the panel's rate left the loop unable to service the microphone, costing 53%
+  of every capture window.
+- Two diagnostics: `/mic-info` prints what the driver actually resolved, and
+  `/mic-gain` changes magnification without a reflash.
+
 RoboFace -- release notes
 =========================
 
