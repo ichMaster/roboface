@@ -22,6 +22,7 @@
 #include "config.h"
 #include "pure/chrome.h"
 #include "pure/console.h"
+#include "pure/ptt.h"
 #include "pure/transcript.h"
 #include "pure/line_reader.h"
 #include "pure/state.h"
@@ -65,6 +66,10 @@ bool debug_line = false;  // the tiny corner diagnostic; off by default
 //: When a `/listen` window should close on its own. Zero means no timed window is open. The touch
 //: trigger in RF-037 ends on release instead; this exists so capture can be driven from a script.
 uint32_t listen_until_ms = 0;
+
+//: Press-and-hold on the glass. The rules live in `pure/ptt.h`; this holds the instance and the
+//: panel is read once per loop.
+roboface::PushToTalk ptt;
 
 // The serial chat console (v0.5). It borrows the screen the way the self-test does, and gives back
 // the state it took -- the discipline lives in `pure/console.h` where a host test proves it is
@@ -170,6 +175,12 @@ void endListening() {
                   static_cast<unsigned>(audio.tally().frames()),
                   static_cast<unsigned>(audio.tally().durationMs()));
     apply(roboface::DeviceEvent::kListenStopped);
+
+    // `listen_stop` leaves the device *thinking*, which is right from v1.3: recognition follows,
+    // then a reply, and `kTurnEnded` closes it. v1.2 has neither -- the server assembles the
+    // utterance and stops -- so without this the device thinks forever and refuses every hold
+    // after the first. **v1.3 deletes this line**, because a real reply will end the turn.
+    apply(roboface::DeviceEvent::kTurnEnded);
 }
 
 roboface::LinkState linkStateNow() {
@@ -220,6 +231,8 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
                 Serial.println();
                 reply_in_progress = false;
             }
+            ptt.cancel();
+            if (audio.isListening()) audio.stopListening();
             apply(roboface::DeviceEvent::kSocketLost);
             return;
         case app::Ws::Event::kDropped:
@@ -278,6 +291,10 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
             // Speech that has been superseded is worse than silence: it answers a question
             // nobody is still asking.
             audio.abort();
+            // The window is already gone with the turn; abandon the hold rather than reporting a
+            // stop for something the server has stopped listening to.
+            ptt.cancel();
+            if (audio.isListening()) audio.stopListening();
             fault_active = true;
             fault_code = frame.code;
             Serial.printf("\n[error] %s: %s\n", roboface::toString(frame.code), frame.msg.c_str());
@@ -587,6 +604,30 @@ void loop() {
     // Repaint on change or while a fade runs, and never faster than kMinPushIntervalMs. The face
     // is redrawn only on a state change -- which is why show() clears the face area alone -- and
     // chrome is composited over it here.
+    // Touch before audio: a release must reach `endListening` promptly, or the last frames of an
+    // utterance keep arriving after the person has let go.
+    //
+    // `M5.update()` has already refreshed the panel this loop. `getDetail().isPressed()` is the
+    // level; `PushToTalk` turns it into the edges that open and close exactly one window.
+    switch (ptt.update(M5.Touch.getDetail().isPressed(), now_ms)) {
+        case roboface::PttEvent::kStarted:
+            // A timed `/listen` window and a finger must not both own the microphone.
+            listen_until_ms = 0;
+            beginListening();
+            break;
+        case roboface::PttEvent::kStopped:
+            endListening();
+            break;
+        case roboface::PttEvent::kTapped:
+            // Deliberately nothing on the wire. DEVICE_UI gives press-and-hold to PTT; a tap is
+            // reserved, and treating it as a very short utterance would send the server a window
+            // with nothing in it.
+            Serial.println("\n[touch] tap — hold to talk");
+            break;
+        case roboface::PttEvent::kNone:
+            break;
+    }
+
     // Before the screen: audio starving is audible and a late repaint is not.
     audio.tick(now_ms);
     if (listen_until_ms != 0 && now_ms >= listen_until_ms) {
