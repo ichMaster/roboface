@@ -259,7 +259,20 @@ class LLMProvider(Protocol):
 
 class TTSProvider(Protocol):          # from v1.1
     def synthesize(self, text: str) -> AsyncIterator[bytes]: ...   # PCM16, 16 kHz, mono
+
+class ASRProvider(Protocol):          # from v1.3
+    def open(self) -> ASRSession: ...                              # a session, not a call
 ```
+
+**`ASRProvider` is a session because recognition must run *during* speech.** Audio is pushed in
+while transcripts are read out, so at the moment the person stops the transcript already exists. A
+seam shaped `transcribe(audio) -> str` could only start once the audio was complete, and would pay
+about 1.4 s at the worst possible moment — after the speaker has finished and is waiting. That one
+choice is most of v1's latency budget.
+
+`is_final` on an `ASRChunk` is the vendor saying it will not revise *that span*. It is **not** a
+claim that the person has stopped talking; that judgement belongs to `utterance.py`, and conflating
+the two makes the character answer someone who paused for breath.
 
 **Neither is `async def`.** The method returns the iterator, so the caller holds it before awaiting
 anything and can put a budget on the *first* output alone — the LLM's first token, TTS's first

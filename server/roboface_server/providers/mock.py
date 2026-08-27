@@ -22,7 +22,7 @@ import asyncio
 from collections.abc import AsyncIterator, Sequence
 
 from roboface_server.protocol import ErrorCode
-from roboface_server.providers.base import Message, ProviderError
+from roboface_server.providers.base import ASRChunk, Message, ProviderError
 
 #: What a reply looks like when a test does not care about the words. Several fragments, not
 #: one string: a single-delta mock would let a buffering implementation pass every test here.
@@ -147,3 +147,65 @@ class MockTTSProvider:
 
         if self.fail_at_index is not None and self.fail_at_index >= len(self.chunks):
             raise self.error
+
+
+#: A scripted Deepgram-shaped exchange: interims that get revised, then a punctuated final. The
+#: revision matters -- a mock whose interims only grew would let a tracker that *accumulates*
+#: interims pass, and accumulating them produces "прив прив привіт" on the screen.
+DEFAULT_ASR_SCRIPT: tuple[ASRChunk, ...] = (
+    ASRChunk(text="прив", is_final=False),
+    ASRChunk(text="привіт", is_final=False),
+    ASRChunk(text="привіт як", is_final=False),
+    ASRChunk(text="Привіт, як справи?", is_final=True),
+)
+
+
+class MockASRSession:
+    """Replays a script, and records the audio it was fed."""
+
+    def __init__(self, script: Sequence[ASRChunk], error: ProviderError | None = None) -> None:
+        self._script = tuple(script)
+        self._error = error
+        #: Every frame pushed, in order. A test asserts audio reached the vendor *during* the
+        #: window rather than trusting that it did.
+        self.pushed: list[bytes] = []
+        self.finished = False
+        self.closed = False
+
+    async def push(self, audio: bytes) -> None:
+        self.pushed.append(audio)
+
+    async def finish(self) -> None:
+        self.finished = True
+
+    def results(self) -> AsyncIterator[ASRChunk]:
+        return self._results()
+
+    async def _results(self) -> AsyncIterator[ASRChunk]:
+        if self._error is not None:
+            raise self._error
+        for chunk in self._script:
+            yield chunk
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class MockASRProvider:
+    """A canned :class:`~roboface_server.providers.base.ASRProvider`."""
+
+    def __init__(
+        self,
+        script: Sequence[ASRChunk] | None = None,
+        *,
+        error: ProviderError | None = None,
+    ) -> None:
+        self.script = tuple(DEFAULT_ASR_SCRIPT if script is None else script)
+        self.error = error
+        #: Every session opened, so a test can inspect what was pushed after the turn.
+        self.sessions: list[MockASRSession] = []
+
+    def open(self) -> MockASRSession:
+        session = MockASRSession(self.script, self.error)
+        self.sessions.append(session)
+        return session

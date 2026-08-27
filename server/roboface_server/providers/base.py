@@ -108,3 +108,58 @@ class TTSProvider(Protocol):
         of v1.1 is that the mouth opens before the sentence exists.
         """
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class ASRChunk:
+    """One recognition result. ``is_final`` marks a stable transcript rather than a guess.
+
+    Deepgram emits interims constantly and revises them; a final is the vendor saying it will not
+    change its mind about *this* span. It is **not** a claim that the person has stopped talking --
+    that judgement is `utterance.py`'s, and conflating the two is what makes a character interrupt
+    someone who paused for breath.
+    """
+
+    text: str
+    is_final: bool
+
+
+@runtime_checkable
+class ASRSession(Protocol):
+    """One recognition session: audio in, transcripts out, at the same time.
+
+    A session rather than a call, because recognition has to run **during** speech. A seam shaped
+    as ``transcribe(audio) -> str`` could only start once the audio was complete, which is the
+    ~1.4 s this phase exists to remove -- and it is paid at the worst possible moment, after the
+    person has stopped talking and is waiting.
+    """
+
+    async def push(self, audio: bytes) -> None:
+        """Feed captured PCM16 into the session. Safe to call while chunks are being read."""
+        ...
+
+    async def finish(self) -> None:
+        """No more audio is coming. The vendor may still emit finals after this."""
+        ...
+
+    def results(self) -> AsyncIterator[ASRChunk]:
+        """Transcripts as they are recognised. Not ``async def``, for the usual reason."""
+        ...
+
+    async def close(self) -> None:
+        """Release the session, whether or not it finished. Idempotent."""
+        ...
+
+
+@runtime_checkable
+class ASRProvider(Protocol):
+    """Speech recognition, streamed.
+
+    The third and last vendor seam: chat is Gemini (MISSION), speech is Deepgram in and ElevenLabs
+    out, and none of the three is the same seam as another.
+    """
+
+    def open(self) -> ASRSession:
+        """Begin a session. Not ``async def``: the caller holds it before awaiting anything, so it
+        can push the first audio frame under its own budget."""
+        ...
