@@ -121,7 +121,25 @@ def build_responder(settings: Settings) -> Responder:
     else:
         log("tts.disabled", reason="no ELEVENLABS_API_KEY or ELEVENLABS_VOICE_ID", level="warning")
 
-    return Orchestrator(provider=provider, tts=tts)
+    # Recognition is optional in the same way speech is: without a key the device can still type,
+    # which is what v0 and v1.1 were. Refusing to start would make v1.3 a regression for a
+    # deployment that only wanted text.
+    asr = None
+    if settings.deepgram_api_key:
+        from roboface_server.providers.deepgram import DeepgramProvider
+
+        asr = DeepgramProvider(
+            settings.deepgram_api_key,
+            model=settings.deepgram_model,
+            language=settings.deepgram_language,
+            encoding=settings.deepgram_encoding,
+            sample_rate=settings.deepgram_sample_rate,
+            endpoint_ms=settings.deepgram_endpoint_ms,
+        )
+    else:
+        log("asr.disabled", reason="no DEEPGRAM_API_KEY", level="warning")
+
+    return Orchestrator(provider=provider, tts=tts, asr=asr)
 
 
 def create_app(

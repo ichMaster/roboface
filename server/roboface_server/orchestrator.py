@@ -32,6 +32,8 @@ from roboface_server.logging import chars, log
 from roboface_server.prompt import build_system_prompt
 from roboface_server.protocol import ErrorCode
 from roboface_server.providers.base import (
+    ASRProvider,
+    ASRSession,
     LLMProvider,
     Message,
     ProviderError,
@@ -39,6 +41,7 @@ from roboface_server.providers.base import (
 )
 from roboface_server.sentence import PhraseSplitter
 from roboface_server.turn import AudioChunk, ReplyDelta, TurnEvent
+from roboface_server.utterance import UtteranceTracker
 
 #: The rolling conversation window, in messages. ARCHITECTURE §Data model specifies this
 #: number -- *"``SessionMessage{...}`` -- the rolling 40-message window"* -- as part of the v4
@@ -61,6 +64,12 @@ DEFAULT_FIRST_TOKEN_BUDGET_S: Final = 8.0
 #: slow-but-flowing one is never cut off mid-phrase. Shorter than the LLM's, because by the time a
 #: phrase is ready to speak the person has already been waiting for the model to write it.
 DEFAULT_FIRST_AUDIO_BUDGET_S: Final = 3.0
+
+#: How long recognition has to resolve an utterance **after the audio stops**. Generous, because it
+#: should be nearly instant: the transcript is built during speech, so at `listen_stop` the vendor
+#: usually needs only its endpointing window. A breach here means recognition is running in batch
+#: somewhere, which is the failure this phase is designed to make impossible.
+DEFAULT_ASR_BUDGET_S: Final = 5.0
 
 
 class TurnAborted(Exception):
@@ -92,6 +101,9 @@ class Orchestrator:
     #: unchanged. Speech is added alongside the text, never instead of it.
     tts: TTSProvider | None = None
     first_audio_budget_s: float = DEFAULT_FIRST_AUDIO_BUDGET_S
+    #: Absent means the device can still type: v0's text loop predates speech in both directions.
+    asr: ASRProvider | None = None
+    asr_budget_s: float = DEFAULT_ASR_BUDGET_S
     _history: dict[str, list[Message]] = field(default_factory=dict)
 
     def _remember(self, session_id: str, message: Message) -> None:
@@ -112,6 +124,18 @@ class Orchestrator:
     def forget(self, session_id: str) -> None:
         """Drop a session's history. Called when its connection ends."""
         self._history.pop(session_id, None)
+
+    # --- recognition (v1.3) --------------------------------------------------------------
+
+    def open_listening(self) -> ListeningTurn | None:
+        """Begin recognising an utterance, or ``None`` when no ASR provider is configured.
+
+        Returned rather than stored on `self`, because a session belongs to one connection and the
+        orchestrator serves many. v0.2 learned the same lesson about history.
+        """
+        if self.asr is None:
+            return None
+        return ListeningTurn(self.asr.open(), self.asr_budget_s)
 
     def respond(self, session_id: str, text: str) -> AsyncIterator[TurnEvent]:
         """Run a turn and yield its deltas.
@@ -288,6 +312,89 @@ class Orchestrator:
         retry policy chosen for a reason that was never true.
         """
         return TurnAborted(str(exc), exc.code if exc.code is not None else ErrorCode.LLM_FAILED)
+
+
+class ListeningTurn:
+    """One utterance being recognised while it is still being spoken.
+
+    Audio is pushed in as it arrives and transcripts are read out concurrently, so at the moment the
+    person stops the answer is already assembled. The reading runs as its own task because the two
+    directions genuinely overlap -- a loop that pushed and then read would serialise them and give
+    back the latency the WebSocket was chosen to avoid.
+    """
+
+    def __init__(self, session: ASRSession, budget_s: float) -> None:
+        self._session = session
+        self._budget_s = budget_s
+        self._tracker = UtteranceTracker()
+        self._resolved: str | None = None
+        self._partials: asyncio.Queue[str] = asyncio.Queue()
+        self._done = asyncio.Event()
+        self._error: ProviderError | None = None
+        self._reader = asyncio.create_task(self._read())
+
+    async def push(self, audio: bytes) -> None:
+        """One `audio` frame, on its way to the vendor as it arrives."""
+        await self._session.push(audio)
+
+    def drain_partials(self) -> list[str]:
+        """Whatever interims have accumulated, for `asr_partial` frames. Never blocks."""
+        out: list[str] = []
+        while not self._partials.empty():
+            out.append(self._partials.get_nowait())
+        return out
+
+    async def finish(self) -> str | None:
+        """The audio window closed. Returns the utterance, or ``None`` if nothing was said.
+
+        The budget is on the *resolution*, not on the recognition: everything before this point
+        happened while the person was talking and cost them nothing.
+        """
+        await self._session.finish()
+        try:
+            await asyncio.wait_for(self._done.wait(), timeout=self._budget_s)
+        except TimeoutError as exc:
+            await self.close()
+            raise ProviderError(
+                f"recognition did not resolve within {self._budget_s}s", ErrorCode.ASR_FAILED
+            ) from exc
+
+        if self._error is not None:
+            await self.close()
+            raise self._error
+
+        # Nothing settled it, so release whatever is held rather than discarding it -- a vendor
+        # that ends its stream without a final still said something.
+        resolved = self._resolved if self._resolved is not None else self._tracker.finish()
+        await self.close()
+        return resolved
+
+    async def close(self) -> None:
+        self._reader.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await self._reader
+        with suppress(Exception):
+            await self._session.close()
+
+    async def _read(self) -> None:
+        try:
+            async for chunk in self._session.results():
+                resolved = self._tracker.feed(chunk)
+                partial = self._tracker.partial
+                if partial:
+                    self._partials.put_nowait(partial)
+                if resolved is not None:
+                    self._resolved = resolved
+                    self._done.set()
+                    return
+        except ProviderError as exc:
+            self._error = exc
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover -- an adapter bug, not a vendor failure
+            self._error = ProviderError(f"recognition failed: {exc}", ErrorCode.ASR_FAILED)
+        finally:
+            self._done.set()
 
 
 async def _close_quietly(stream: AsyncIterator[Any]) -> None:

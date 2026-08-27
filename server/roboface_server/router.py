@@ -23,10 +23,12 @@ breaking, and the ``llm_*`` codes arrive already classified from the turn.
 from __future__ import annotations
 
 import hashlib
+import time
 from collections.abc import AsyncIterator, Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roboface_server.logging import bind_device, chars, connection_context, log
@@ -35,6 +37,7 @@ from roboface_server.protocol import (
     FRAME_TYPES,
     MAX_UTTERANCE_BYTES,
     Accepted,
+    Asr,
     BinaryPhase,
     Capability,
     DeviceMessage,
@@ -55,6 +58,7 @@ from roboface_server.protocol import (
     encode,
     negotiate,
 )
+from roboface_server.providers.base import ProviderError
 from roboface_server.turn import AudioChunk, ReplyDelta, TurnEvent
 
 #: Normal closure. A rejected ``hello`` still closes normally: the device is not broken, it
@@ -104,6 +108,14 @@ class Responder(Protocol):
 
     def respond(self, session_id: str, text: str) -> AsyncIterator[TurnEvent]: ...
 
+    def open_listening(self) -> Any:
+        """Begin recognising an utterance, or ``None`` when speech input is not configured.
+
+        Optional in practice: a responder without it is a text-only server, which is what v0 and
+        v1.1 were and what a deployment with no Deepgram key still is.
+        """
+        ...
+
     def forget(self, session_id: str) -> None:
         """Release whatever this session accumulated. Called once, at teardown.
 
@@ -128,6 +140,10 @@ class EchoResponder:
     async def _stream(self, text: str) -> AsyncIterator[TurnEvent]:
         for delta in echo_deltas(text):
             yield ReplyDelta(text=delta)
+
+    def open_listening(self) -> Any:
+        """An echo hears nothing."""
+        return None
 
     def forget(self, session_id: str) -> None:
         """Nothing to release -- an echo keeps no history."""
@@ -172,6 +188,10 @@ class Connection:
     #: 30-second utterance is ~1500 frames.
     utterance: list[bytes] = field(default_factory=list)
     utterance_bytes: int = 0
+
+    #: The recognition session, while one is open. Held per connection because a session belongs to
+    #: one device's utterance and the orchestrator serves many.
+    listening: Any = None
 
     def accept(self, hello: Hello) -> None:
         self.device_id = hello.device_id
@@ -247,6 +267,8 @@ class Router:
                 # Connection is collected, and a device on a flaky link reconnecting mid-sentence
                 # accumulates one per attempt. The cap bounds a *live* utterance, not how many
                 # dead ones may pile up.
+                # An open vendor socket is the utterance buffer's problem with a bill attached.
+                await self._close_listening(connection)
                 self._end_utterance(connection)
                 self.responder.forget(connection.session_id)
                 log("connection.closed", reason=reason, active=len(self.registry))
@@ -323,6 +345,37 @@ class Router:
         conn.utterance.append(payload)
         conn.utterance_bytes += len(payload)
 
+        # Onward to the vendor **now**, while the person is still speaking. Holding these until
+        # `listen_stop` would recreate batch recognition on top of a streaming transport.
+        if conn.listening is not None:
+            try:
+                await conn.listening.push(payload)
+            except ProviderError as exc:
+                await self._abort_listening(conn, transport, exc)
+
+    async def _abort_listening(
+        self, conn: Connection, transport: Transport, exc: ProviderError
+    ) -> None:
+        """Recognition failed mid-utterance: close the window and tell the device which leg died."""
+        log("listen.failed", problem=str(exc), level="warning")
+        await self._close_listening(conn)
+        self._end_utterance(conn)
+        await self._send_error(
+            transport, exc.code if exc.code is not None else ErrorCode.ASR_FAILED, str(exc)
+        )
+
+    async def _close_listening(self, conn: Connection) -> None:
+        """Release the recognition session, whatever happened to it.
+
+        An open vendor socket is the utterance buffer's problem with a bill attached, and v1.2
+        already established that the buffer dies with the window.
+        """
+        session = conn.listening
+        conn.listening = None
+        if session is not None:
+            with suppress(Exception):
+                await session.close()
+
     def _end_utterance(self, conn: Connection) -> None:
         """Close the window and release what was collected.
 
@@ -385,6 +438,9 @@ class Router:
                 conn.binary_phase = BinaryPhase.LISTENING
                 conn.utterance.clear()
                 conn.utterance_bytes = 0
+                # Recognition begins with the window, not at its end: that is the whole of v1.3.
+                opener = getattr(self.responder, "open_listening", None)
+                conn.listening = opener() if opener is not None else None
                 log("listen.start", device_id=conn.device_id, session_id=conn.session_id)
             case ListenStop():
                 if conn.binary_phase is not BinaryPhase.LISTENING:
@@ -401,6 +457,7 @@ class Router:
                 # duplication would also satisfy. It is also useful in the field: two devices
                 # reporting different digests for the same words is a capture bug, not an ASR one.
                 assembled = b"".join(conn.utterance)
+                stopped_at = time.monotonic()
                 log(
                     "listen.stop",
                     device_id=conn.device_id,
@@ -409,7 +466,38 @@ class Router:
                     frames=len(conn.utterance),
                     digest=hashlib.sha256(assembled).hexdigest()[:16],
                 )
+                session = conn.listening
+                conn.listening = None
                 self._end_utterance(conn)
+
+                if session is None:
+                    return  # a text-only deployment: the audio was accepted and goes nowhere
+
+                try:
+                    heard = await session.finish()
+                except ProviderError as exc:
+                    log("asr.failed", problem=str(exc), level="warning")
+                    await self._send_error(
+                        transport,
+                        exc.code if exc.code is not None else ErrorCode.ASR_FAILED,
+                        str(exc),
+                    )
+                    return
+
+                # The number the DoD is about: how long resolution took *after* the audio stopped.
+                # Everything before this happened while the person was talking and cost them
+                # nothing, which is why this leg should be the smallest of the three.
+                log("asr.resolved", ms=int((time.monotonic() - stopped_at) * 1000),
+                    chars=chars(heard or ""))
+
+                if not heard:
+                    # Silence. v1.2's press-and-hold makes an empty utterance easy to produce, and
+                    # the right answer to nothing is nothing.
+                    log("asr.empty")
+                    return
+
+                await transport.send(encode(Asr(text=heard)))
+                await self._stream_reply(heard, conn, transport, since=stopped_at)
             case Hello():
                 await self._send_error(
                     transport, ErrorCode.BAD_FRAME, "'hello' was already negotiated"
@@ -419,7 +507,9 @@ class Router:
                     transport, ErrorCode.BAD_FRAME, "message type is not handled in this phase"
                 )
 
-    async def _stream_reply(self, text: str, conn: Connection, transport: Transport) -> None:
+    async def _stream_reply(
+        self, text: str, conn: Connection, transport: Transport, since: float | None = None
+    ) -> None:
         """Forward every delta as its own ``reply`` frame, then close the turn.
 
         **Nothing is buffered.** Each delta is sent inside the loop, before the next is even
@@ -436,6 +526,11 @@ class Router:
             async for event in self.responder.respond(conn.session_id, text):
                 match event:
                     case ReplyDelta():
+                        if deltas == 0 and since is not None:
+                            # The second of the three legs the DoD compares. Logged separately
+                            # because "the ASR leg is the smallest" is a claim about three numbers,
+                            # and one combined figure cannot support or refute it.
+                            log("turn.first_delta_ms", ms=int((time.monotonic() - since) * 1000))
                         await transport.send(encode(Reply(text=event.text, final=False)))
                         deltas += 1
                     case AudioChunk():
@@ -449,7 +544,17 @@ class Router:
                             # after the model's last delta. If it is not, the pipeline is
                             # accumulating somewhere and the phase has not met its goal however
                             # good the audio sounds.
-                            log("turn.speaking", deltas_so_far=deltas)
+                            # The third leg. -1 when the turn was typed rather than spoken, so
+                            # the field is always present and never silently absent.
+                            log(
+                                "turn.speaking",
+                                deltas_so_far=deltas,
+                                ms_since_listen_stop=(
+                                    int((time.monotonic() - since) * 1000)
+                                    if since is not None
+                                    else -1
+                                ),
+                            )
                         conn.binary_phase = BinaryPhase.SPEAKING
                         await transport.send_bytes(event.data)
                         chunks += 1
