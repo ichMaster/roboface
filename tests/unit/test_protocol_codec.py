@@ -135,6 +135,17 @@ def test_the_listening_window_frames_round_trip() -> None:
         assert decode(encode(frame)) == frame
 
 
+def test_the_asr_frames_round_trip() -> None:
+    for frame in (AsrPartial(text="прив"), Asr(text="Привіт, як справи?")):
+        assert decode(encode(frame)) == frame
+
+
+def test_an_asr_frame_without_text_is_malformed() -> None:
+    import json as _json
+    with pytest.raises(MalformedFrame):
+        decode(_json.dumps({"type": "asr"}))
+
+
 def test_the_utterance_cap_is_bytes_not_seconds() -> None:
     # A property of what arrived rather than of a clock, which would have to be trusted across a
     # network. Thirty seconds at pcm16/16000/1.
@@ -148,7 +159,7 @@ def test_an_unknown_type_is_rejected_as_unknown_not_malformed() -> None:
 
 # `listen_start` and `listen_stop` left this list in v1.2, and `tts_end` in v1.1. A type
 # moving out is what a phase landing looks like from the codec's side.
-@pytest.mark.parametrize("message_type", ["event", "image_in", "emotion", "asr"])
+@pytest.mark.parametrize("message_type", ["event", "image_in", "emotion"])
 def test_a_declared_but_unimplemented_type_is_unsupported(message_type: str) -> None:
     """Distinct from unknown: the router answers this with a clean error, not with disdain."""
     with pytest.raises(UnsupportedMessage) as raised:

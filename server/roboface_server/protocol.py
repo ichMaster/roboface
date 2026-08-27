@@ -294,6 +294,24 @@ class ListenStop:
 
 
 @dataclass(frozen=True, slots=True)
+class AsrPartial:
+    """``asr_partial{text}`` -- what the server currently believes it heard, server -> device.
+
+    Revised constantly and never authoritative. The device shows it as a guess; it is `asr` that
+    settles what was said.
+    """
+
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class Asr:
+    """``asr{text}`` -- the resolved utterance, server -> device."""
+
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class TtsEnd:
     """``tts_end`` -- the speaking window is closed, server -> device.
 
@@ -313,7 +331,10 @@ class ErrorFrame:
 
 
 #: Everything :func:`decode` can return and :func:`encode` accepts.
-Frame = Hello | TextIn | ListenStart | ListenStop | Ping | Pong | Reply | TtsEnd | ErrorFrame
+Frame = (
+    Hello | TextIn | ListenStart | ListenStop | Ping | Pong
+    | AsrPartial | Asr | Reply | TtsEnd | ErrorFrame
+)
 
 #: Which message type each typed frame is. One table, so encode and the tests agree.
 FRAME_TYPES: Final[dict[type[Frame], DeviceMessage | ServerMessage]] = {
@@ -323,6 +344,8 @@ FRAME_TYPES: Final[dict[type[Frame], DeviceMessage | ServerMessage]] = {
     ListenStop: DeviceMessage.LISTEN_STOP,
     Ping: DeviceMessage.PING,
     Pong: ServerMessage.PONG,
+    AsrPartial: ServerMessage.ASR_PARTIAL,
+    Asr: ServerMessage.ASR,
     Reply: ServerMessage.REPLY,
     TtsEnd: ServerMessage.TTS_END,
     ErrorFrame: ServerMessage.ERROR,
@@ -348,6 +371,8 @@ def encode(frame: Frame) -> str:
                 "caps": sorted(str(cap) for cap in frame.caps),
             }
         case TextIn():
+            payload["text"] = frame.text
+        case AsrPartial() | Asr():
             payload["text"] = frame.text
         case Reply():
             payload |= {"text": frame.text, "final": frame.final}
@@ -509,6 +534,8 @@ _DECODERS: Final[dict[DeviceMessage | ServerMessage, _Decoder]] = {
     DeviceMessage.LISTEN_STOP: lambda _payload: ListenStop(),
     DeviceMessage.PING: lambda _payload: Ping(),
     ServerMessage.PONG: lambda _payload: Pong(),
+    ServerMessage.ASR_PARTIAL: lambda payload: AsrPartial(text=_require_str(payload, "text")),
+    ServerMessage.ASR: lambda payload: Asr(text=_require_str(payload, "text")),
     ServerMessage.REPLY: _decode_reply,
     ServerMessage.TTS_END: lambda _payload: TtsEnd(),
     ServerMessage.ERROR: _decode_error,
