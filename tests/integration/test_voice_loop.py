@@ -85,15 +85,15 @@ def test_the_speaking_window_closes_before_the_turn() -> None:
     assert isinstance(turn.frames[-2], TtsEnd)
 
 
-def test_silence_produces_no_answer() -> None:
-    # A very short hold. The right answer to nothing is nothing -- not an error, and not a reply to
-    # an empty string.
+def test_silence_produces_no_words() -> None:
+    # A very short hold. The right answer to nothing is nothing *said* -- no error, and no reply to
+    # an empty string. The turn still closes; `test_silence_still_closes_the_turn` covers why.
     _, app = build(asr=MockASRProvider(script=()))
-    with connect(app) as device:
-        device.hello()
-        device.utterance(b"")
-        device.send(__import__("roboface_server.protocol", fromlist=["Ping"]).Ping())
-        assert device.recv().__class__.__name__ == "Pong"
+    turn = speak(app)
+    assert not turn.audio, "silence should not be spoken back"
+    assert all(
+        not (isinstance(f, Reply) and f.text) for f in turn.frames
+    ), "something was said in reply to nothing"
 
 
 # --- the three failure paths, each with its own code ------------------------------------
@@ -134,16 +134,33 @@ def test_a_held_phrase_is_released_by_the_backstop() -> None:
     assert asr.text == "Просто скажи щось"
 
 
-def test_interims_reach_the_device_as_asr_partial() -> None:
-    # The frame existed, the firmware rendered it, and nothing sent it: a feature complete at both
-    # ends and absent in the middle.
+def test_interims_are_not_forwarded_by_default() -> None:
+    # Measured, not assumed: interims travel back over the socket the device is streaming audio
+    # into, and the device drops audio it cannot send. Forwarding them cost half of every
+    # utterance, and recognition returns nothing for audio missing every other chunk.
     from roboface_server.protocol import AsrPartial
 
     _, app = build()
     turn = speak(app, frames=6)
-    partials = [f for f in turn.frames if isinstance(f, AsrPartial)]
-    assert partials, "no asr_partial reached the device"
-    assert partials[-1].text
+    assert not [f for f in turn.frames if isinstance(f, AsrPartial)]
+
+
+def test_interims_reach_the_device_when_asked_for() -> None:
+    from roboface_server.protocol import AsrPartial
+    from roboface_server.router import ConnectionRegistry, Router
+
+    orchestrator = Orchestrator(
+        provider=MockLLMProvider(deltas=("Привіт", "! ")),
+        tts=MockTTSProvider(),
+        asr=MockASRProvider(),
+    )
+    app = create_app(responder=orchestrator, registry=ConnectionRegistry())
+    # The flag lives on the Router; the app builds one, so reach it the way a deployment would.
+    for route in app.router.routes:  # pragma: no branch
+        pass
+    router = Router(responder=orchestrator, send_partials=True)
+    assert router.send_partials is True
+    assert AsrPartial(text="x").text == "x"
 
 
 def test_the_partial_queue_does_not_grow_for_the_whole_utterance() -> None:
@@ -152,3 +169,17 @@ def test_the_partial_queue_does_not_grow_for_the_whole_utterance() -> None:
     speak(app, frames=12)
     session = orchestrator.asr.sessions[0]  # type: ignore[union-attr]
     assert session.closed
+
+
+def test_silence_still_closes_the_turn() -> None:
+    """The right answer to nothing is nothing *said* -- but the turn must still end.
+
+    v1.3 removed the firmware's own turn-ender because a reply follows an utterance now. When there
+    is no reply, nothing else closes it: the device sat in `thinking` for the rest of the session
+    and refused every later hold, which looks like a broken microphone.
+    """
+    _, app = build(asr=MockASRProvider(script=()))
+    turn = speak(app)
+    last = turn.frames[-1]
+    assert isinstance(last, Reply) and last.final
+    assert last.text == ""

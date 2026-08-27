@@ -329,13 +329,41 @@ class ListeningTurn:
         self._tracker = UtteranceTracker()
         self._resolved: str | None = None
         self._partials: asyncio.Queue[str] = asyncio.Queue()
+        #: Audio waiting to go to the vendor. The receive path must never wait on a network send:
+        #: it is the same socket the device is streaming into, so a slow vendor becomes TCP
+        #: backpressure on the device, and the device drops what it cannot send. Half an utterance
+        #: arrives, evenly sampled, and recognition returns nothing at all -- which reads as a
+        #: vendor that cannot hear rather than as a transport problem.
+        self._outbound: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._writer = asyncio.create_task(self._write())
         self._done = asyncio.Event()
         self._error: ProviderError | None = None
         self._reader = asyncio.create_task(self._read())
 
-    async def push(self, audio: bytes) -> None:
-        """One `audio` frame, on its way to the vendor as it arrives."""
-        await self._session.push(audio)
+    def push(self, audio: bytes) -> None:
+        """One `audio` frame, queued for the vendor. **Never blocks.**
+
+        Synchronous by design: the caller is the frame-receive path, and anything it awaits here
+        becomes backpressure on the device that is still speaking.
+        """
+        self._outbound.put_nowait(audio)
+
+    async def _write(self) -> None:
+        """Feed the vendor from the queue, at whatever pace it manages."""
+        try:
+            while True:
+                frame = await self._outbound.get()
+                if frame is None:
+                    return
+                await self._session.push(frame)
+        except asyncio.CancelledError:
+            raise
+        except ProviderError as exc:
+            self._error = exc
+            self._done.set()
+        except Exception as exc:  # pragma: no cover -- adapter bug
+            self._error = ProviderError(f"recognition send failed: {exc}", ErrorCode.ASR_FAILED)
+            self._done.set()
 
     def drain_partials(self) -> list[str]:
         """Whatever interims have accumulated, for `asr_partial` frames. Never blocks."""
@@ -350,6 +378,11 @@ class ListeningTurn:
         The budget is on the *resolution*, not on the recognition: everything before this point
         happened while the person was talking and cost them nothing.
         """
+        # Drain what is queued before telling the vendor the audio is over, or the tail of the
+        # utterance is discarded with the writer.
+        self._outbound.put_nowait(None)
+        with suppress(Exception):
+            await asyncio.wait_for(self._writer, timeout=self._budget_s)
         await self._session.finish()
         try:
             await asyncio.wait_for(self._done.wait(), timeout=self._budget_s)
@@ -370,6 +403,9 @@ class ListeningTurn:
         return resolved
 
     async def close(self) -> None:
+        self._writer.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await self._writer
         self._reader.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await self._reader

@@ -67,6 +67,17 @@ bool debug_line = false;  // the tiny corner diagnostic; off by default
 //: trigger in RF-037 ends on release instead; this exists so capture can be driven from a script.
 uint32_t listen_until_ms = 0;
 
+//: Interims arrive several times a second and serial is slow. Four a second is enough to watch
+//: recognition working and cheap enough not to starve capture.
+constexpr uint32_t kPartialLogIntervalMs = 250;
+uint32_t last_partial_log_ms = 0;
+
+//: How often the level meter asks for a repaint while listening. Ten a second looks smooth and
+//: leaves the loop time to service the microphone.
+constexpr uint32_t kMeterIntervalMs = 100;
+uint32_t last_meter_ms = 0;
+uint32_t now_ms_for_log = 0;
+
 //: Press-and-hold on the glass. The rules live in `pure/ptt.h`; this holds the instance and the
 //: panel is read once per loop.
 roboface::PushToTalk ptt;
@@ -287,7 +298,16 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
         case roboface::ParseResult::kAsrPartial:
             // Serial only. DEVICE_UI and MISSION are unchanged by a transcript: the screen shows
             // states, and a guess about what you said is the last thing that belongs on it.
-            Serial.printf("\r[heard?] %s", frame.text.c_str());
+            //
+            // **Rate-limited, because serial is slow and capture is not optional.** At 115200 baud
+            // a growing transcript printed on every interim blocks the loop that polls the
+            // microphone, and the frames it misses are simply gone: a four-second utterance
+            // arrived as 1.9 s of audio, evenly sampled, which recognition returns nothing for.
+            // A debug line must never cost the thing it is debugging.
+            if (now_ms_for_log - last_partial_log_ms >= kPartialLogIntervalMs) {
+                last_partial_log_ms = now_ms_for_log;
+                Serial.printf("\r[heard?] %s", frame.text.c_str());
+            }
             return;
 
         case roboface::ParseResult::kAsr:
@@ -686,14 +706,21 @@ void loop() {
     }
 
     // Before the screen: audio starving is audible and a late repaint is not.
+    now_ms_for_log = now_ms;
     audio.tick(now_ms);
 
-    // A live meter needs live repaints. Everything else on this screen changes on an event -- a
-    // state transition, a chrome fade, a reply delta -- and marks the sprite dirty when it does.
-    // The level changes every captured frame with no event to hang that on, so the bars drew once
-    // and then sat still while the numbers behind them moved. The existing 33 ms cap still decides
-    // how often this actually reaches the panel.
-    if (audio.isListening()) needs_push = true;
+    // A live meter needs live repaints, but **not at the panel's full rate**. Marking the sprite
+    // dirty every loop made the 33 ms cap fire constantly, and a full 153 KB sprite push at 30 Hz
+    // left the loop unable to service the microphone within its 40 ms of buffering: capture
+    // returned 47% of every window, at any window length, and the missing half made recognition
+    // return nothing at all.
+    //
+    // Ten frames a second is a smooth-looking meter and a quarter of the cost. The audio is the
+    // product; the meter is a courtesy.
+    if (audio.isListening() && now_ms - last_meter_ms >= kMeterIntervalMs) {
+        last_meter_ms = now_ms;
+        needs_push = true;
+    }
     if (listen_until_ms != 0 && now_ms >= listen_until_ms) {
         listen_until_ms = 0;
         endListening();

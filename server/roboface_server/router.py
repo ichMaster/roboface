@@ -200,6 +200,23 @@ class Connection:
         self.phase = ConnectionPhase.READY
 
 
+def _peak_percent(pcm: bytes) -> int:
+    """The loudest sample in an utterance, as a percentage of full scale.
+
+    Cheap, and it separates two failures that look identical from the server's side: a device that
+    sent nothing audible, and a vendor that heard nothing in perfectly good audio.
+    """
+    if len(pcm) < 2:
+        return 0
+    peak = 0
+    for index in range(0, len(pcm) - 1, 2):
+        sample = int.from_bytes(pcm[index : index + 2], "little", signed=True)
+        magnitude = -sample if sample < 0 else sample
+        if magnitude > peak:
+            peak = magnitude
+    return int(peak * 100 / 32767)
+
+
 class ConnectionRegistry:
     """The live connections.
 
@@ -232,6 +249,14 @@ class Router:
     registry: ConnectionRegistry = field(default_factory=ConnectionRegistry)
     responder: Responder = field(default_factory=EchoResponder)
     session_id_factory: Callable[[], str] = field(default=lambda: uuid4().hex)
+
+    #: Whether to forward recognition interims to the device. **Off by default**, and the reason is
+    #: measured rather than assumed: they travel back over the same socket the device is streaming
+    #: audio into, and the device drops audio frames it cannot send. Forwarding them cost about
+    #: half of every utterance -- 1.9 s of a 4 s hold -- and recognition returns nothing for audio
+    #: that is missing every other chunk. A debug convenience must not compete with the product for
+    #: the link.
+    send_partials: bool = False
 
     async def serve(self, transport: Transport) -> None:
         """Run one connection to completion.
@@ -349,16 +374,21 @@ class Router:
         # Onward to the vendor **now**, while the person is still speaking. Holding these until
         # `listen_stop` would recreate batch recognition on top of a streaming transport.
         if conn.listening is not None:
-            try:
-                await conn.listening.push(payload)
-            except ProviderError as exc:
-                await self._abort_listening(conn, transport, exc)
-                return
-            # Forward whatever recognition has guessed so far. This is the only point that runs
-            # repeatedly during a window, so it is the only place the interims *can* be drained --
-            # and without it they accumulate for the whole utterance and reach the device never.
-            for partial in conn.listening.drain_partials():
-                await transport.send(encode(AsrPartial(text=partial)))
+            # Queued, not awaited: this is the frame-receive path for the socket the device is
+            # still streaming into, and waiting on the vendor here turns into TCP backpressure that
+            # the device answers by dropping frames.
+            conn.listening.push(payload)
+            # Drained here because this is the only point that runs repeatedly during a window --
+            # left unread they accumulate for the whole utterance.
+            #
+            # **Sent only if the device asked for them.** Interims travel back over the same socket
+            # the device is streaming audio into, and the device drops audio frames it cannot send:
+            # forwarding them cost about half of every utterance, which recognition returns nothing
+            # for. A debug convenience must not compete with the product for the link, so this is
+            # off unless `send_partials` is set.
+            partials = conn.listening.drain_partials()
+            if self.send_partials and partials:
+                await transport.send(encode(AsrPartial(text=partials[-1])))
 
     async def _abort_listening(
         self, conn: Connection, transport: Transport, exc: ProviderError
@@ -472,6 +502,7 @@ class Router:
                     bytes=conn.utterance_bytes,
                     frames=len(conn.utterance),
                     digest=hashlib.sha256(assembled).hexdigest()[:16],
+                    peak_pct=_peak_percent(assembled),
                 )
                 session = conn.listening
                 conn.listening = None
@@ -499,8 +530,15 @@ class Router:
 
                 if not heard:
                     # Silence. v1.2's press-and-hold makes an empty utterance easy to produce, and
-                    # the right answer to nothing is nothing.
+                    # the right answer to nothing is nothing *said* -- but the turn must still be
+                    # closed. v1.3 removed the device's own turn-ender because a reply now follows
+                    # an utterance; when there is no reply, nothing ended the turn and the device
+                    # sat in `thinking` for the rest of the session, refusing every later hold.
+                    #
+                    # A terminal reply with no text says exactly that: the turn happened and there
+                    # is nothing to say.
                     log("asr.empty")
+                    await transport.send(encode(Reply(text="", final=True)))
                     return
 
                 await transport.send(encode(Asr(text=heard)))
