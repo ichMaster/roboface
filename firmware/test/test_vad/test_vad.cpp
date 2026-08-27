@@ -196,6 +196,50 @@ void pre_roll_rounds_up_to_whole_frames() {
     TEST_ASSERT_EQUAL_UINT32(0, roboface::preRollFrames(0));
 }
 
+//: A value inside the band is accepted and reported back the way it was set.
+void a_sensible_setting_is_accepted() {
+    roboface::VadSettings settings;
+    TEST_ASSERT_TRUE(roboface::setSensitivityPct(settings, 12));
+    TEST_ASSERT_EQUAL_INT(12, roboface::sensitivityPct(settings));
+    TEST_ASSERT_TRUE(roboface::setEndPauseMs(settings, 900));
+    TEST_ASSERT_EQUAL_UINT32(900, settings.end_pause_ms);
+}
+
+//: An out-of-range value is **refused**, and leaves the setting untouched. Clamping would answer
+//: "set it to zero" with "done" and leave the person wondering why nothing changed.
+void an_out_of_range_setting_is_refused_not_clamped() {
+    roboface::VadSettings settings;
+    const float original = settings.sensitivity;
+    TEST_ASSERT_FALSE(roboface::setSensitivityPct(settings, 0));
+    TEST_ASSERT_FALSE(roboface::setSensitivityPct(settings, 200));
+    TEST_ASSERT_FALSE(roboface::setSensitivityPct(settings, -5));
+    TEST_ASSERT_TRUE(settings.sensitivity == original);
+
+    const uint32_t pause = settings.end_pause_ms;
+    TEST_ASSERT_FALSE(roboface::setEndPauseMs(settings, 10));
+    TEST_ASSERT_FALSE(roboface::setEndPauseMs(settings, 60000));
+    TEST_ASSERT_EQUAL_UINT32(pause, settings.end_pause_ms);
+}
+
+//: The band's own edges are inside it -- an inclusive range stated inclusively.
+void the_bounds_themselves_are_allowed() {
+    roboface::VadSettings settings;
+    TEST_ASSERT_TRUE(roboface::setSensitivityPct(settings, roboface::kVadMinSensitivityPct));
+    TEST_ASSERT_TRUE(roboface::setSensitivityPct(settings, roboface::kVadMaxSensitivityPct));
+    TEST_ASSERT_TRUE(roboface::setEndPauseMs(settings, roboface::kVadMinEndPauseMs));
+    TEST_ASSERT_TRUE(roboface::setEndPauseMs(settings, roboface::kVadMaxEndPauseMs));
+}
+
+//: A live endpointer takes new settings without being rebuilt, so tuning does not lose the
+//: utterance in progress or need a reboot.
+void configure_replaces_the_settings_in_place() {
+    roboface::VadSettings settings;
+    roboface::setEndPauseMs(settings, 1200);
+    roboface::Endpointer vad;
+    vad.configure(settings);
+    TEST_ASSERT_EQUAL_UINT32(1200, vad.settings().end_pause_ms);
+}
+
 }  // namespace
 
 int main() {
@@ -212,5 +256,9 @@ int main() {
     RUN_TEST(reset_clears_the_utterance_but_keeps_the_settings);
     RUN_TEST(a_second_utterance_reports_its_own_transitions);
     RUN_TEST(pre_roll_rounds_up_to_whole_frames);
+    RUN_TEST(a_sensible_setting_is_accepted);
+    RUN_TEST(an_out_of_range_setting_is_refused_not_clamped);
+    RUN_TEST(the_bounds_themselves_are_allowed);
+    RUN_TEST(configure_replaces_the_settings_in_place);
     return UNITY_END();
 }

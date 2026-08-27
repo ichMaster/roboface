@@ -91,7 +91,22 @@ uint32_t loopback_until_ms = 0;
 // total over the state enum.
 //: Active listening. The endpointer hears every frame the microphone produces, whether or not a
 //: window is open, and decides when there should be one.
+// A `config.h` written before v1.4 has none of these. Defaulting here rather than failing the
+// build: the file is gitignored, so every person who has ever flashed this board has their own
+// copy, and a new key must not turn their next `git pull` into a compile error.
+#ifndef ACTIVE_LISTENING
+#define ACTIVE_LISTENING 1
+#endif
+#ifndef VAD_SENSITIVITY_PCT
+#define VAD_SENSITIVITY_PCT 6
+#endif
+#ifndef VAD_END_PAUSE_MS
+#define VAD_END_PAUSE_MS 700
+#endif
+
 roboface::Endpointer endpointer;
+//: Whether the room is being listened to at all. Off is v1.3: touch-and-hold only.
+bool active_listening = ACTIVE_LISTENING != 0;
 //: What the observer decided, read by the loop. The observer runs inside `AudioIo::tick`, and
 //: opening a window from there would re-enter the audio path while it is draining a frame -- so it
 //: records the decision and the loop acts on it.
@@ -597,6 +612,59 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
         return;
     }
 
+    if (line.text.rfind("/vad", 0) == 0) {
+        // Tuning a threshold means comparing recordings, and a reflash between each comparison
+        // makes the comparison worthless: the board reboots and the room, the distance and the
+        // speaker all change with it.
+        const std::size_t space = line.text.find(' ');
+        if (space == std::string::npos) {
+            Serial.printf("[vad] %s · sensitivity %d%% · end-pause %u ms\n",
+                          active_listening ? "on" : "off",
+                          roboface::sensitivityPct(endpointer.settings()),
+                          static_cast<unsigned>(endpointer.settings().end_pause_ms));
+            Serial.println("      /vad on | off | sens <1-90> | pause <200-3000>");
+            return;
+        }
+        const std::string rest = line.text.substr(space + 1);
+        if (rest == "on" || rest == "off") {
+            const bool wanted = rest == "on";
+            if (wanted && !active_listening) {
+                if (!audio.startMonitoring(&onCapturedFrame)) {
+                    Serial.println("[vad] microphone did not start — still PTT-only");
+                    return;
+                }
+                endpointer.reset();
+            } else if (!wanted && active_listening) {
+                audio.stopMonitoring();
+            }
+            active_listening = wanted;
+            Serial.printf("[vad] active listening %s\n", active_listening ? "on" : "off");
+            return;
+        }
+        const std::size_t arg = rest.find(' ');
+        if (arg != std::string::npos) {
+            const long value = std::atol(rest.c_str() + arg + 1);
+            auto settings = endpointer.settings();
+            const std::string key = rest.substr(0, arg);
+            bool ok = false;
+            if (key == "sens") ok = roboface::setSensitivityPct(settings, static_cast<int>(value));
+            if (key == "pause") ok = roboface::setEndPauseMs(settings, value);
+            if (!ok) {
+                // Refused, not clamped: answering "set it to zero" with "done" leaves a person
+                // wondering why the device behaves as though they had not.
+                Serial.printf("[vad] %ld is out of range for %s — unchanged\n", value, key.c_str());
+                return;
+            }
+            endpointer.configure(settings);
+            Serial.printf("[vad] sensitivity %d%% · end-pause %u ms\n",
+                          roboface::sensitivityPct(endpointer.settings()),
+                          static_cast<unsigned>(endpointer.settings().end_pause_ms));
+            return;
+        }
+        Serial.println("[vad] /vad on | off | sens <1-90> | pause <200-3000>");
+        return;
+    }
+
     if (line.text == "/mic-info") {
         // What the driver actually resolved, not what we believe we asked for. A capture that is
         // constant low-frequency rumble at every gain has the signature of a port reading a pin
@@ -628,6 +696,7 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
     if (line.text == "/help") {
         Serial.println("  <text>   say something    /faces  cycle the six faces");
         Serial.println("  /debug   corner state line /probe  raw TCP path test");
+        Serial.println("  /vad     active listening  /mic-info driver state");
         Serial.println("  /http    plain HTTP GET test");
         Serial.println("  /listen [s] capture and stream for s seconds (default 3)");
         Serial.println("  /loopback [s] record and play back locally — a diagnostic, sends nothing");
@@ -710,8 +779,23 @@ void setup() {
     // Hear the room from the moment the device is up. Active listening needs the microphone
     // running *before* anything asks for a window, because what it hears is what decides there
     // should be one. The uplink stays shut until the endpointer says otherwise.
-    if (!audio.startMonitoring(&onCapturedFrame)) {
-        Serial.println("[vad] microphone did not start — active listening off, PTT still works");
+    {
+        auto vad_settings = endpointer.settings();
+        roboface::setSensitivityPct(vad_settings, VAD_SENSITIVITY_PCT);
+        roboface::setEndPauseMs(vad_settings, VAD_END_PAUSE_MS);
+        endpointer.configure(vad_settings);
+    }
+    if (active_listening) {
+        if (!audio.startMonitoring(&onCapturedFrame)) {
+            Serial.println("[vad] microphone did not start — active listening off, PTT still works");
+            active_listening = false;
+        } else {
+            Serial.printf("[vad] active listening on — sensitivity %d%%, end-pause %u ms\n",
+                          roboface::sensitivityPct(endpointer.settings()),
+                          static_cast<unsigned>(endpointer.settings().end_pause_ms));
+        }
+    } else {
+        Serial.println("[vad] active listening off — press and hold to talk");
     }
 
     ws.onEvent(onSocketEvent);
@@ -766,6 +850,7 @@ void loop() {
     // What the endpointer decided during `audio.tick`, acted on here rather than inside the audio
     // path. Both triggers -- a voice and a finger -- go through the same `beginListening` /
     // `endListening`, so there is one definition of what a window is and they cannot drift.
+    if (!active_listening) pending_vad = roboface::VadEvent::kNone;
     switch (pending_vad) {
         case roboface::VadEvent::kSpeechStarted:
             pending_vad = roboface::VadEvent::kNone;
@@ -863,10 +948,14 @@ void loop() {
     if (now_ms - last_status_ms >= kStatusIntervalMs) {
         last_status_ms = now_ms;
         Serial.printf(
-            "[status] %s · link %s %s · ws %s · batt %d%%%s · audio %s buf=%u q=%u ref=%u drop=%u · up %lus\n",
+            "[status] %s · link %s %s · ws %s · batt %d%%%s · vad %s · audio %s buf=%u q=%u "
+            "ref=%u drop=%u · up %lus\n",
             roboface::toString(state), net.isUp() ? "up" : "down", net.ipAddress(),
             ws.isConnected() ? "connected" : "disconnected", battery_percent,
             battery_charging ? " (charging)" : "",
+            // Which trigger is live is never a guess: a device that has quietly fallen back to
+            // PTT looks exactly like one that is listening and not hearing you.
+            !active_listening ? "off" : (audio.isMonitoring() ? "listening" : "suspended"),
             audio.isSpeaking() ? "on" : "off", static_cast<unsigned>(audio.buffered()),
             static_cast<unsigned>(audio.bytesQueued()),
             static_cast<unsigned>(audio.chunksRefused()),

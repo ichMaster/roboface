@@ -101,6 +101,38 @@ inline bool frameIsVoiced(const int16_t* samples, std::size_t count, const VadSe
     return zeroCrossings(samples, count) >= settings.min_crossings;
 }
 
+//: The bounds a person may tune within. Wider than anyone should need, narrow enough that a
+//: mistyped value is refused rather than accepted into nonsense -- a sensitivity of 0 hears the
+//: room's noise floor as continuous speech, and an end-pause of 10 seconds looks like a device
+//: that has stopped working.
+inline constexpr int kVadMinSensitivityPct = 1;
+inline constexpr int kVadMaxSensitivityPct = 90;
+inline constexpr uint32_t kVadMinEndPauseMs = 200;
+inline constexpr uint32_t kVadMaxEndPauseMs = 3000;
+
+// Set the sensitivity from a percentage of full scale. **Refuses** an out-of-range value rather
+// than clamping it: clamping answers "set it to 0" with "done", and the person then spends their
+// time wondering why the device behaves as though they had not.
+inline bool setSensitivityPct(VadSettings& settings, int percent) {
+    if (percent < kVadMinSensitivityPct || percent > kVadMaxSensitivityPct) return false;
+    settings.sensitivity = static_cast<float>(percent) / 100.0f;
+    return true;
+}
+
+// Likewise for the local end-pause backstop.
+inline bool setEndPauseMs(VadSettings& settings, long ms) {
+    if (ms < static_cast<long>(kVadMinEndPauseMs) || ms > static_cast<long>(kVadMaxEndPauseMs)) {
+        return false;
+    }
+    settings.end_pause_ms = static_cast<uint32_t>(ms);
+    return true;
+}
+
+// The sensitivity as a percentage, for reporting it back the way it was set.
+inline int sensitivityPct(const VadSettings& settings) {
+    return static_cast<int>(settings.sensitivity * 100.0f + 0.5f);
+}
+
 class Endpointer {
   public:
     Endpointer() = default;

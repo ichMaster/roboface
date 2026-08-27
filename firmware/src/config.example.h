@@ -43,6 +43,23 @@
 // high enough to hear, low enough not to clip.
 #define MIC_GAIN 64
 
+// --- Active listening (v1.4) -------------------------------------------------------------
+// Hands-free: the microphone is always open and a VAD decides when to open the uplink. Set to 0
+// for v1.3's behaviour -- touch-and-hold only. The backup PTT works either way.
+#define ACTIVE_LISTENING 1
+
+// The peak level, 0..100 (percent of full scale), above which a frame counts as loud enough to be
+// speech. Deliberately low: the microphone runs at a fixed gain and speech at desk distance sits
+// well under half scale. What rejects the noise this lets through is the minimum-speech duration
+// and the zero-crossing test, not this number -- raise it only if the room itself is loud.
+#define VAD_SENSITIVITY_PCT 6
+
+// How long the room must be quiet, in milliseconds, before the utterance is considered over. Long
+// enough to survive the pause inside a sentence; short enough that the answer does not feel late.
+// This is the *local backstop* -- when the server's recogniser endpoints first, it ends the
+// utterance and this never fires.
+#define VAD_END_PAUSE_MS 700
+
 // --- Identity --------------------------------------------------------------------------
 // Announced in `hello.device_id` and used to key every server log line for this device.
 #define DEVICE_ID "core-s3-01"
