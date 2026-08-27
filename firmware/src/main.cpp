@@ -68,6 +68,9 @@ bool debug_line = false;  // the tiny corner diagnostic; off by default
 //: trigger in RF-037 ends on release instead; this exists so capture can be driven from a script.
 uint32_t listen_until_ms = 0;
 
+//: When the open window opened, for the runaway cap. Zero means none is open.
+uint32_t listen_opened_ms = 0;
+
 //: Interims arrive several times a second and serial is slow. Four a second is enough to watch
 //: recognition working and cheap enough not to starve capture.
 constexpr uint32_t kPartialLogIntervalMs = 250;
@@ -217,6 +220,7 @@ bool beginListening() {
     const std::size_t pre_rolled = audio.flushPreRoll(&sendCapturedFrame);
     if (pre_rolled > 0) Serial.printf("[listen] pre-roll %u frames\n",
                                       static_cast<unsigned>(pre_rolled));
+    listen_opened_ms = millis();
     apply(roboface::DeviceEvent::kListenStarted);
     return true;
 }
@@ -233,6 +237,7 @@ void endListening() {
     // Leaves the device *thinking*, which is now correct as written: recognition follows, then a
     // reply, and the terminal `reply` frame ends the turn. v1.2 added a kTurnEnded here because it
     // had neither; v1.3 removes it, as that comment said it would.
+    listen_opened_ms = 0;
     apply(roboface::DeviceEvent::kListenStopped);
     // The next utterance starts from silence, not from wherever this one left the counters.
     endpointer.reset();
@@ -941,6 +946,18 @@ void loop() {
         last_meter_ms = now_ms;
         needs_push = true;
     }
+    // A window that has run far past any sentence. In a noisy room the endpointer stays in speech
+    // and its end-pause never elapses, so nothing else here would ever close this -- and the thing
+    // that eventually does is the server's 30 s cap, which arrives as a protocol error and puts a
+    // fault on the screen. The device closes its own window first, normally.
+    if (audio.isListening() && listen_opened_ms != 0 &&
+        now_ms - listen_opened_ms >= roboface::kVadMaxUtteranceMs) {
+        Serial.printf("[vad] window ran past %u s — closing it\n",
+                      static_cast<unsigned>(roboface::kVadMaxUtteranceMs / 1000));
+        listen_until_ms = 0;
+        endListening();
+    }
+
     if (listen_until_ms != 0 && now_ms >= listen_until_ms) {
         listen_until_ms = 0;
         endListening();

@@ -748,7 +748,11 @@ class Router:
         # Note every enumerated code this class chooses is `bad_frame`: everything the router
         # rejects is a judgement about what the device sent. `internal` belongs to the server
         # genuinely breaking, and `llm_*` codes arrive already classified from the turn.
-        log("error.sent", code=str(code), level="warning")
+        # **With the reason.** The code alone says a frame was refused and not why, and the device
+        # prints its own generic line -- so a refusal on hardware was diagnosable only by reading
+        # this file and guessing which branch fired. `msg` is server-authored text, never the
+        # person's words, so it is safe to log in full.
+        log("error.sent", code=str(code), problem=msg, level="warning")
         await transport.send(encode(ErrorFrame(code=code, msg=msg)))
 
 

@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from typing import Any
 
 import pytest
+from fake_device import connect
 from roboface_server.orchestrator import TurnAborted
 from roboface_server.protocol import (
     AUDIO_FMT,
@@ -21,6 +23,7 @@ from roboface_server.protocol import (
     ErrorCode,
     ErrorFrame,
     Hello,
+    ListenStop,
     Ping,
     Reply,
     TextIn,
@@ -557,3 +560,22 @@ async def test_cancellation_is_not_swallowed_as_a_server_fault() -> None:
         await router.serve(transport)
 
     assert not transport.errors(), "cancellation was reported to the device as a server fault"
+
+
+def test_a_refusal_is_logged_with_its_reason(
+    app: Any, log_lines: Callable[[], list[dict[str, Any]]]
+) -> None:
+    # The code alone says a frame was refused and not why. A refusal seen on hardware was
+    # diagnosable only by reading the router and guessing which branch had fired -- the device
+    # prints its own generic line, and `error.sent` carried nothing but `bad_frame`.
+    #
+    # `msg` is server-authored text, never the person's words, so logging it in full is safe.
+    with connect(app) as device:
+        device.hello()
+        device.send(ListenStop())  # no window is open
+        assert isinstance(device.recv(), ErrorFrame)
+
+    refusals = [line for line in log_lines() if line["event"] == "error.sent"]
+    assert refusals, "the refusal was not logged at all"
+    assert refusals[-1].get("problem"), "error.sent carries no reason"
+    assert "not listening" in refusals[-1]["problem"]
