@@ -13,8 +13,7 @@ from typing import Any
 from fake_device import connect
 from roboface_server.app import create_app
 from roboface_server.orchestrator import Orchestrator
-from roboface_server.protocol import Asr, ListenStart, ListenStop, Reply
-from roboface_server.protocol import ErrorFrame
+from roboface_server.protocol import Asr, ErrorFrame, ListenStart, ListenStop, Reply
 from roboface_server.providers.mock import MockASRProvider, MockLLMProvider, MockTTSProvider
 
 FRAME = b"\x01\x02" * 320

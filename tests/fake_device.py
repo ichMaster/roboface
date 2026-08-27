@@ -137,6 +137,20 @@ class FakeDevice:
             self.send_binary(pcm[start : start + chunk])
         self.send(ListenStop())
 
+    def vad_utterance(self, pcm: bytes, *, chunk: int = 640, then_stop: bool = False) -> None:
+        """Stream `pcm` the way an actively-listening board does: a window, chunks, **no close**.
+
+        The difference from :meth:`utterance` is the whole of v1.4 on the wire. A board driven by
+        its VAD opens the window when it hears speech and then waits: the recogniser ends the
+        utterance and the board learns that from `asr`. It sends `listen_stop` only when its own
+        end-pause elapses first, which is the backstop -- `then_stop` models that arriving late.
+        """
+        self.send(ListenStart())
+        for start in range(0, len(pcm), chunk):
+            self.send_binary(pcm[start : start + chunk])
+        if then_stop:
+            self.send(ListenStop())
+
     def send_binary(self, payload: bytes) -> None:
         """Send a raw binary frame -- no envelope, by contract. Audio from v1, JPEG from v3."""
         self._session.send_bytes(payload)
