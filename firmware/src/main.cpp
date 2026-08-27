@@ -299,6 +299,16 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
                 Serial.println();
                 reply_in_progress = false;
             }
+            // The server owns the window; a hold is only a request for one. Any refusal while
+            // listening ends the capture -- otherwise the device keeps sending into a window that
+            // is already closed and earns another `bad_frame` for every frame, a round trip each,
+            // for as long as the finger stays down. (v1.2 review, finding 2.)
+            if (audio.isListening()) {
+                Serial.println("[listen] server refused the window — capture stopped");
+                audio.stopListening();
+                ptt.cancel();
+                listen_until_ms = 0;
+            }
             // Speech that has been superseded is worse than silence: it answers a question
             // nobody is still asking.
             audio.abort();
