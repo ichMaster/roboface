@@ -680,6 +680,13 @@ void loop() {
 
     // Before the screen: audio starving is audible and a late repaint is not.
     audio.tick(now_ms);
+
+    // A live meter needs live repaints. Everything else on this screen changes on an event -- a
+    // state transition, a chrome fade, a reply delta -- and marks the sprite dirty when it does.
+    // The level changes every captured frame with no event to hang that on, so the bars drew once
+    // and then sat still while the numbers behind them moved. The existing 33 ms cap still decides
+    // how often this actually reaches the panel.
+    if (audio.isListening()) needs_push = true;
     if (listen_until_ms != 0 && now_ms >= listen_until_ms) {
         listen_until_ms = 0;
         endListening();
