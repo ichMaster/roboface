@@ -27,7 +27,7 @@
 #include <cstdint>
 
 #include "pure/capture.h"
-#include "pure/capture_slots.h"
+#include "pure/timed_capture.h"
 #include "pure/level.h"
 #include "pure/pcm_ring.h"
 
@@ -75,6 +75,9 @@ class AudioIo {
     //: and the room, the distance and the speaker all change with it.
     //: Put the shared bus into capture mode, the board's resting state. Idempotent.
     bool enterMicMode();
+
+    //: Keep the recorder's two-deep queue full, without ever lapping unsent audio.
+    void topUpQueue();
 
     void setMicGain(uint8_t gain) { mic_gain_ = gain; }
     uint8_t micGain() const { return mic_gain_; }
@@ -154,9 +157,12 @@ class AudioIo {
     //: Two capture frames, alternating: the microphone records into one while the other is being
     //: sent. A single buffer would either drop the samples arriving during the send or make the
     //: send wait for the next frame, and both show up as gaps in the middle of words.
-    //: **Three** buffers, not two. `CaptureSlots` carries the reason and the rotation.
-    int16_t capture_[roboface::CaptureSlots::kCount][roboface::kCaptureFrameSamples] = {};
-    roboface::CaptureSlots slots_;
+    //: One contiguous ring the recorder writes into, rather than a handful of frame-sized slots.
+    //: Regions are queued ahead and read back only where the clock confirms the DMA has been --
+    //: see `roboface::TimedCapture`. Sized so a stall of several frames cannot lap the reader.
+    static constexpr std::size_t kCaptureRingSamples = roboface::kCaptureFrameSamples * 64;
+    int16_t* ring_ = nullptr;
+    roboface::TimedCapture timing_{roboface::kCaptureSampleRate};
     bool listening_ = false;
     FrameSink sink_ = nullptr;
     roboface::CaptureTally tally_;

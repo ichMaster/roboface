@@ -33,6 +33,13 @@ bool AudioIo::begin(uint8_t volume, uint8_t mic_gain) {
     if (storage == nullptr) return false;
 
     backlog_.attach(storage, wanted);
+
+    // The capture ring. Internal RAM on purpose: the recorder writes it by DMA every 20 ms, and it
+    // is small enough that the sprite and the network stack do not miss it.
+    ring_ = static_cast<int16_t*>(
+        heap_caps_malloc(kCaptureRingSamples * sizeof(int16_t), MALLOC_CAP_INTERNAL));
+    if (ring_ == nullptr) return false;
+
     return enterMicMode();
 }
 
@@ -92,16 +99,13 @@ bool AudioIo::startListening(FrameSink sink) {
     sink_ = sink;
     tally_.reset();
     peak_seen_ = 0.0f;
-    slots_.reset();
+    timing_.start(millis());
     listening_ = true;
 
-    // **Both** queue slots armed. The microphone has a two-deep queue (`isRecording()` returns 0,
-    // 1 or 2), and arming one at a time leaves it idle from the moment a frame completes until
-    // `tick` notices and re-arms -- a gap in every frame. Measured, that cost a quarter of the
-    // audio: a three-second window produced 2260 ms. With both armed the recorder never stops.
-    // The third buffer stays free so `tick` never has to re-arm the one it is reading.
-    M5.Mic.record(capture_[0], roboface::kCaptureFrameSamples, roboface::kCaptureSampleRate);
-    M5.Mic.record(capture_[1], roboface::kCaptureFrameSamples, roboface::kCaptureSampleRate);
+    // Fill the recorder's queue before returning. It is two deep, and arming one region at a time
+    // leaves it idle from the moment a region completes until `tick` notices -- a gap in every
+    // frame. Measured, that cost a quarter of the audio: a three-second window produced 2260 ms.
+    topUpQueue();
     return true;
 }
 
@@ -134,38 +138,43 @@ void AudioIo::playBacklog() {
     draining_ = true;  // there is no `tts_end` coming; play out and release
 }
 
+void AudioIo::topUpQueue() {
+    // Hand the recorder whole frames of the ring, in order, while it will take them and while the
+    // reader is far enough ahead that a new region cannot lap unsent audio. Regions never straddle
+    // the wrap: the ring is a whole number of frames long.
+    while (M5.Mic.isRecording() < 2 &&
+           timing_.pending() + roboface::kCaptureFrameSamples <= kCaptureRingSamples) {
+        const std::size_t offset = timing_.queuedSamples() % kCaptureRingSamples;
+        if (!M5.Mic.record(&ring_[offset], roboface::kCaptureFrameSamples,
+                           roboface::kCaptureSampleRate)) {
+            return;
+        }
+        timing_.queued(roboface::kCaptureFrameSamples);
+    }
+}
+
 void AudioIo::tick(uint32_t now_ms) {
     if (listening_) {
         // A frame is ready when the recorder has stopped filling it. Sending happens here, in the
         // loop, rather than in an interrupt: the socket write can block, and blocking inside the
         // I2S callback would drop the samples arriving behind it.
-        // Fewer than two queued means one has completed, and buffers complete in the order they
-        // were armed -- so the one that freed is `read_slot_`.
-        if (M5.Mic.isRecording() < 2) {
-            const std::size_t completed = slots_.readSlot();
+        // Keep the recorder busy, then read back only what the clock says it has finished. The
+        // queue depth is *not* used to decide what is readable: `record` returning true means the
+        // request was accepted, not that the samples exist, and reading on that signal hands the
+        // sink memory the DMA is still writing into.
+        topUpQueue();
 
-            // Arm the **spare**, never the buffer just completed. Re-arming the completed one is
-            // what the queue depth seems to ask for, and it is silent data corruption: `record`
-            // hands the buffer to the DMA immediately, so the samples arriving for the next frame
-            // are written over the frame still being measured and sent. Every frame then leaves
-            // as a blend of two moments in time.
-            //
-            // Nothing reports it. The frame count is right, the byte count is right, the level
-            // meter moves, and the peak is plausible -- but the audio carries no intelligible
-            // speech, and recognition returns an empty string as though the room were silent.
-            // Only the energy envelope shows it: flat where speech should modulate, with all its
-            // energy below 100 Hz.
-            M5.Mic.record(capture_[slots_.spareSlot()], roboface::kCaptureFrameSamples,
-                          roboface::kCaptureSampleRate);
-            const auto* frame = reinterpret_cast<const uint8_t*>(capture_[completed]);
-            slots_.advance();
+        while (timing_.readable(now_ms, roboface::kCaptureFrameSamples)) {
+            const std::size_t offset = timing_.sentSamples() % kCaptureRingSamples;
+            const int16_t* frame = &ring_[offset];
+            timing_.sent(roboface::kCaptureFrameSamples);
 
-            const float peak =
-                roboface::peakLevel(capture_[completed], roboface::kCaptureFrameSamples);
+            const float peak = roboface::peakLevel(frame, roboface::kCaptureFrameSamples);
             if (peak > peak_seen_) peak_seen_ = peak;
             level_ = roboface::decayToward(level_, peak);
 
-            if (sink_ != nullptr && sink_(frame, roboface::kCaptureFrameBytes)) {
+            if (sink_ != nullptr && sink_(reinterpret_cast<const uint8_t*>(frame),
+                                          roboface::kCaptureFrameBytes)) {
                 tally_.recordFrame(roboface::kCaptureFrameBytes);
             }
         }
