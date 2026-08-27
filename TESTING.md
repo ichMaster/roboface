@@ -334,6 +334,44 @@ one-line cause with a symptom that looks like a model problem.
 Loopback is bounded by the playback buffer (~1 s, since PSRAM reports zero free on this board) and
 says so rather than silently recording less than asked.
 
+
+### The voice loop — v1.3's DoD check
+
+Hold the face, speak Ukrainian, release. You should be answered aloud.
+
+The claim is not that it works but that it is **quick for a specific reason**, so the check is three
+numbers rather than a stopwatch:
+
+```bash
+tools/remote.sh logs -n 400 | grep -E 'asr.resolved|turn.first_delta_ms|turn.speaking'
+```
+```
+asr.resolved         ms=180
+turn.first_delta_ms  ms=~700
+turn.speaking        ms_since_listen_stop=~1200
+```
+
+**The ASR leg must be the smallest of the three.** That is the whole design: recognition runs while
+you speak, so when you stop the transcript already exists and only the endpointing window remains.
+If that number is the *largest*, recognition is running in batch somewhere and the phase has missed
+its point however well it works.
+
+First audio should follow `listen_stop` by under ~1.5 s on the development network.
+
+**A breathing pause must not trigger an answer.** Say a few words, pause for about a second
+mid-sentence, then finish. One answer should come, to the whole sentence. Two answers means the
+phrase-hold is not holding.
+
+The serial channel shows what was heard, and only there — the screen still shows states:
+
+```
+[heard?] прив          ← a guess, revised in place
+[heard] Привіт, як справи?
+```
+
+**Without a `DEEPGRAM_API_KEY` the device still types.** Speech input is optional exactly as speech
+output is; look for `asr.disabled` in the log.
+
 ## 5. Testing both together
 
 The board dials the server over the LAN, so the server has to live somewhere the board can reach.
