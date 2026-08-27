@@ -7,10 +7,8 @@ every value assertion here and fail every sequence one.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any
 
-import pytest
 from fake_device import connect
 from roboface_server.app import create_app
 from roboface_server.orchestrator import Orchestrator
