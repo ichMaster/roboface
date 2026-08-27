@@ -45,6 +45,7 @@ void AudioIo::startSpeaking() {
     // that kept draining would be reading a recorder that no longer exists. RF-050 owns putting it
     // back afterwards; what matters here is that the pre-roll does not survive, or the first thing
     // the device hears after speaking would be the end of its own sentence.
+    duplex_.playbackStarted();
     monitoring_ = false;
     pre_roll_slots_.clear();
     if (M5.Mic.isEnabled()) M5.Mic.end();
@@ -96,6 +97,7 @@ bool AudioIo::beginCapture() {
 
 bool AudioIo::startMonitoring(FrameObserver observer) {
     observer_ = observer;
+    duplex_.wantListening(true);
     if (monitoring_ || listening_) return true;
     if (!beginCapture()) return false;
     pre_roll_slots_.clear();
@@ -104,6 +106,7 @@ bool AudioIo::startMonitoring(FrameObserver observer) {
 }
 
 void AudioIo::stopMonitoring() {
+    duplex_.wantListening(false);
     monitoring_ = false;
     pre_roll_slots_.clear();
     // The microphone is released only if no window is open on top of it -- `stopListening` owns
@@ -283,6 +286,19 @@ void AudioIo::releaseBus() {
     speaking_ = false;
     draining_ = false;
     backlog_.clear();
+
+    // **Every** route out of playback passes through here -- drained, cancelled, aborted, faulted.
+    // That is why listening is resumed here and nowhere else: a reply that ended by a path nobody
+    // anticipated would otherwise leave the device permanently deaf while looking perfectly
+    // healthy -- connected, idle, a face on the screen, and no answer to anything said to it again.
+    if (!duplex_.playbackEnded()) return;
+    if (beginCapture()) {
+        pre_roll_slots_.clear();
+        monitoring_ = true;
+        // The caller clears its endpointer on the strength of this: the silence during playback
+        // belongs to nobody's pause, and the tail of the reply is not the start of a sentence.
+        monitor_resumed_ = true;
+    }
 }
 
 }  // namespace app

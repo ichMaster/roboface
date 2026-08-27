@@ -27,6 +27,7 @@
 #include <cstdint>
 
 #include "pure/capture.h"
+#include "pure/half_duplex.h"
 #include "pure/pre_roll.h"
 #include "pure/vad.h"
 #include "pure/level.h"
@@ -97,6 +98,14 @@ class AudioIo {
     bool startMonitoring(FrameObserver observer);
     void stopMonitoring();
     bool isMonitoring() const { return monitoring_; }
+
+    //: True once, on the loop where listening resumed after playback -- the caller's cue to clear
+    //: its endpointer. Consumed by reading it, so the reset happens once and not on every loop.
+    bool takeMonitorResumed() {
+        const bool resumed = monitor_resumed_;
+        monitor_resumed_ = false;
+        return resumed;
+    }
 
     //: Send everything the pre-roll ring holds through `sink`, oldest first. Returns the frames
     //: sent. Detection takes a few frames to be sure, and those frames are already speech -- so
@@ -174,6 +183,10 @@ class AudioIo {
     std::size_t capture_slot_ = 0;
     bool listening_ = false;
     bool monitoring_ = false;
+    //: Whether the application wants the room monitored at all, independent of whether the bus is
+    //: momentarily busy. Playback suspends `monitoring_`; this is what says to put it back.
+    roboface::HalfDuplexGuard duplex_;
+    bool monitor_resumed_ = false;
     FrameSink sink_ = nullptr;
     FrameObserver observer_ = nullptr;
 
