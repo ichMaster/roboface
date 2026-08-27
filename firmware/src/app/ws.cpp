@@ -143,6 +143,8 @@ void Ws::handleText(const char* payload, std::size_t length) {
 
     switch (frame.result) {
         case roboface::ParseResult::kReply:
+        case roboface::ParseResult::kAsrPartial:
+        case roboface::ParseResult::kAsr:
         case roboface::ParseResult::kTtsEnd:
         case roboface::ParseResult::kError:
         case roboface::ParseResult::kPong:

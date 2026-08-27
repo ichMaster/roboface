@@ -262,6 +262,8 @@ inline std::string buildPing() {
 
 enum class ParseResult {
     kReply,        // reply{text, final}
+    kAsrPartial,   // asr_partial{text} -- a guess, revised constantly (v1.3)
+    kAsr,          // asr{text} -- the resolved utterance (v1.3)
     kTtsEnd,       // tts_end -- the speaking window is closed (v1.1)
     kError,        // error{code, msg}
     kPong,         // pong
@@ -348,6 +350,21 @@ inline ServerFrame parseServerFrame(const char* raw, std::size_t length) {
     // `tts_end` carries no fields. Its whole job is to close the speaking window that the binary
     // frames before it belonged to -- they were `tts_audio` because the server was speaking, not
     // because anything labelled them.
+    // `asr_partial` and `asr` differ only in whether the text is still a guess, so they share a
+    // shape and are told apart by their result rather than by a field.
+    for (const auto declared : {ServerMessage::kAsrPartial, ServerMessage::kAsr}) {
+        if (std::strcmp(name, toString(declared)) != 0) continue;
+        JsonVariantConst text = doc["text"];
+        if (!text.is<const char*>()) {
+            frame.result = ParseResult::kMalformed;
+            return frame;
+        }
+        frame.result = declared == ServerMessage::kAsrPartial ? ParseResult::kAsrPartial
+                                                              : ParseResult::kAsr;
+        frame.text = text.as<const char*>();
+        return frame;
+    }
+
     if (std::strcmp(name, toString(ServerMessage::kTtsEnd)) == 0) {
         frame.result = ParseResult::kTtsEnd;
         return frame;
@@ -357,8 +374,7 @@ inline ServerFrame parseServerFrame(const char* raw, std::size_t length) {
     // config_updated, restart. (tts_audio is binary and never arrives here; tts_end is handled
     // above from v1.1.) Answering these with "malformed" would make every later frame look like a
     // broken server.
-    for (const auto declared : {ServerMessage::kAsrPartial, ServerMessage::kAsr,
-                                ServerMessage::kEmotion, ServerMessage::kConfigUpdated,
+    for (const auto declared : {ServerMessage::kEmotion, ServerMessage::kConfigUpdated,
                                 ServerMessage::kRestart}) {
         if (std::strcmp(name, toString(declared)) == 0) {
             frame.result = ParseResult::kUnsupported;

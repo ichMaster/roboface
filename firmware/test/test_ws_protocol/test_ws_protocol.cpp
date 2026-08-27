@@ -209,6 +209,26 @@ static void test_an_unknown_type_is_malformed() {
                           static_cast<int>(parseServerFrame(raw, std::strlen(raw)).result));
 }
 
+static void test_the_asr_frames_parse_and_carry_their_text() {
+    const char* partial = "{\"type\":\"asr_partial\",\"text\":\"прив\"}";
+    ServerFrame frame = parseServerFrame(partial, std::strlen(partial));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kAsrPartial),
+                          static_cast<int>(frame.result));
+    TEST_ASSERT_EQUAL_STRING("прив", frame.text.c_str());
+
+    const char* full = "{\"type\":\"asr\",\"text\":\"Привіт.\"}";
+    frame = parseServerFrame(full, std::strlen(full));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kAsr), static_cast<int>(frame.result));
+    TEST_ASSERT_EQUAL_STRING("Привіт.", frame.text.c_str());
+}
+
+static void test_an_asr_frame_without_text_is_malformed() {
+    const char* raw = "{\"type\":\"asr\"}";
+    const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kMalformed),
+                          static_cast<int>(frame.result));
+}
+
 static void test_tts_end_parses_and_carries_nothing() {
     // Its whole job is to close the speaking window. The binary frames before it were `tts_audio`
     // because the server was speaking, not because anything labelled them -- so there is nothing
@@ -223,11 +243,10 @@ static void test_a_declared_but_unhandled_type_is_unsupported_not_malformed() {
     // The distinction the server draws too. Every not-yet-handled frame arriving at this build
     // lands here, and calling them malformed would make a working server look broken.
     //
-    // `tts_end` used to be in this list and is not any more: v1.1 handles it. A type moving out of
-    // here is what "the phase landed" looks like from the parser's side.
-    for (const char* raw : {"{\"type\":\"asr_partial\",\"text\":\"…\"}", "{\"type\":\"emotion\"}",
-                            "{\"type\":\"restart\"}",
-                            "{\"type\":\"config_updated\"}", "{\"type\":\"asr\",\"text\":\"x\"}"}) {
+    // `tts_end` left this list in v1.1 and `asr_partial`/`asr` in v1.3. A type moving out of here
+    // is what "the phase landed" looks like from the parser's side.
+    for (const char* raw : {"{\"type\":\"emotion\"}", "{\"type\":\"restart\"}",
+                            "{\"type\":\"config_updated\"}"}) {
         const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
         TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kUnsupported),
                               static_cast<int>(frame.result));
@@ -332,6 +351,8 @@ int main(int, char**) {
     RUN_TEST(test_malformed_json_is_malformed);
     RUN_TEST(test_a_non_object_is_malformed);
     RUN_TEST(test_an_unknown_type_is_malformed);
+    RUN_TEST(test_the_asr_frames_parse_and_carry_their_text);
+    RUN_TEST(test_an_asr_frame_without_text_is_malformed);
     RUN_TEST(test_tts_end_parses_and_carries_nothing);
     RUN_TEST(test_a_declared_but_unhandled_type_is_unsupported_not_malformed);
     RUN_TEST(test_an_oversize_frame_is_refused_before_it_is_parsed);

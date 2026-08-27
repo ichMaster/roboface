@@ -182,13 +182,10 @@ void endListening() {
     Serial.printf("[listen] sent %u frames (%u ms)\n",
                   static_cast<unsigned>(audio.tally().frames()),
                   static_cast<unsigned>(audio.tally().durationMs()));
+    // Leaves the device *thinking*, which is now correct as written: recognition follows, then a
+    // reply, and the terminal `reply` frame ends the turn. v1.2 added a kTurnEnded here because it
+    // had neither; v1.3 removes it, as that comment said it would.
     apply(roboface::DeviceEvent::kListenStopped);
-
-    // `listen_stop` leaves the device *thinking*, which is right from v1.3: recognition follows,
-    // then a reply, and `kTurnEnded` closes it. v1.2 has neither -- the server assembles the
-    // utterance and stops -- so without this the device thinks forever and refuses every hold
-    // after the first. **v1.3 deletes this line**, because a real reply will end the turn.
-    apply(roboface::DeviceEvent::kTurnEnded);
 }
 
 roboface::LinkState linkStateNow() {
@@ -286,6 +283,16 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
                 transcript.appendReply(frame.text.c_str());
                 needs_push = true;
                 return;
+
+        case roboface::ParseResult::kAsrPartial:
+            // Serial only. DEVICE_UI and MISSION are unchanged by a transcript: the screen shows
+            // states, and a guess about what you said is the last thing that belongs on it.
+            Serial.printf("\r[heard?] %s", frame.text.c_str());
+            return;
+
+        case roboface::ParseResult::kAsr:
+            Serial.printf("\n[heard] %s\n", frame.text.c_str());
+            return;
 
         case roboface::ParseResult::kTtsEnd:
             // The speaking window is closed. Drain what is buffered, then give the shared I2S bus
