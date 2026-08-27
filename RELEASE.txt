@@ -1,6 +1,50 @@
 RoboFace -- release notes
 =========================
 
+Version 1.3.0 (2026-08-28)
+---------------------------
+Roadmap phase v1.3 -- ASR and the full voice loop. **Speak, and be answered by
+voice.** All three stages now stream and the loop closes.
+
+- The ASRProvider seam is a **session**, not a call: audio is pushed in while
+  transcripts are read out. A transcribe(audio) -> str shape could only begin
+  once the audio was complete, which costs about 1.4 s at the worst possible
+  moment -- after the person stops talking and starts waiting. Encoding that in
+  the seam means no implementation can quietly reintroduce it.
+- Deepgram over wss://, with interim_results, smart_format, server-side
+  endpointing (~500 ms) and an utterance_end_ms (~1000 ms) backstop. The URL
+  builder is its own tested function because none of those parameters fail
+  loudly when wrong: omit interim_results and there are simply no interims,
+  which looks like a slow network. One test asserts the backstop is longer than
+  the endpoint -- a relationship invisible in either number alone.
+- **The phrase-hold.** Deepgram's speech_final means "this span is settled", not
+  "the speaker stopped"; a breath mid-sentence produces one, usually without
+  terminal punctuation. It is held for the continuation or the backstop.
+  Answering it immediately is the character talking over someone mid-sentence,
+  which reads as rudeness rather than as a defect, and no amount of speed makes
+  up for it.
+- Interims replace rather than accumulate. Deepgram revises constantly -- "прив"
+  becomes "привіт" becomes "привіт як" -- and accumulating puts every draft on
+  the screen at once.
+- Per-stage budgets: ASR <= ~5 s on *resolution* after the audio stops, LLM
+  first token <= ~8 s, TTS first audio <= ~3 s, each on that stage's first
+  output. A breach maps to that stage's own error code, so a log says which leg
+  failed.
+- Three latency numbers logged separately -- asr.resolved, turn.first_delta_ms,
+  and turn.speaking's ms_since_listen_stop. The DoD is a claim about which leg is
+  smallest, and one combined figure could neither support nor refute it.
+- The device renders asr_partial and asr on serial only. A transcript is the last
+  thing that belongs on the screen: a device state is a face or an indicator, and
+  a *guess* about what you just said is not even a state.
+
+Review fix: asr_partial was computed, queued and never sent. The frame existed
+and the firmware rendered it; the line that forwards them was never written. A
+feature can be complete at both ends and absent in the middle, and neither end's
+tests notice.
+
+Recognition is optional exactly as speech is: without a DEEPGRAM_API_KEY the
+device still types.
+
 Version 1.2.0 (2026-08-27)
 ---------------------------
 Roadmap phase v1.2 -- microphone capture and push-to-talk. **The device can send
