@@ -559,13 +559,16 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
         return;
     }
 
-    if (line.text.rfind("/mic-gain", 0) == 0) {
-        const std::size_t space = line.text.find(' ');
-        if (space != std::string::npos) {
-            const int parsed = std::atoi(line.text.c_str() + space + 1);
-            if (parsed > 0 && parsed <= 255) audio.setMicGain(static_cast<uint8_t>(parsed));
-        }
-        Serial.printf("[mic] gain %u\n", static_cast<unsigned>(audio.micGain()));
+    if (line.text == "/mem") {
+        // The I2S DMA buffers are allocated from *internal* RAM, so what is left of it decides
+        // whether the microphone starts at all -- and `Mic.begin()` reports success either way.
+        Serial.printf("[mem] internal free=%u largest=%u min_ever=%u\n",
+                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                      (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+        Serial.printf("[mem] psram found=%d size=%u free=%u largest=%u\n", (int)psramFound(),
+                      (unsigned)ESP.getPsramSize(), (unsigned)ESP.getFreePsram(),
+                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
         return;
     }
 
@@ -629,6 +632,15 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
 }  // namespace
 
 void setup() {
+    // Before anything claims memory. PSRAM is initialised by the startup code long before this
+    // runs, so a zero here is a boot/build problem, and a non-zero that later reads zero is
+    // something on this side destroying it.
+    Serial.begin(115200);
+    delay(400);
+    Serial.printf("\n[boot] psram found=%d size=%u free=%u | internal free=%u\n",
+                  (int)psramFound(), (unsigned)ESP.getPsramSize(), (unsigned)ESP.getFreePsram(),
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+
     auto config = M5.config();
     //: The board's own microphone, asked for explicitly. The default depends on the build's board
     //: detection, and a capture path that silently reads a peripheral nobody enabled looks exactly
