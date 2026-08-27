@@ -861,7 +861,15 @@ void loop() {
     // What the endpointer decided during `audio.tick`, acted on here rather than inside the audio
     // path. Both triggers -- a voice and a finger -- go through the same `beginListening` /
     // `endListening`, so there is one definition of what a window is and they cannot drift.
-    if (!active_listening) pending_vad = roboface::VadEvent::kNone;
+    // Switching the feature off stops it **starting** windows. It must not strip the machine of
+    // its ability to finish the one it is in: a window opened a moment before `/vad off` would
+    // otherwise never close, the device would stream until the server's size cap ended it with an
+    // error, and it would sit in `kListening` refusing every later hold -- turning the feature off
+    // would be what broke the device. `kSpeechEnded` and `kDiscarded` close and clean up; neither
+    // can create a turn, so neither needs gating.
+    if (!active_listening && pending_vad == roboface::VadEvent::kSpeechStarted) {
+        pending_vad = roboface::VadEvent::kNone;
+    }
     switch (pending_vad) {
         case roboface::VadEvent::kSpeechStarted:
             pending_vad = roboface::VadEvent::kNone;

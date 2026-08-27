@@ -240,6 +240,19 @@ void configure_replaces_the_settings_in_place() {
     TEST_ASSERT_EQUAL_UINT32(1200, vad.settings().end_pause_ms);
 }
 
+//: An utterance in progress can always be finished, whatever happens to the feature switch. The
+//: endpointer is the half that must keep working: a window opened before active listening was
+//: turned off still has to report its end, or the caller has nothing to close it with.
+void an_utterance_can_always_be_finished() {
+    roboface::Endpointer vad;
+    const auto speech = voicedFrame();
+    const auto quiet = silentFrame();
+    TEST_ASSERT_TRUE(feedFor(vad, speech, 600) == roboface::VadEvent::kSpeechStarted);
+    // Whatever the caller does with its own switch, the end of this utterance is still reported.
+    TEST_ASSERT_TRUE(feedFor(vad, quiet, 800) == roboface::VadEvent::kSpeechEnded);
+    TEST_ASSERT_FALSE(vad.inUtterance());
+}
+
 }  // namespace
 
 int main() {
@@ -260,5 +273,6 @@ int main() {
     RUN_TEST(an_out_of_range_setting_is_refused_not_clamped);
     RUN_TEST(the_bounds_themselves_are_allowed);
     RUN_TEST(configure_replaces_the_settings_in_place);
+    RUN_TEST(an_utterance_can_always_be_finished);
     return UNITY_END();
 }
