@@ -71,6 +71,9 @@ uint32_t listen_until_ms = 0;
 //: panel is read once per loop.
 roboface::PushToTalk ptt;
 
+//: When a `/loopback` recording should stop and play back. Zero means none is running.
+uint32_t loopback_until_ms = 0;
+
 // The serial chat console (v0.5). It borrows the screen the way the self-test does, and gives back
 // the state it took -- the discipline lives in `pure/console.h` where a host test proves it is
 // total over the state enum.
@@ -108,7 +111,7 @@ void render() {
     } else {
         renderer.show(state);
     }
-    chrome_view.draw(renderer.canvas(), chrome);
+    chrome_view.draw(renderer.canvas(), chrome, audio.inputLevel());
     if (debug_line && renderer.canvas() != nullptr) {
         renderer.canvas()->setTextColor(0x39E7, 0x0000);
         // Explicit, for the same reason chrome_view.cpp is: this line inherited the console's font
@@ -136,6 +139,11 @@ void apply(roboface::DeviceEvent event) {
 // network and a gap is better than losing the rest of the sentence.
 bool sendCapturedFrame(const uint8_t* data, std::size_t length) {
     return ws.sendAudio(data, length);
+}
+
+// The loopback sink: the same frames, into the playback buffer instead of onto the wire.
+bool storeCapturedFrame(const uint8_t* data, std::size_t length) {
+    return audio.captureToBacklog(data, length) == length;
 }
 
 // Open the listening window: the frame first, then the microphone. In that order, because a device
@@ -205,6 +213,9 @@ void updateChrome(uint32_t now_ms, bool fault_active, roboface::ErrorCode fault)
     facts.charging = battery_charging;
     facts.fault_active = fault_active;
     facts.fault = fault;
+    // The meter is wanted exactly while the microphone is open. The band arbitrates -- a fault
+    // outranks it, per DEVICE_UI -- so this states a want rather than a decision.
+    facts.level_meter_wanted = audio.isListening();
     chrome.update(now_ms, facts);
 
     const roboface::ChromeVisibility after = chrome.visibility();
@@ -468,6 +479,34 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
         return;
     }
 
+    if (line.text.rfind("/loopback", 0) == 0) {
+        // A diagnostic, never a feature: it sends nothing to the server, and MISSION's non-goals
+        // do not gain a voice recorder. It exercises the shared I2S bus in *both* directions in
+        // one command, which is the part most likely to be wrong and the slowest to notice
+        // through the network path.
+        unsigned seconds = 3;
+        const std::size_t space = line.text.find(' ');
+        if (space != std::string::npos) {
+            const int parsed = std::atoi(line.text.c_str() + space + 1);
+            if (parsed > 0 && parsed <= 10) seconds = static_cast<unsigned>(parsed);
+        }
+        // Clamp to what the backlog can actually hold, and say so. The buffer is the internal
+        // fallback (PSRAM reports zero free on this board -- v1.1 review, finding 3), which is
+        // about 1.5 s of 16 kHz PCM16. Recording longer than that would fill it and drop the rest
+        // silently, and a diagnostic that lies about what it captured is worse than no diagnostic.
+        const unsigned capacity_s =
+            static_cast<unsigned>(audio.backlogCapacity() / (roboface::kCaptureSampleRate * 2));
+        if (capacity_s > 0 && seconds > capacity_s) {
+            Serial.printf("[loopback] buffer holds %u s — recording that instead of %u\n",
+                          capacity_s, seconds);
+            seconds = capacity_s;
+        }
+        Serial.printf("\n[loopback] recording %u s — speak now\n", seconds);
+        loopback_until_ms = millis() + seconds * 1000;
+        audio.startListening(&storeCapturedFrame);
+        return;
+    }
+
     if (line.text.rfind("/listen", 0) == 0) {
         // A trigger before the touch panel has one (RF-037). Also the only way to exercise capture
         // without a finger on the glass, which is what makes a failure reproducible from a script.
@@ -498,6 +537,7 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
         Serial.println("  /debug   corner state line /probe  raw TCP path test");
         Serial.println("  /http    plain HTTP GET test");
         Serial.println("  /listen [s] capture and stream for s seconds (default 3)");
+        Serial.println("  /loopback [s] record and play back locally — a diagnostic, sends nothing");
         Serial.println("  /chat-on  show the conversation on the panel");
         Serial.println("  /chat-off return to the face");
         Serial.println("  /help    this");
@@ -551,7 +591,7 @@ void setup() {
 
     apply(roboface::DeviceEvent::kBooted);
     net.begin(WIFI_SSID, WIFI_PASSWORD, now_ms);
-    if (!audio.begin(SPEAKER_VOLUME)) {
+    if (!audio.begin(SPEAKER_VOLUME, MIC_GAIN)) {
         Serial.println("[audio] PSRAM backlog allocation FAILED — the device will be mute");
     } else {
         Serial.printf("[audio] backlog %u KB (psram free %u KB, internal free %u KB), volume %d\n",
@@ -634,12 +674,20 @@ void loop() {
         listen_until_ms = 0;
         endListening();
     }
+    if (loopback_until_ms != 0 && now_ms >= loopback_until_ms) {
+        loopback_until_ms = 0;
+        Serial.printf("[loopback] captured %u frames (%u ms), peak %d%% — playing back\n",
+                      static_cast<unsigned>(audio.tally().frames()),
+                      static_cast<unsigned>(audio.tally().durationMs()),
+                      static_cast<int>(audio.peakSeen() * 100.0f));
+        audio.playBacklog();
+    }
 
     pollPower(now_ms, /*force=*/false);
     updateChrome(now_ms, fault_active, fault_code);
     if (needs_push && now_ms - last_push_ms >= kMinPushIntervalMs) {
         if (console.isOn()) console_view.draw(renderer.canvas(), transcript);
-        chrome_view.draw(renderer.canvas(), chrome);
+        chrome_view.draw(renderer.canvas(), chrome, audio.inputLevel());
         renderer.push();
         last_push_ms = now_ms;
         needs_push = false;

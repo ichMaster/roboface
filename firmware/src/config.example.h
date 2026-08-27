@@ -37,6 +37,12 @@
 // at desk distance and adds distortion that sounds like a bad voice rather than a loud one.
 #define SPEAKER_VOLUME 120
 
+// Microphone input gain (M5Unified's `magnification`). The library default of 16 leaves the Core
+// S3's ES7210 reading about 1% of full scale for normal speech at desk distance, which is far too
+// quiet for recognition. Raise until speech reads roughly 30-60% on `/loopback`'s peak figure --
+// high enough to hear, low enough not to clip.
+#define MIC_GAIN 64
+
 // --- Identity --------------------------------------------------------------------------
 // Announced in `hello.device_id` and used to key every server log line for this device.
 #define DEVICE_ID "core-s3-01"

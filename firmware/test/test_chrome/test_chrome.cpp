@@ -240,8 +240,63 @@ static void test_the_reported_facts_track_updates() {
     TEST_ASSERT_EQUAL_INT(42, chrome.batteryPercent());
 }
 
+// --- the level meter as a real band tenant (v1.2) --------------------------------------
+//
+// v0.4 wrote the arbitration before anything contended for the band. The meter is the first real
+// contender, so these check the rule holds now that it can actually fire.
+
+static void test_the_meter_owns_the_band_while_listening() {
+    Chrome chrome;
+    ChromeFacts facts;
+    facts.level_meter_wanted = true;
+    chrome.update(1000, facts);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(BandTenant::kLevel),
+                          static_cast<int>(chrome.visibility().band));
+}
+
+static void test_a_fault_outranks_the_meter() {
+    // DEVICE_UI's priority, and the reason for it: the one thing a person must not miss cannot be
+    // hidden by the one thing that is merely reassuring.
+    Chrome chrome;
+    ChromeFacts facts;
+    facts.level_meter_wanted = true;
+    facts.fault_active = true;
+    chrome.update(1000, facts);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(BandTenant::kFault),
+                          static_cast<int>(chrome.visibility().band));
+}
+
+static void test_the_carousel_outranks_both() {
+    Chrome chrome;
+    ChromeFacts facts;
+    facts.level_meter_wanted = true;
+    facts.fault_active = true;
+    facts.carousel_wanted = true;
+    chrome.update(1000, facts);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(BandTenant::kCarousel),
+                          static_cast<int>(chrome.visibility().band));
+}
+
+static void test_the_band_empties_when_listening_ends() {
+    // The meter is live, not settled: it goes the moment the window closes rather than fading
+    // three seconds later like the link and battery indicators.
+    Chrome chrome;
+    ChromeFacts facts;
+    facts.level_meter_wanted = true;
+    chrome.update(1000, facts);
+
+    facts.level_meter_wanted = false;
+    chrome.update(1020, facts);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(BandTenant::kNothing),
+                          static_cast<int>(chrome.visibility().band));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_the_meter_owns_the_band_while_listening);
+    RUN_TEST(test_a_fault_outranks_the_meter);
+    RUN_TEST(test_the_carousel_outranks_both);
+    RUN_TEST(test_the_band_empties_when_listening_ends);
     RUN_TEST(test_the_facts_are_readable_for_drawing);
     RUN_TEST(test_the_reported_facts_track_updates);
     RUN_TEST(test_link_is_visible_while_connecting);

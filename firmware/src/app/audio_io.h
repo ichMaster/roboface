@@ -27,6 +27,7 @@
 #include <cstdint>
 
 #include "pure/capture.h"
+#include "pure/level.h"
 #include "pure/pcm_ring.h"
 
 namespace app {
@@ -66,7 +67,7 @@ class AudioIo {
 
     // Allocates the PSRAM backlog. Returns false if it could not -- a renderer that failed to
     // allocate must say so rather than presenting a mute device as a working one.
-    bool begin(uint8_t volume);
+    bool begin(uint8_t volume, uint8_t mic_gain = 16);
 
     // Take the bus for playback. Idempotent: the second chunk of a turn must not re-switch.
     void startSpeaking();
@@ -89,8 +90,29 @@ class AudioIo {
     // Stop capturing and release the bus. Safe when not listening.
     void stopListening();
 
+    // Capture straight into the playback backlog, for the loopback diagnostic. Returns what was
+    // stored; a short return means the backlog is full, which for a fixed-length recording means
+    // the recording is over.
+    std::size_t captureToBacklog(const uint8_t* data, std::size_t length) {
+        return backlog_.write(data, length);
+    }
+
+    // Play what the backlog holds, without clearing it first -- the mirror of `startSpeaking` for
+    // audio that is already buffered rather than arriving.
+    void playBacklog();
+
     bool isListening() const { return listening_; }
     const roboface::CaptureTally& tally() const { return tally_; }
+
+    //: 0..1, from the frame just captured. The meter reads this rather than the raw samples: the
+    //: envelope is arithmetic and belongs in `pure/`, and the drawing should not be handed a
+    //: buffer it might outlive.
+    float inputLevel() const { return level_; }
+
+    //: The loudest frame of the current capture. A capture that reports zero here recorded
+    //: silence, which is a different fault from a playback that fails to make a sound -- and the
+    //: two are indistinguishable by ear.
+    float peakSeen() const { return peak_seen_; }
 
     // `tts_end`: play out the backlog, then give the bus back.
     void finish();
@@ -127,11 +149,14 @@ class AudioIo {
     bool listening_ = false;
     FrameSink sink_ = nullptr;
     roboface::CaptureTally tally_;
+    float level_ = 0.0f;
+    float peak_seen_ = 0.0f;
     uint8_t pool_[kChunkSlots][kChunkBytes] = {};
     std::size_t slot_ = 0;
     bool speaking_ = false;
     bool draining_ = false;
     uint8_t volume_ = 120;
+    uint8_t mic_gain_ = 16;
     uint32_t bytes_queued_ = 0;
     uint32_t last_queued_ms_ = 0;
     //: How often the speaker refused a buffer. Not a fault -- it is the pacing working -- but a

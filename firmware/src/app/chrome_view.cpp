@@ -1,5 +1,7 @@
 #include "app/chrome_view.h"
 
+#include "pure/level.h"
+
 #include <algorithm>
 
 namespace app {
@@ -9,6 +11,12 @@ constexpr uint16_t kBandBackground = 0x0000;
 constexpr uint16_t kIndicatorColour = 0x07FF;
 constexpr uint16_t kAmber = 0xFD20;
 constexpr uint16_t kFaultColour = 0xF800;
+//: A dim rail so the meter is visible as a meter even in a silent room -- an unlit band and a band
+//: with no meter at all look the same, and only one of them is correct.
+constexpr uint16_t kMeterIdleColour = 0x2124;
+constexpr int kMeterMargin = 8;
+constexpr int kMeterMinHeight = 4;
+constexpr int kMeterMaxHeight = 18;
 
 // The status cluster, laid out right to left from the documented anchor.
 constexpr int kBatteryWidth = 22;
@@ -42,7 +50,7 @@ uint8_t fadeAlpha(bool visible, uint32_t settled_for_ms) {
 
 }  // namespace
 
-void ChromeView::draw(M5Canvas* canvas, const roboface::Chrome& chrome) {
+void ChromeView::draw(M5Canvas* canvas, const roboface::Chrome& chrome, float level) {
     if (canvas == nullptr) return;
 
     const roboface::ChromeVisibility shown = chrome.visibility();
@@ -66,6 +74,7 @@ void ChromeView::draw(M5Canvas* canvas, const roboface::Chrome& chrome) {
     }
 
     if (shown.band == roboface::BandTenant::kFault) drawFaultLine(*canvas, chrome.fault());
+    if (shown.band == roboface::BandTenant::kLevel) drawLevelMeter(*canvas, level);
 }
 
 void ChromeView::drawLink(M5Canvas& canvas, roboface::LinkState state, uint8_t alpha) {
@@ -111,6 +120,29 @@ void ChromeView::drawFaultLine(M5Canvas& canvas, roboface::ErrorCode code) {
     canvas.setTextDatum(middle_left);
     canvas.drawString(roboface::toString(code), 8,
                       roboface::kFaceBottom + roboface::kBandHeight / 2);
+}
+
+void ChromeView::drawLevelMeter(M5Canvas& canvas, float level) {
+    // The only signal that the device is listening. DEVICE_UI and MISSION both say a device state
+    // is a face or an indicator and never a word, so **no text is drawn here** -- not "listening",
+    // not a dB figure, nothing. The bar is the message.
+    constexpr int kBars = 16;
+    constexpr int kGap = 2;
+    const int span = roboface::kScreenWidth - 2 * kMeterMargin;
+    const int bar_width = (span - (kBars - 1) * kGap) / kBars;
+    const std::size_t lit = roboface::barsForLevel(level, kBars);
+
+    const int base = roboface::kFaceBottom + roboface::kBandHeight - kMeterMargin;
+    for (int index = 0; index < kBars; ++index) {
+        // Height rises across the band so a quiet room still shows the meter *exists* -- an
+        // all-dark band and a band with no meter look identical, and one of them is a fault.
+        const int height = kMeterMinHeight +
+                           (kMeterMaxHeight - kMeterMinHeight) * index / (kBars - 1);
+        const int x = kMeterMargin + index * (bar_width + kGap);
+        const uint16_t colour =
+            static_cast<std::size_t>(index) < lit ? kIndicatorColour : kMeterIdleColour;
+        canvas.fillRect(x, base - height, bar_width, height, colour);
+    }
 }
 
 }  // namespace app

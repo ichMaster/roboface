@@ -17,8 +17,9 @@ constexpr int kChannel = 0;
 
 }  // namespace
 
-bool AudioIo::begin(uint8_t volume) {
+bool AudioIo::begin(uint8_t volume, uint8_t mic_gain) {
     volume_ = volume;
+    mic_gain_ = mic_gain;
 
     // PSRAM first: a whole reply is hundreds of kilobytes and internal RAM is wanted by the
     // network stack and the sprite. Falling back rather than refusing, because a smaller backlog
@@ -66,10 +67,18 @@ bool AudioIo::startListening(FrameSink sink) {
     // is abandoned: a person pressing to talk has superseded whatever was being said to them.
     if (speaking_) abort();
     if (M5.Speaker.isEnabled()) M5.Speaker.end();
+
+    // The library's default magnification of 16 leaves this board's ES7210 reading about 1% of
+    // full scale for speech at desk distance -- audible to nothing. Set before `begin`, because
+    // the config is read when the driver starts.
+    auto mic_cfg = M5.Mic.config();
+    mic_cfg.magnification = mic_gain_;
+    M5.Mic.config(mic_cfg);
     if (!M5.Mic.begin()) return false;
 
     sink_ = sink;
     tally_.reset();
+    peak_seen_ = 0.0f;
     capture_slot_ = 0;
     listening_ = true;
 
@@ -87,7 +96,27 @@ void AudioIo::stopListening() {
     if (!listening_) return;
     listening_ = false;
     sink_ = nullptr;
+    level_ = 0.0f;  // the meter must not hold the last word's level after the window closes
     if (M5.Mic.isEnabled()) M5.Mic.end();
+}
+
+void AudioIo::playBacklog() {
+    // Deliberately does not clear: `startSpeaking` releases the microphone and claims the speaker,
+    // and the audio to play is already in the ring. Clearing would discard the recording this
+    // exists to hear.
+    if (listening_) stopListening();
+    if (speaking_) return;
+    // Tear the port down before claiming it for output. `Mic.end()` alone leaves the shared I2S
+    // configured for capture on this board, and `Speaker.begin()` then reports success while
+    // producing nothing -- capture reads a healthy 72% peak and the speaker is silent, which is
+    // the most misleading pair of symptoms in the whole subsystem.
+    if (M5.Mic.isEnabled()) M5.Mic.end();
+    M5.Speaker.end();
+    delay(20);
+    if (!M5.Speaker.begin()) return;
+    M5.Speaker.setVolume(volume_);
+    speaking_ = true;
+    draining_ = true;  // there is no `tts_end` coming; play out and release
 }
 
 void AudioIo::tick(uint32_t now_ms) {
@@ -108,6 +137,11 @@ void AudioIo::tick(uint32_t now_ms) {
             M5.Mic.record(capture_[completed], roboface::kCaptureFrameSamples,
                           roboface::kCaptureSampleRate);
 
+            const float peak =
+                roboface::peakLevel(capture_[completed], roboface::kCaptureFrameSamples);
+            if (peak > peak_seen_) peak_seen_ = peak;
+            level_ = roboface::decayToward(level_, peak);
+
             if (sink_ != nullptr && sink_(frame, roboface::kCaptureFrameBytes)) {
                 tally_.recordFrame(roboface::kCaptureFrameBytes);
             }
@@ -119,7 +153,12 @@ void AudioIo::tick(uint32_t now_ms) {
     // Hand over buffers until the speaker refuses one. `playRaw` returning false is the whole
     // pacing mechanism: it means both slots are claimed, and the chunk stays in the ring for the
     // next tick rather than being thrown away.
-    while (!backlog_.empty()) {
+    // **Bounded by what the speaker is actually holding**, not by what the backlog has. `playRaw`
+    // returns true even when both slots on the channel are occupied, so an unbounded loop hands it
+    // the whole backlog at once and then recycles the three pool buffers underneath audio the I2S
+    // task has not read yet. TTS never showed this because its chunks arrive network-paced; a
+    // loopback recording is already buffered, drains in one tick, and plays as silence.
+    while (!backlog_.empty() && M5.Speaker.isPlaying(kChannel) < 2) {
         uint8_t* buffer = pool_[slot_];
         const std::size_t got = backlog_.readSamples(buffer, kChunkBytes);
         if (got == 0) break;

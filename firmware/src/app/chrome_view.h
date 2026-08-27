@@ -23,12 +23,13 @@ class ChromeView {
     // `canvas` is the renderer's sprite. Null when the renderer failed to allocate, in which case
     // this draws nothing rather than crashing -- a device with no memory for a face should still
     // boot and say so on serial.
-    void draw(M5Canvas* canvas, const roboface::Chrome& chrome);
+    void draw(M5Canvas* canvas, const roboface::Chrome& chrome, float level = 0.0f);
 
   private:
     void drawLink(M5Canvas& canvas, roboface::LinkState state, uint8_t alpha);
     void drawBattery(M5Canvas& canvas, int percent, bool charging, uint8_t alpha);
     void drawFaultLine(M5Canvas& canvas, roboface::ErrorCode code);
+    void drawLevelMeter(M5Canvas& canvas, float level);
 };
 
 }  // namespace app
