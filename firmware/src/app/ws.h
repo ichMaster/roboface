@@ -57,6 +57,16 @@ class Ws {
     bool sendPing();
 
     bool isConnected() const { return connected_; }
+
+private:
+    //: Record whether a send was accepted, and drop a link that has stopped accepting them.
+    bool noteSend(bool ok);
+
+    //: How many consecutive refused writes mean the link is dead rather than momentarily full.
+    static constexpr unsigned kMaxSendFailures = 5;
+    unsigned send_failures_ = 0;
+
+public:
     uint32_t attempts() const { return backoff_.attempts(); }
     uint32_t binaryFramesSeen() const { return binary_frames_; }
 

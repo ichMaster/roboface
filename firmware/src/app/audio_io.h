@@ -161,6 +161,8 @@ class AudioIo {
     //: Regions are queued ahead and read back only where the clock confirms the DMA has been --
     //: see `roboface::TimedCapture`. Sized so a stall of several frames cannot lap the reader.
     static constexpr std::size_t kCaptureRingSamples = roboface::kCaptureFrameSamples * 64;
+    //: How many confirmed frames one tick may send. Two is catch-up without a burst.
+    static constexpr std::size_t kMaxFramesPerTick = 2;
     int16_t* ring_ = nullptr;
     roboface::TimedCapture timing_{roboface::kCaptureSampleRate};
     bool listening_ = false;

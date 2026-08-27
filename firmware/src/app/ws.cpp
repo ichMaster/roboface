@@ -61,6 +61,7 @@ void Ws::begin(const char* url, const char* device_id, uint32_t now_ms) {
         switch (type) {
             case WStype_CONNECTED:
                 active->connected_ = true;
+                active->send_failures_ = 0;
                 active->backoff_.reset();
                 client.setReconnectInterval(kInitialReconnectMs);
                 Serial.println("[ws] connected");
@@ -192,31 +193,53 @@ void Ws::loop(uint32_t now_ms) {
     }
 }
 
+bool Ws::noteSend(bool ok) {
+    // A socket the far end has abandoned does not report itself closed: `sendTXT`/`sendBIN` simply
+    // fail, the TCP buffer stays full, and the library keeps the connection flagged up. The device
+    // then looks connected, says nothing, and never reconnects -- every write failing with EAGAIN
+    // once a second for as long as it is left running. Restarting the *server* does not clear it,
+    // because nothing on this side is watching.
+    //
+    // So watch here. One failure is a full buffer and worth retrying; a run of them is a dead link.
+    if (ok) {
+        send_failures_ = 0;
+        return true;
+    }
+    if (++send_failures_ >= kMaxSendFailures) {
+        Serial.printf("[ws] %u consecutive send failures -- treating the link as dead\n",
+                      static_cast<unsigned>(send_failures_));
+        send_failures_ = 0;
+        connected_ = false;
+        client.disconnect();
+    }
+    return false;
+}
+
 bool Ws::sendTextIn(const char* text) {
     if (!connected_) return false;
-    return client.sendTXT(roboface::buildTextIn(text).c_str());
+    return noteSend(client.sendTXT(roboface::buildTextIn(text).c_str()));
 }
 
 bool Ws::sendListenStart() {
     if (!connected_) return false;
-    return client.sendTXT(roboface::buildListenStart().c_str());
+    return noteSend(client.sendTXT(roboface::buildListenStart().c_str()));
 }
 
 bool Ws::sendAudio(const uint8_t* data, std::size_t length) {
     if (!connected_) return false;
     // No envelope, by contract. A device that framed this as JSON would double its size and the
     // server would refuse it, because `audio` is declared binary.
-    return client.sendBIN(data, length);
+    return noteSend(client.sendBIN(data, length));
 }
 
 bool Ws::sendListenStop() {
     if (!connected_) return false;
-    return client.sendTXT(roboface::buildListenStop().c_str());
+    return noteSend(client.sendTXT(roboface::buildListenStop().c_str()));
 }
 
 bool Ws::sendPing() {
     if (!connected_) return false;
-    return client.sendTXT(roboface::buildPing().c_str());
+    return noteSend(client.sendTXT(roboface::buildPing().c_str()));
 }
 
 }  // namespace app

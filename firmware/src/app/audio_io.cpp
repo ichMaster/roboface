@@ -164,7 +164,14 @@ void AudioIo::tick(uint32_t now_ms) {
         // sink memory the DMA is still writing into.
         topUpQueue();
 
-        while (timing_.readable(now_ms, roboface::kCaptureFrameSamples)) {
+        // **Bounded.** A late loop can leave several frames confirmed at once, and draining them
+        // all in one tick hands the socket a burst it answers with EAGAIN -- the write fails, the
+        // frames are lost, and the link spends the rest of the window recovering. Catching up two
+        // frames a tick still outruns the recorder's one per 20 ms without ever bursting.
+        std::size_t drained = 0;
+        while (drained < kMaxFramesPerTick &&
+               timing_.readable(now_ms, roboface::kCaptureFrameSamples)) {
+            ++drained;
             const std::size_t offset = timing_.sentSamples() % kCaptureRingSamples;
             const int16_t* frame = &ring_[offset];
             timing_.sent(roboface::kCaptureFrameSamples);
