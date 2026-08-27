@@ -307,6 +307,35 @@ speaker when audio starts and back on `tts_end`, so a turn that aborted mid-audi
 the window would leave the bus on the speaker and the device unable to listen — a fault whose
 symptom appears one turn later, in a subsystem that is working correctly.
 
+### The listening window (v1.2)
+
+Audio travels device → server as **unlabelled binary frames**, exactly as `tts_audio` travels the
+other way, and what gives them meaning is the connection's phase:
+
+```
+listen_start          → BinaryPhase.LISTENING       (device_binary_meaning → AUDIO)
+  <binary> × N        → appended to the utterance
+listen_stop           → assembled, released, phase back to IDLE
+```
+
+`listen_start`, `audio` and `listen_stop` were declared in v0.1; v1.2 added the typed frames, the
+router state and the cap. A binary frame **outside** the window is a `bad_frame`, and that refusal
+is what makes the unlabelled framing safe — without it, an unlabelled payload would have a default
+meaning, which is the thing the phase model exists to avoid.
+
+**The utterance is capped in bytes, not seconds** (`MAX_UTTERANCE_BYTES`, 30 s at `pcm16/16000/1`).
+Bytes are a property of what arrived; seconds would have to be trusted across a network. The cap is
+checked **before** storing, so the memory it exists to protect is never taken, and exceeding it ends
+the window with an enumerated error rather than truncating — someone who talked too long should be
+told, not silently half-heard. The connection survives, the same way a failed turn keeps its session.
+
+`listen_start` while already listening, and `listen_stop` while not, are **protocol errors rather
+than no-ops**: they mean the device and the server disagree about state, and a silently restarted
+window would lose whatever preceded it.
+
+An **empty utterance is valid** — a window opened and closed with nothing between. v1.2's
+press-and-hold can produce one, and v1.3's ASR must be able to see zero bytes rather than a fault.
+
 ## Data model
 
 Nothing is persisted before v4 beyond a device record and config. From v4, SQLite behind a thin repository:

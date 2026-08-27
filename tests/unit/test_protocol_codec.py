@@ -12,8 +12,10 @@ import json
 import pytest
 from roboface_server.protocol import (
     AUDIO_FMT,
+    AUDIO_SAMPLE_RATE,
     BINARY_DEVICE_MESSAGES,
     BINARY_SERVER_MESSAGES,
+    MAX_UTTERANCE_BYTES,
     PROTO_VERSION,
     Capability,
     DeviceMessage,
@@ -21,6 +23,8 @@ from roboface_server.protocol import (
     ErrorFrame,
     Frame,
     Hello,
+    ListenStart,
+    ListenStop,
     MalformedFrame,
     Ping,
     Pong,
@@ -124,12 +128,27 @@ def test_a_non_string_type_is_rejected() -> None:
         decode(json.dumps({"type": 7}))
 
 
+def test_the_listening_window_frames_round_trip() -> None:
+    # They carry nothing: the binary frames between them are `audio` because the connection is
+    # listening, not because anything labels them. So the assertion is that the *type* survives.
+    for frame in (ListenStart(), ListenStop()):
+        assert decode(encode(frame)) == frame
+
+
+def test_the_utterance_cap_is_bytes_not_seconds() -> None:
+    # A property of what arrived rather than of a clock, which would have to be trusted across a
+    # network. Thirty seconds at pcm16/16000/1.
+    assert MAX_UTTERANCE_BYTES == AUDIO_SAMPLE_RATE * 2 * 30
+
+
 def test_an_unknown_type_is_rejected_as_unknown_not_malformed() -> None:
     with pytest.raises(UnknownMessage):
         decode(json.dumps({"type": "sing_a_song"}))
 
 
-@pytest.mark.parametrize("message_type", ["listen_start", "event", "image_in", "emotion", "asr"])
+# `listen_start` and `listen_stop` left this list in v1.2, and `tts_end` in v1.1. A type
+# moving out is what a phase landing looks like from the codec's side.
+@pytest.mark.parametrize("message_type", ["event", "image_in", "emotion", "asr"])
 def test_a_declared_but_unimplemented_type_is_unsupported(message_type: str) -> None:
     """Distinct from unknown: the router answers this with a clean error, not with disdain."""
     with pytest.raises(UnsupportedMessage) as raised:

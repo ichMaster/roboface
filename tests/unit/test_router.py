@@ -260,7 +260,9 @@ async def test_a_turn_that_aborts_sends_an_error_and_no_terminal_reply() -> None
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("message_type", ["listen_start", "listen_stop", "event", "image_in"])
+# listen_start and listen_stop left this list in v1.2 -- they are handled now, and a type
+# moving out of it is what a phase landing looks like from the router's side.
+@pytest.mark.parametrize("message_type", ["event", "image_in"])
 async def test_declared_but_unimplemented_types_get_a_clean_enumerated_error(
     message_type: str,
 ) -> None:

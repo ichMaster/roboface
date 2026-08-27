@@ -32,6 +32,8 @@ from roboface_server.protocol import (
     ErrorFrame,
     Frame,
     Hello,
+    ListenStart,
+    ListenStop,
     Reply,
     decode,
     encode,
@@ -122,6 +124,18 @@ class FakeDevice:
         junk" cannot be asked through an encoder that refuses to produce junk.
         """
         self._session.send_text(raw)
+
+    def utterance(self, pcm: bytes, *, chunk: int = 640) -> None:
+        """Stream `pcm` the way a board does: a window, chunks, then a close.
+
+        640 bytes is 20 ms at pcm16/16000/1 -- the frame size the firmware targets -- so a test
+        that streams a second of audio produces the fifty frames a real utterance would, rather
+        than one large one that would hide any per-frame bug.
+        """
+        self.send(ListenStart())
+        for start in range(0, len(pcm), chunk):
+            self.send_binary(pcm[start : start + chunk])
+        self.send(ListenStop())
 
     def send_binary(self, payload: bytes) -> None:
         """Send a raw binary frame -- no envelope, by contract. Audio from v1, JPEG from v3."""

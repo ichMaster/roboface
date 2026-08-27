@@ -22,6 +22,7 @@ breaking, and the ``llm_*`` codes arrive already classified from the turn.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -32,6 +33,7 @@ from roboface_server.logging import bind_device, chars, connection_context, log
 from roboface_server.orchestrator import TurnAborted
 from roboface_server.protocol import (
     FRAME_TYPES,
+    MAX_UTTERANCE_BYTES,
     Accepted,
     BinaryPhase,
     Capability,
@@ -40,6 +42,8 @@ from roboface_server.protocol import (
     ErrorFrame,
     Frame,
     Hello,
+    ListenStart,
+    ListenStop,
     Ping,
     Pong,
     ProtocolError,
@@ -163,6 +167,12 @@ class Connection:
     #: window it was told about as a protocol violation.
     binary_phase: BinaryPhase = BinaryPhase.IDLE
 
+    #: The utterance being assembled, while one is open. A list of chunks rather than a growing
+    #: bytes object: joining once at the end is one allocation instead of one per frame, and a
+    #: 30-second utterance is ~1500 frames.
+    utterance: list[bytes] = field(default_factory=list)
+    utterance_bytes: int = 0
+
     def accept(self, hello: Hello) -> None:
         self.device_id = hello.device_id
         self.caps = hello.caps
@@ -237,7 +247,7 @@ class Router:
     async def _handle(self, message: str | bytes, conn: Connection, transport: Transport) -> None:
         if isinstance(message, bytes | bytearray):
             log("frame.received", kind="binary", bytes=len(message), level="debug")
-            await self._handle_binary(conn, transport)
+            await self._handle_binary(bytes(message), conn, transport)
             return
 
         try:
@@ -266,20 +276,56 @@ class Router:
 
         await self._dispatch(frame, conn, transport)
 
-    async def _handle_binary(self, conn: Connection, transport: Transport) -> None:
+    async def _handle_binary(
+        self, payload: bytes, conn: Connection, transport: Transport
+    ) -> None:
         """A binary frame is meaningful only in a phase that gives it meaning.
 
-        v0.1 has no such phase -- no listening window, no announced image -- so every binary
-        frame is a violation. The predicate lives in ``protocol`` so v1 flips this on by
-        moving the connection into ``LISTENING`` rather than by editing this branch.
+        The predicate lives in ``protocol``, which is why v1.2 turned this on by moving the
+        connection into ``LISTENING`` on ``listen_start`` rather than by editing this branch --
+        exactly as v0.1's comment here anticipated.
         """
-        meaning = device_binary_meaning(BinaryPhase.IDLE)
+        meaning = device_binary_meaning(conn.binary_phase)
         if meaning is None:
             await self._send_error(
                 transport,
                 ErrorCode.BAD_FRAME,
                 "a binary frame carries no envelope and has no meaning in this state",
             )
+            return
+
+        # Cap the utterance before storing, not after: checking afterwards means the memory has
+        # already been taken, which is precisely what the cap exists to prevent.
+        if conn.utterance_bytes + len(payload) > MAX_UTTERANCE_BYTES:
+            log(
+                "utterance.oversize",
+                device_id=conn.device_id,
+                session_id=conn.session_id,
+                bytes=conn.utterance_bytes,
+                limit=MAX_UTTERANCE_BYTES,
+                level="warning",
+            )
+            self._end_utterance(conn)
+            await self._send_error(
+                transport,
+                ErrorCode.BAD_FRAME,
+                f"the utterance exceeded {MAX_UTTERANCE_BYTES} bytes and was ended",
+            )
+            return
+
+        conn.utterance.append(payload)
+        conn.utterance_bytes += len(payload)
+
+    def _end_utterance(self, conn: Connection) -> None:
+        """Close the window and release what was collected.
+
+        One place, because there are four ways an utterance ends -- stopped, oversize, a
+        disconnect, and a fault -- and an invariant with four endings written four times is an
+        invariant that will disagree with itself.
+        """
+        conn.binary_phase = BinaryPhase.IDLE
+        conn.utterance.clear()
+        conn.utterance_bytes = 0
 
     async def _handle_greeting(self, frame: Frame, conn: Connection, transport: Transport) -> None:
         if not isinstance(frame, Hello):
@@ -320,6 +366,43 @@ class Router:
                 # chars(), never the text: a log has to stay safe to paste into an issue.
                 log("turn.text_in", chars=chars(frame.text))
                 await self._stream_reply(frame.text, conn, transport)
+            case ListenStart():
+                if conn.binary_phase is BinaryPhase.LISTENING:
+                    # Not a no-op. It means the device and the server disagree about state, and
+                    # with one device and one developer that is worth surfacing rather than
+                    # smoothing over -- a silently restarted window loses whatever preceded it.
+                    await self._send_error(
+                        transport, ErrorCode.BAD_FRAME, "already listening"
+                    )
+                    return
+                conn.binary_phase = BinaryPhase.LISTENING
+                conn.utterance.clear()
+                conn.utterance_bytes = 0
+                log("listen.start", device_id=conn.device_id, session_id=conn.session_id)
+            case ListenStop():
+                if conn.binary_phase is not BinaryPhase.LISTENING:
+                    await self._send_error(
+                        transport, ErrorCode.BAD_FRAME, "not listening"
+                    )
+                    return
+                # v1.2 assembles and stops. v1.3 hands this to ASR; the seam is that the audio is
+                # complete and in order at exactly this point, which is what the integration test
+                # asserts and what v1.3 will depend on.
+                # The digest is what makes "assembled intact" observable. v1.2 has nothing to
+                # hand the audio to -- v1.3's ASR is where it goes -- so without this the only
+                # evidence of correct assembly would be a byte count, which any reordering or
+                # duplication would also satisfy. It is also useful in the field: two devices
+                # reporting different digests for the same words is a capture bug, not an ASR one.
+                assembled = b"".join(conn.utterance)
+                log(
+                    "listen.stop",
+                    device_id=conn.device_id,
+                    session_id=conn.session_id,
+                    bytes=conn.utterance_bytes,
+                    frames=len(conn.utterance),
+                    digest=hashlib.sha256(assembled).hexdigest()[:16],
+                )
+                self._end_utterance(conn)
             case Hello():
                 await self._send_error(
                     transport, ErrorCode.BAD_FRAME, "'hello' was already negotiated"

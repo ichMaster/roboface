@@ -73,6 +73,15 @@ AUDIO_FMT: Final = f"{AUDIO_FORMAT}/{AUDIO_SAMPLE_RATE}/{AUDIO_CHANNELS}"
 #: device connects across the LAN) and v0.1 has no authentication, so "only our device talks to
 #: it" is a claim about the network, not about this process.
 #:
+#: The longest utterance the server will assemble, in **bytes rather than seconds** -- it is a
+#: property of what arrived, not of a clock, and a clock would have to be trusted across a network.
+#: At ``pcm16/16000/1`` this is 30 seconds, which is far longer than anyone holds a button to talk
+#: to a desk companion and short enough that a stuck transmitter cannot exhaust the server.
+#:
+#: Exceeding it ends the window with an enumerated error rather than truncating: someone who talked
+#: too long should be told, not silently half-heard.
+MAX_UTTERANCE_BYTES: Final = AUDIO_SAMPLE_RATE * 2 * 30
+
 #: Bulk payloads do not pass through here at all -- audio and JPEG are **binary** frames with
 #: no envelope, and each will carry its own limit in the phase that introduces it (v1, v3).
 #:
@@ -270,6 +279,21 @@ class Reply:
 
 
 @dataclass(frozen=True, slots=True)
+class ListenStart:
+    """``listen_start`` -- the device opens an utterance, device -> server.
+
+    Carries nothing. The binary frames that follow are `audio` **because the connection is
+    listening** (``device_binary_meaning``), not because anything labels them, so this frame's whole
+    job is to open that window.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class ListenStop:
+    """``listen_stop`` -- the utterance is over, device -> server."""
+
+
+@dataclass(frozen=True, slots=True)
 class TtsEnd:
     """``tts_end`` -- the speaking window is closed, server -> device.
 
@@ -289,12 +313,14 @@ class ErrorFrame:
 
 
 #: Everything :func:`decode` can return and :func:`encode` accepts.
-Frame = Hello | TextIn | Ping | Pong | Reply | TtsEnd | ErrorFrame
+Frame = Hello | TextIn | ListenStart | ListenStop | Ping | Pong | Reply | TtsEnd | ErrorFrame
 
 #: Which message type each typed frame is. One table, so encode and the tests agree.
 FRAME_TYPES: Final[dict[type[Frame], DeviceMessage | ServerMessage]] = {
     Hello: DeviceMessage.HELLO,
     TextIn: DeviceMessage.TEXT_IN,
+    ListenStart: DeviceMessage.LISTEN_START,
+    ListenStop: DeviceMessage.LISTEN_STOP,
     Ping: DeviceMessage.PING,
     Pong: ServerMessage.PONG,
     Reply: ServerMessage.REPLY,
@@ -327,7 +353,7 @@ def encode(frame: Frame) -> str:
             payload |= {"text": frame.text, "final": frame.final}
         case ErrorFrame():
             payload |= {"code": str(frame.code), "msg": frame.msg}
-        case Ping() | Pong() | TtsEnd():
+        case Ping() | Pong() | TtsEnd() | ListenStart() | ListenStop():
             pass
 
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -479,6 +505,8 @@ _Decoder = Callable[[dict[str, Any]], Frame]
 _DECODERS: Final[dict[DeviceMessage | ServerMessage, _Decoder]] = {
     DeviceMessage.HELLO: _decode_hello,
     DeviceMessage.TEXT_IN: _decode_text_in,
+    DeviceMessage.LISTEN_START: lambda _payload: ListenStart(),
+    DeviceMessage.LISTEN_STOP: lambda _payload: ListenStop(),
     DeviceMessage.PING: lambda _payload: Ping(),
     ServerMessage.PONG: lambda _payload: Pong(),
     ServerMessage.REPLY: _decode_reply,
