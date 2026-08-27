@@ -24,6 +24,7 @@
 #include "pure/console.h"
 #include "pure/ptt.h"
 #include "pure/transcript.h"
+#include "pure/vad.h"
 #include "pure/line_reader.h"
 #include "pure/state.h"
 #include "pure/version.h"
@@ -88,6 +89,14 @@ uint32_t loopback_until_ms = 0;
 // The serial chat console (v0.5). It borrows the screen the way the self-test does, and gives back
 // the state it took -- the discipline lives in `pure/console.h` where a host test proves it is
 // total over the state enum.
+//: Active listening. The endpointer hears every frame the microphone produces, whether or not a
+//: window is open, and decides when there should be one.
+roboface::Endpointer endpointer;
+//: What the observer decided, read by the loop. The observer runs inside `AudioIo::tick`, and
+//: opening a window from there would re-enter the audio path while it is draining a frame -- so it
+//: records the decision and the loop acts on it.
+roboface::VadEvent pending_vad = roboface::VadEvent::kNone;
+
 roboface::ConsoleMode console;
 roboface::Transcript transcript;
 
@@ -157,31 +166,44 @@ bool storeCapturedFrame(const uint8_t* data, std::size_t length) {
     return audio.captureToBacklog(data, length) == length;
 }
 
+// Every captured frame, window or not. Deliberately does nothing but decide: see `pending_vad`.
+void onCapturedFrame(const int16_t* samples, std::size_t count, uint32_t frame_ms) {
+    const auto event = endpointer.feed(samples, count, frame_ms);
+    if (event != roboface::VadEvent::kNone) pending_vad = event;
+}
+
 // Open the listening window: the frame first, then the microphone. In that order, because a device
 // that captured before announcing would have audio with no window to put it in, and the server
 // would rightly call it a protocol violation.
-void beginListening() {
-    if (audio.isListening()) return;
+bool beginListening() {
+    if (audio.isListening()) return true;
     if (!ws.isConnected()) {
         Serial.println("[listen] no connection — not listening");
-        return;
+        return false;
     }
     if (!roboface::canStartTurn(state)) {
         Serial.printf("[busy] not idle (%s) — not listening\n", roboface::toString(state));
-        return;
+        return false;
     }
     if (!ws.sendListenStart()) {
         Serial.println("[listen] could not open the window");
-        return;
+        return false;
     }
     if (!audio.startListening(&sendCapturedFrame)) {
         // The window is open on the server and the microphone did not start. Close it rather than
         // leaving the server waiting for audio that will never arrive.
         ws.sendListenStop();
         Serial.println("[listen] microphone did not start");
-        return;
+        return false;
     }
+    // The audio that convinced the endpointer this was speech, sent before anything captured
+    // afterwards. Detection needs a few frames to be sure and those frames are already words: with
+    // no pre-roll the recogniser receives every utterance with its first syllable missing.
+    const std::size_t pre_rolled = audio.flushPreRoll(&sendCapturedFrame);
+    if (pre_rolled > 0) Serial.printf("[listen] pre-roll %u frames\n",
+                                      static_cast<unsigned>(pre_rolled));
     apply(roboface::DeviceEvent::kListenStarted);
+    return true;
 }
 
 // Close it: the microphone first, then the frame, so the last captured samples are on the wire
@@ -197,6 +219,9 @@ void endListening() {
     // reply, and the terminal `reply` frame ends the turn. v1.2 added a kTurnEnded here because it
     // had neither; v1.3 removes it, as that comment said it would.
     apply(roboface::DeviceEvent::kListenStopped);
+    // The next utterance starts from silence, not from wherever this one left the counters.
+    endpointer.reset();
+    pending_vad = roboface::VadEvent::kNone;
 }
 
 roboface::LinkState linkStateNow() {
@@ -682,6 +707,13 @@ void setup() {
                       static_cast<unsigned>(ESP.getFreeHeap() / 1024), SPEAKER_VOLUME);
     }
 
+    // Hear the room from the moment the device is up. Active listening needs the microphone
+    // running *before* anything asks for a window, because what it hears is what decides there
+    // should be one. The uplink stays shut until the endpointer says otherwise.
+    if (!audio.startMonitoring(&onCapturedFrame)) {
+        Serial.println("[vad] microphone did not start — active listening off, PTT still works");
+    }
+
     ws.onEvent(onSocketEvent);
     // A binary frame is `tts_audio`: it carries no envelope, and what gives it meaning is that the
     // server is speaking (`server_binary_meaning`). Taking the bus here rather than at the start of
@@ -731,6 +763,37 @@ void loop() {
     //
     // `M5.update()` has already refreshed the panel this loop. `getDetail().isPressed()` is the
     // level; `PushToTalk` turns it into the edges that open and close exactly one window.
+    // What the endpointer decided during `audio.tick`, acted on here rather than inside the audio
+    // path. Both triggers -- a voice and a finger -- go through the same `beginListening` /
+    // `endListening`, so there is one definition of what a window is and they cannot drift.
+    switch (pending_vad) {
+        case roboface::VadEvent::kSpeechStarted:
+            pending_vad = roboface::VadEvent::kNone;
+            listen_until_ms = 0;
+            if (!beginListening()) {
+                // **A refused window is not a window** (v1.2's review: the server owns the
+                // listening window, the device only asks for one). Forget the utterance rather
+                // than holding an endpointer that believes it is mid-speech -- otherwise the first
+                // pause after the refusal would send a `listen_stop` for a window nobody opened.
+                endpointer.reset();
+            }
+            break;
+        case roboface::VadEvent::kSpeechEnded:
+            pending_vad = roboface::VadEvent::kNone;
+            // The local backstop. When the recogniser ends the utterance first (RF-052) the window
+            // is already closed and this is a no-op.
+            endListening();
+            break;
+        case roboface::VadEvent::kDiscarded:
+            pending_vad = roboface::VadEvent::kNone;
+            // A cough, a chair, a door. Nothing was opened and nothing is closed; it is recorded
+            // only because "a noise was ignored" is worth being able to see.
+            Serial.println("[vad] noise ignored — too short to be speech");
+            break;
+        case roboface::VadEvent::kNone:
+            break;
+    }
+
     switch (ptt.update(M5.Touch.getDetail().isPressed(), now_ms)) {
         case roboface::PttEvent::kStarted:
             // A timed `/listen` window and a finger must not both own the microphone.
