@@ -32,22 +32,34 @@ def test_open_returns_the_session_without_awaiting() -> None:
 async def test_audio_can_be_pushed_while_results_are_read() -> None:
     # The property the whole seam exists for. If these could not overlap, recognition would have to
     # wait for the audio to finish.
-    provider = MockASRProvider()
+    #
+    # `settle_after` is what makes the overlap observable rather than assumed: the recogniser
+    # releases its transcript **after two frames, while two more are still being pushed**. A mock
+    # that answered before hearing anything would satisfy a weaker version of this test and would
+    # model a vendor that cannot exist.
+    provider = MockASRProvider(settle_after=2)
     session = provider.open()
     seen: list[ASRChunk] = []
+    pushed_when_first_seen: int | None = None
 
     async def read() -> None:
+        nonlocal pushed_when_first_seen
         async for chunk in session.results():
+            if pushed_when_first_seen is None:
+                pushed_when_first_seen = len(session.pushed)
             seen.append(chunk)
 
     async def feed() -> None:
         for index in range(4):
             await session.push(bytes([index]) * 640)
             await asyncio.sleep(0)
+        await session.finish()
 
     await asyncio.gather(read(), feed())
     assert len(session.pushed) == 4
     assert seen == list(DEFAULT_ASR_SCRIPT)
+    # Read *during* the push sequence, not after it.
+    assert pushed_when_first_seen is not None and pushed_when_first_seen < 4
 
 
 @pytest.mark.asyncio

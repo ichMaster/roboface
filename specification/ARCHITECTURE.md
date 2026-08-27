@@ -109,10 +109,31 @@ Half-duplex until v3.4 (barge-in needs AEC).
 
 ```
 VAD speech start → listen_start → audio(bin) chunks streaming while you speak
-  → recogniser endpointing → listen_stop
+  → recogniser endpointing → asr   (the utterance ends here)
+       └ device's local end-pause → listen_stop   (backstop only)
   → asr_partial* / asr → LLM deltas → reply deltas + emotion frame
   → phrase boundary → TTS chunks → tts_audio(bin)… → tts_end → idle
 ```
+
+**The recogniser ends the utterance; the device's end-pause is the backstop** (v1.4). Both ends
+hear the same silence, and the recogniser calls it first — it is endpointing at ~500 ms while the
+device is still waiting out a longer, deliberately forgiving pause. Acting on the recogniser's
+decision starts the turn earlier by that margin on every utterance, and it costs nothing: the
+transcript is already in hand.
+
+Two consequences follow, and both are pinned by `tests/contract/test_turn_lifecycle.py`:
+
+- **A `listen_stop` for an already-settled utterance is idempotent, not an error.** The device is
+  not wrong — its end-pause simply elapsed after the recogniser had decided. Treating it as a
+  protocol violation would put a fault on the screen for every hands-free turn.
+- **Binary frames arriving after the server settled are dropped quietly.** The device streams
+  continuously and stops when it sees `asr`; the frames captured in between belong to an utterance
+  already being answered.
+
+The server notices a settled transcript on the **next** audio frame, which at 20 ms frames makes
+the decision at most one frame late. An utterance that settles on its final frame has no next one
+and is closed by `listen_stop` through the same path v1.3 used — which is also what happens when
+the recogniser never endpoints at all.
 
 Text path (v0, serial/debug): `text_in` → LLM → `reply`. Vision path (v3): `image_in` + JPEG ride into the same LLM call as multimodal input.
 

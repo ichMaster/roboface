@@ -373,6 +373,29 @@ class ListeningTurn:
             self._error = ProviderError(f"recognition send failed: {exc}", ErrorCode.ASR_FAILED)
             self._done.set()
 
+    def take_settled(self) -> str | None:
+        """The transcript the recogniser has already settled, if it has, without waiting.
+
+        v1.3 asked for this only at ``listen_stop``, which made the *device* the thing that ends an
+        utterance. §v1.4 makes the recogniser's own endpointing primary: it hears the same silence
+        the person made, ~500 ms before the device's end-pause is willing to call it, and it hears
+        it while the audio is still arriving.
+
+        Non-blocking by construction -- it is called from the frame-receive path, and anything that
+        awaits there becomes backpressure the device answers by dropping audio.
+
+        Returns ``None`` while nothing has settled, including for an un-punctuated ``speech_final``
+        that :class:`UtteranceTracker` is holding for a continuation: a breathing pause must not
+        end the turn, or the character answers half a phrase.
+        """
+        if self._resolved is None:
+            return None
+        settled = self._resolved
+        # Taken, not peeked: `finish()` falls back to the tracker's own tail, and leaving this set
+        # would let one utterance be answered twice if `listen_stop` arrived afterwards.
+        self._resolved = None
+        return settled
+
     def drain_partials(self) -> list[str]:
         """Whatever interims have accumulated, for `asr_partial` frames. Never blocks."""
         out: list[str] = []

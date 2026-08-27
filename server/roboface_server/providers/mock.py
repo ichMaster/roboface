@@ -163,9 +163,24 @@ DEFAULT_ASR_SCRIPT: tuple[ASRChunk, ...] = (
 class MockASRSession:
     """Replays a script, and records the audio it was fed."""
 
-    def __init__(self, script: Sequence[ASRChunk], error: ProviderError | None = None) -> None:
+    def __init__(
+        self,
+        script: Sequence[ASRChunk],
+        error: ProviderError | None = None,
+        settle_after: int | None = None,
+    ) -> None:
         self._script = tuple(script)
         self._error = error
+        #: How many pushed frames before the script is released, modelling the recogniser's own
+        #: endpointing (§v1.4). ``None`` releases it only at ``finish``, which is v1.3's shape and
+        #: what most tests want.
+        #:
+        #: This exists because the obvious mock -- yield the script the moment anyone iterates --
+        #: models a recogniser that has decided before it has heard anything. Under v1.3 that was
+        #: invisible: nothing read the result until ``finish``. v1.4 reads it *during* the window,
+        #: and an always-ready mock would end every utterance on its first frame.
+        self._settle_after = settle_after
+        self._ready = asyncio.Event()
         #: Every frame pushed, in order. A test asserts audio reached the vendor *during* the
         #: window rather than trusting that it did.
         self.pushed: list[bytes] = []
@@ -174,9 +189,12 @@ class MockASRSession:
 
     async def push(self, audio: bytes) -> None:
         self.pushed.append(audio)
+        if self._settle_after is not None and len(self.pushed) >= self._settle_after:
+            self._ready.set()
 
     async def finish(self) -> None:
         self.finished = True
+        self._ready.set()
 
     def results(self) -> AsyncIterator[ASRChunk]:
         return self._results()
@@ -184,6 +202,7 @@ class MockASRSession:
     async def _results(self) -> AsyncIterator[ASRChunk]:
         if self._error is not None:
             raise self._error
+        await self._ready.wait()
         for chunk in self._script:
             yield chunk
 
@@ -199,13 +218,17 @@ class MockASRProvider:
         script: Sequence[ASRChunk] | None = None,
         *,
         error: ProviderError | None = None,
+        settle_after: int | None = None,
     ) -> None:
         self.script = tuple(DEFAULT_ASR_SCRIPT if script is None else script)
         self.error = error
+        #: See :class:`MockASRSession`. ``None`` means the recogniser settles only when the audio
+        #: ends; a number models it endpointing mid-window, after that many frames.
+        self.settle_after = settle_after
         #: Every session opened, so a test can inspect what was pushed after the turn.
         self.sessions: list[MockASRSession] = []
 
     def open(self) -> MockASRSession:
-        session = MockASRSession(self.script, self.error)
+        session = MockASRSession(self.script, self.error, self.settle_after)
         self.sessions.append(session)
         return session

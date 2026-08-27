@@ -197,6 +197,10 @@ class Connection:
     #: The recognition session, while one is open. Held per connection because a session belongs to
     #: one device's utterance and the orchestrator serves many.
     listening: Any = None
+    #: The recogniser ended this utterance and the turn has already run. The device's
+    #: `listen_stop` for the same utterance is then a duplicate, not an error -- both ends are
+    #: correct, they simply noticed the silence at different moments.
+    utterance_settled: bool = False
 
     def accept(self, hello: Hello) -> None:
         self.device_id = hello.device_id
@@ -383,6 +387,13 @@ class Router:
         """
         meaning = device_binary_meaning(conn.binary_phase)
         if meaning is None:
+            if conn.utterance_settled:
+                # The recogniser ended this utterance a moment ago and the device has not caught
+                # up: it is still streaming the frames it captured in between, and will stop when
+                # it sees `asr`. Those frames belong to an utterance that is already being answered,
+                # so they are dropped -- quietly, because the device did nothing wrong and telling
+                # it otherwise would put an error on the screen for every hands-free turn.
+                return
             await self._send_error(
                 transport,
                 ErrorCode.BAD_FRAME,
@@ -430,6 +441,35 @@ class Router:
             partials = conn.listening.drain_partials()
             if self.send_partials and partials:
                 await transport.send(encode(AsrPartial(text=partials[-1])))
+
+            # **The recogniser ends the utterance, not the device** (§v1.4). It hears the same
+            # silence the person made and calls it ~500 ms before the device's end-pause is willing
+            # to, and it does so while the audio is still arriving -- so the turn starts sooner by
+            # exactly that margin, on every utterance.
+            #
+            # Checked here because this is the only path that runs repeatedly during a window,
+            # which makes the notice **one frame late at worst**: the device streams every 20 ms,
+            # so a transcript that settles between two frames is acted on with the next one. If it
+            # settles on the very last frame of an utterance there is no next one, and the device's
+            # `listen_stop` -- which is also the backstop for a recogniser that never settles at
+            # all -- resolves it through `finish()` exactly as v1.3 did.
+            settled = conn.listening.take_settled()
+            if settled:
+                await self._settle_utterance(settled, conn, transport)
+
+    async def _settle_utterance(self, heard: str, conn: Connection, transport: Transport) -> None:
+        """Close the window the recogniser has finished with, and run the turn.
+
+        Marks the utterance settled so the `listen_stop` still travelling from the device is
+        recognised as the duplicate it is. Without that the device would be told `BAD_FRAME` for
+        doing exactly what it was asked to do.
+        """
+        log("asr.settled", chars=chars(heard))
+        await self._close_listening(conn)
+        self._end_utterance(conn)
+        conn.utterance_settled = True
+        await transport.send(encode(Asr(text=heard)))
+        await self._stream_reply(heard, conn, transport)
 
     async def _abort_listening(
         self, conn: Connection, transport: Transport, exc: ProviderError
@@ -517,11 +557,19 @@ class Router:
                 conn.binary_phase = BinaryPhase.LISTENING
                 conn.utterance.clear()
                 conn.utterance_bytes = 0
+                conn.utterance_settled = False
                 # Recognition begins with the window, not at its end: that is the whole of v1.3.
                 opener = getattr(self.responder, "open_listening", None)
                 conn.listening = opener() if opener is not None else None
                 log("listen.start", device_id=conn.device_id, session_id=conn.session_id)
             case ListenStop():
+                if conn.utterance_settled:
+                    # The recogniser already ended this utterance and the reply is on its way. The
+                    # device is not wrong -- its end-pause simply elapsed after the recogniser had
+                    # decided. Idempotent, and emphatically **not** a second turn.
+                    conn.utterance_settled = False
+                    log("listen.stop_after_settled")
+                    return
                 if conn.binary_phase is not BinaryPhase.LISTENING:
                     await self._send_error(
                         transport, ErrorCode.BAD_FRAME, "not listening"
