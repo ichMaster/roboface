@@ -34,6 +34,7 @@ from uuid import uuid4
 from roboface_server.logging import bind_device, chars, connection_context, log
 from roboface_server.orchestrator import TurnAborted
 from roboface_server.protocol import (
+    AsrPartial,
     FRAME_TYPES,
     MAX_UTTERANCE_BYTES,
     Accepted,
@@ -352,6 +353,12 @@ class Router:
                 await conn.listening.push(payload)
             except ProviderError as exc:
                 await self._abort_listening(conn, transport, exc)
+                return
+            # Forward whatever recognition has guessed so far. This is the only point that runs
+            # repeatedly during a window, so it is the only place the interims *can* be drained --
+            # and without it they accumulate for the whole utterance and reach the device never.
+            for partial in conn.listening.drain_partials():
+                await transport.send(encode(AsrPartial(text=partial)))
 
     async def _abort_listening(
         self, conn: Connection, transport: Transport, exc: ProviderError

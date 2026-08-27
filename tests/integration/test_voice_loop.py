@@ -132,3 +132,23 @@ def test_a_held_phrase_is_released_by_the_backstop() -> None:
     turn = speak(app)
     asr = next(f for f in turn.frames if isinstance(f, Asr))
     assert asr.text == "Просто скажи щось"
+
+
+def test_interims_reach_the_device_as_asr_partial() -> None:
+    # The frame existed, the firmware rendered it, and nothing sent it: a feature complete at both
+    # ends and absent in the middle.
+    from roboface_server.protocol import AsrPartial
+
+    _, app = build()
+    turn = speak(app, frames=6)
+    partials = [f for f in turn.frames if isinstance(f, AsrPartial)]
+    assert partials, "no asr_partial reached the device"
+    assert partials[-1].text
+
+
+def test_the_partial_queue_does_not_grow_for_the_whole_utterance() -> None:
+    # The same omission's other half: unread interims accumulate for as long as the person talks.
+    orchestrator, app = build()
+    speak(app, frames=12)
+    session = orchestrator.asr.sessions[0]  # type: ignore[union-attr]
+    assert session.closed
