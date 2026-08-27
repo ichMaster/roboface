@@ -288,6 +288,52 @@ deliberate state, not a fault. Look for it:
 tools/remote.sh logs -n 100 | grep tts.disabled
 ```
 
+
+### Hearing — v1.2's DoD check
+
+**Hold the face, speak, release.** The claim is that speech reaches the server *while you are still
+talking*, and by feel that is indistinguishable from a device that uploads at the end — so it is
+read off the log, not judged.
+
+```bash
+tools/remote.sh logs -n 400 | grep -E 'listen\.(start|stop)'
+```
+```
+listen.start                              +0.00 s
+listen.stop   bytes=96640 frames=151      +3.07 s
+```
+
+For the per-frame evidence, put the server in debug for one run — `ROBOFACE_LOG_LEVEL=debug` in
+`server/.env`, then `tools/remote.sh restart`:
+
+```
+first audio   +0.07 s     ← 151 frames spread evenly across the window
+last audio    +3.06 s
+listen.stop   +3.07 s
+```
+
+**The first frame must arrive seconds before `listen_stop`, and the frames must be spread rather
+than bunched.** A burst just before the stop means the device buffered the utterance, which v1.3's
+recognition cannot work with.
+
+`/listen [s]` does the same from a script, without a finger on the glass — useful because it makes a
+capture failure reproducible.
+
+**`/loopback [s]`** records and replays locally, sending nothing to the server. It reports the peak
+level it captured, which is the fastest way to tell a dead microphone from a dead speaker:
+
+```
+[loopback] captured 48 frames (960 ms), peak 53% — playing back
+```
+
+**A peak near 1% means the gain is wrong, not the microphone.** M5Unified's default magnification of
+16 leaves this board's ES7210 at about that; `MIC_GAIN` in `firmware/src/config.h` is 64, which puts
+normal speech at 30–70%. That figure is worth checking whenever recognition quality drops — it is a
+one-line cause with a symptom that looks like a model problem.
+
+Loopback is bounded by the playback buffer (~1 s, since PSRAM reports zero free on this board) and
+says so rather than silently recording less than asked.
+
 ## 5. Testing both together
 
 The board dials the server over the LAN, so the server has to live somewhere the board can reach.
