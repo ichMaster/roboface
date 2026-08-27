@@ -62,6 +62,10 @@ uint32_t last_status_ms = 0;
 bool reply_in_progress = false;
 bool debug_line = false;  // the tiny corner diagnostic; off by default
 
+//: When a `/listen` window should close on its own. Zero means no timed window is open. The touch
+//: trigger in RF-037 ends on release instead; this exists so capture can be driven from a script.
+uint32_t listen_until_ms = 0;
+
 // The serial chat console (v0.5). It borrows the screen the way the self-test does, and gives back
 // the state it took -- the discipline lives in `pure/console.h` where a host test proves it is
 // total over the state enum.
@@ -120,6 +124,52 @@ void apply(roboface::DeviceEvent event) {
     Serial.printf("\n[state] %s\n", roboface::toString(state));
     render();
     needs_push = true;
+}
+
+// One captured frame, straight onto the wire. Returning false tells `AudioIo` the frame did not
+// go; capture keeps running rather than stalling, because the microphone does not pause for the
+// network and a gap is better than losing the rest of the sentence.
+bool sendCapturedFrame(const uint8_t* data, std::size_t length) {
+    return ws.sendAudio(data, length);
+}
+
+// Open the listening window: the frame first, then the microphone. In that order, because a device
+// that captured before announcing would have audio with no window to put it in, and the server
+// would rightly call it a protocol violation.
+void beginListening() {
+    if (audio.isListening()) return;
+    if (!ws.isConnected()) {
+        Serial.println("[listen] no connection — not listening");
+        return;
+    }
+    if (!roboface::canStartTurn(state)) {
+        Serial.printf("[busy] not idle (%s) — not listening\n", roboface::toString(state));
+        return;
+    }
+    if (!ws.sendListenStart()) {
+        Serial.println("[listen] could not open the window");
+        return;
+    }
+    if (!audio.startListening(&sendCapturedFrame)) {
+        // The window is open on the server and the microphone did not start. Close it rather than
+        // leaving the server waiting for audio that will never arrive.
+        ws.sendListenStop();
+        Serial.println("[listen] microphone did not start");
+        return;
+    }
+    apply(roboface::DeviceEvent::kListenStarted);
+}
+
+// Close it: the microphone first, then the frame, so the last captured samples are on the wire
+// before the server is told the utterance is over.
+void endListening() {
+    if (!audio.isListening()) return;
+    audio.stopListening();
+    ws.sendListenStop();
+    Serial.printf("[listen] sent %u frames (%u ms)\n",
+                  static_cast<unsigned>(audio.tally().frames()),
+                  static_cast<unsigned>(audio.tally().durationMs()));
+    apply(roboface::DeviceEvent::kListenStopped);
 }
 
 roboface::LinkState linkStateNow() {
@@ -401,6 +451,21 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
         return;
     }
 
+    if (line.text.rfind("/listen", 0) == 0) {
+        // A trigger before the touch panel has one (RF-037). Also the only way to exercise capture
+        // without a finger on the glass, which is what makes a failure reproducible from a script.
+        unsigned seconds = 3;
+        const std::size_t space = line.text.find(' ');
+        if (space != std::string::npos) {
+            const int parsed = std::atoi(line.text.c_str() + space + 1);
+            if (parsed > 0 && parsed <= 20) seconds = static_cast<unsigned>(parsed);
+        }
+        Serial.printf("\n[listen] holding for %u s\n", seconds);
+        beginListening();
+        listen_until_ms = millis() + seconds * 1000;
+        return;
+    }
+
     if (line.text == "/faces") {
         startSelfTest();
         return;
@@ -415,6 +480,7 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
         Serial.println("  <text>   say something    /faces  cycle the six faces");
         Serial.println("  /debug   corner state line /probe  raw TCP path test");
         Serial.println("  /http    plain HTTP GET test");
+        Serial.println("  /listen [s] capture and stream for s seconds (default 3)");
         Serial.println("  /chat-on  show the conversation on the panel");
         Serial.println("  /chat-off return to the face");
         Serial.println("  /help    this");
@@ -523,6 +589,10 @@ void loop() {
     // chrome is composited over it here.
     // Before the screen: audio starving is audible and a late repaint is not.
     audio.tick(now_ms);
+    if (listen_until_ms != 0 && now_ms >= listen_until_ms) {
+        listen_until_ms = 0;
+        endListening();
+    }
 
     pollPower(now_ms, /*force=*/false);
     updateChrome(now_ms, fault_active, fault_code);

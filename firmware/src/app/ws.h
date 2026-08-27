@@ -47,6 +47,13 @@ class Ws {
     // Send a text_in. Returns false when there is no open socket, so the caller can say so rather
     // than pretending the turn started.
     bool sendTextIn(const char* text);
+
+    // The listening window, and the audio inside it. `sendAudio` is a **binary** frame with no
+    // envelope -- its meaning comes from the window being open, which is why these three belong
+    // together rather than being three unrelated sends.
+    bool sendListenStart();
+    bool sendAudio(const uint8_t* data, std::size_t length);
+    bool sendListenStop();
     bool sendPing();
 
     bool isConnected() const { return connected_; }

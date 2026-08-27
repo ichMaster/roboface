@@ -237,6 +237,17 @@ inline std::string buildTextIn(const char* text) {
     return out;
 }
 
+// The listening window's two frames. Neither carries a field: the binary frames between them are
+// `audio` **because the connection is listening** (`device_binary_meaning` on the server), not
+// because anything labels them, so these exist only to open and close that window.
+inline std::string buildListenStart() {
+    return "{\"type\":\"listen_start\"}";
+}
+
+inline std::string buildListenStop() {
+    return "{\"type\":\"listen_stop\"}";
+}
+
 inline std::string buildPing() {
     JsonDocument doc;
     doc["type"] = toString(DeviceMessage::kPing);

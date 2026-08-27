@@ -195,6 +195,23 @@ bool Ws::sendTextIn(const char* text) {
     return client.sendTXT(roboface::buildTextIn(text).c_str());
 }
 
+bool Ws::sendListenStart() {
+    if (!connected_) return false;
+    return client.sendTXT(roboface::buildListenStart().c_str());
+}
+
+bool Ws::sendAudio(const uint8_t* data, std::size_t length) {
+    if (!connected_) return false;
+    // No envelope, by contract. A device that framed this as JSON would double its size and the
+    // server would refuse it, because `audio` is declared binary.
+    return client.sendBIN(data, length);
+}
+
+bool Ws::sendListenStop() {
+    if (!connected_) return false;
+    return client.sendTXT(roboface::buildListenStop().c_str());
+}
+
 bool Ws::sendPing() {
     if (!connected_) return false;
     return client.sendTXT(roboface::buildPing().c_str());

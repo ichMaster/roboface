@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "pure/capture.h"
 #include "pure/pcm_ring.h"
 
 namespace app {
@@ -58,6 +59,11 @@ inline constexpr uint32_t kDrainTimeoutMs = 1500;
 
 class AudioIo {
   public:
+    //: Called with one captured frame, the moment it fills. Returning false means the caller could
+    //: not send it -- capture keeps going rather than stalling, because the microphone does not
+    //: pause for the network and a gap is better than a stall that loses the rest of the sentence.
+    using FrameSink = bool (*)(const uint8_t* data, std::size_t length);
+
     // Allocates the PSRAM backlog. Returns false if it could not -- a renderer that failed to
     // allocate must say so rather than presenting a mute device as a working one.
     bool begin(uint8_t volume);
@@ -70,6 +76,21 @@ class AudioIo {
 
     // Feed the speaker as fast as it will take. Call every loop.
     void tick(uint32_t now_ms);
+
+    // --- capture (v1.2) ---------------------------------------------------------------
+    //
+    // The mirror of playback: the Core S3 shares one I2S bus, so taking it for the microphone
+    // ends the speaker exactly as taking it for the speaker ends the microphone. The two must
+    // never both hold it, which is why both paths go through this one class.
+
+    // Take the bus for capture and begin. Idempotent.
+    bool startListening(FrameSink sink);
+
+    // Stop capturing and release the bus. Safe when not listening.
+    void stopListening();
+
+    bool isListening() const { return listening_; }
+    const roboface::CaptureTally& tally() const { return tally_; }
 
     // `tts_end`: play out the backlog, then give the bus back.
     void finish();
@@ -97,6 +118,15 @@ class AudioIo {
     void releaseBus();
 
     roboface::PcmRing backlog_;
+
+    //: Two capture frames, alternating: the microphone records into one while the other is being
+    //: sent. A single buffer would either drop the samples arriving during the send or make the
+    //: send wait for the next frame, and both show up as gaps in the middle of words.
+    int16_t capture_[2][roboface::kCaptureFrameSamples] = {};
+    std::size_t capture_slot_ = 0;
+    bool listening_ = false;
+    FrameSink sink_ = nullptr;
+    roboface::CaptureTally tally_;
     uint8_t pool_[kChunkSlots][kChunkBytes] = {};
     std::size_t slot_ = 0;
     bool speaking_ = false;

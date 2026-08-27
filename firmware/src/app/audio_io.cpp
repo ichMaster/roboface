@@ -60,7 +60,60 @@ std::size_t AudioIo::write(const uint8_t* data, std::size_t length) {
     return backlog_.write(data, length);
 }
 
+bool AudioIo::startListening(FrameSink sink) {
+    if (listening_) return true;
+    // One bus, two peripherals -- the mirror of `startSpeaking`. Anything the speaker still holds
+    // is abandoned: a person pressing to talk has superseded whatever was being said to them.
+    if (speaking_) abort();
+    if (M5.Speaker.isEnabled()) M5.Speaker.end();
+    if (!M5.Mic.begin()) return false;
+
+    sink_ = sink;
+    tally_.reset();
+    capture_slot_ = 0;
+    listening_ = true;
+
+    // **Both** slots armed. The microphone has a two-deep queue (`isRecording()` returns 0, 1 or
+    // 2), and arming one at a time leaves it idle from the moment a frame completes until `tick`
+    // notices and re-arms -- a gap in every frame. Measured, that cost a quarter of the audio: a
+    // three-second window produced 2260 ms. With both armed the recorder never stops, and the
+    // loop's job is only to drain and re-arm the slot that freed.
+    M5.Mic.record(capture_[0], roboface::kCaptureFrameSamples, roboface::kCaptureSampleRate);
+    M5.Mic.record(capture_[1], roboface::kCaptureFrameSamples, roboface::kCaptureSampleRate);
+    return true;
+}
+
+void AudioIo::stopListening() {
+    if (!listening_) return;
+    listening_ = false;
+    sink_ = nullptr;
+    if (M5.Mic.isEnabled()) M5.Mic.end();
+}
+
 void AudioIo::tick(uint32_t now_ms) {
+    if (listening_) {
+        // A frame is ready when the recorder has stopped filling it. Sending happens here, in the
+        // loop, rather than in an interrupt: the socket write can block, and blocking inside the
+        // I2S callback would drop the samples arriving behind it.
+        // Fewer than two queued means one has completed, and the slots complete in the order they
+        // were armed -- so the one that freed is `capture_slot_`.
+        if (M5.Mic.isRecording() < 2) {
+            const auto* frame = reinterpret_cast<const uint8_t*>(capture_[capture_slot_]);
+            const std::size_t completed = capture_slot_;
+            capture_slot_ = capture_slot_ == 0 ? 1 : 0;
+
+            // Re-arm the freed slot **before** sending it onward, so the microphone is back to two
+            // queued while this frame is on the wire. Sending first would leave the queue one deep
+            // for the duration of the send, which is the same gap in a smaller form.
+            M5.Mic.record(capture_[completed], roboface::kCaptureFrameSamples,
+                          roboface::kCaptureSampleRate);
+
+            if (sink_ != nullptr && sink_(frame, roboface::kCaptureFrameBytes)) {
+                tally_.recordFrame(roboface::kCaptureFrameBytes);
+            }
+        }
+    }
+
     if (!speaking_) return;
 
     // Hand over buffers until the speaker refuses one. `playRaw` returning false is the whole
