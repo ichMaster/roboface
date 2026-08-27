@@ -17,6 +17,8 @@ from roboface_server.protocol import (
     BINARY_SERVER_MESSAGES,
     MAX_UTTERANCE_BYTES,
     PROTO_VERSION,
+    Asr,
+    AsrPartial,
     Capability,
     DeviceMessage,
     ErrorCode,
