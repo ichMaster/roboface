@@ -1,6 +1,60 @@
 RoboFace -- release notes
 =========================
 
+Version 1.2.0 (2026-08-27)
+---------------------------
+Roadmap phase v1.2 -- microphone capture and push-to-talk. **The device can send
+what it hears, while you are still saying it.**
+
+Measured on hardware, with per-frame timestamps: listen_start at +0.00 s, first
+audio at +0.07 s, last at +3.06 s, listen_stop at +3.07 s -- 151 frames spread
+evenly across the window. The first frame arrived 3.01 s before the stop, and
+the spread is the part that matters: a burst just before the stop is what a
+device that buffered the utterance produces, and it is what v1.3's recognition
+cannot work with.
+
+- The listening window is a pinned contract. listen_start opens
+  BinaryPhase.LISTENING, binary frames mean `audio` only inside it, listen_stop
+  closes it. All three names were declared in v0.1 and device_binary_meaning
+  already returned AUDIO; what was missing was the typed frames and the router
+  state -- exactly as v0.1's own comment on _handle_binary predicted.
+- The utterance is capped in **bytes rather than seconds**: bytes are a property
+  of what arrived, seconds would have to be trusted across a network. Checked
+  before storing, so the memory the cap protects is never taken, and exceeding it
+  ends the window with an enumerated error rather than truncating.
+- listen.stop logs a digest of the assembled audio, because a byte count is
+  satisfied by reordering and by duplication and a digest is not.
+- Press-and-hold on the glass, with the rules in pure/ptt.h driven by an injected
+  clock: proving "a 100 ms tap is not an utterance" on hardware means tapping the
+  glass for exactly 100 ms.
+- The input-level meter fills the bottom-band tenant v0.4 declared and nothing
+  had yet contended for. No text is drawn -- the bar is the message.
+- /loopback records and replays locally, sending nothing to the server, and
+  reports the peak level it captured.
+
+Four faults found by measuring on the device, three with symptoms pointing away
+from their cause:
+
+- A 3 s window captured 2.26 s. One microphone buffer was armed at a time, so
+  the mic idled between frames; it has a two-deep queue like the speaker, and
+  keeping both armed gives 2.86 s.
+- The first hold worked and every later one was refused: listen_stop leaves the
+  device *thinking*, which is right from v1.3 where recognition follows. v1.2 has
+  neither, so it thought forever.
+- Capture read 1% of full scale. M5Unified's default mic magnification of 16 is
+  far too low for this board's ES7210; at 64, speech reads 30-70%. This one had
+  the longest reach -- streaming would have "worked" until v1.3 and failed there
+  as poor recognition, which looks like a model problem and is a gain setting.
+- Loopback playback was silent while TTS played fine. playRaw returns true even
+  when both channel slots are full, so draining an already-buffered recording
+  handed it everything at once and recycled the pool buffers underneath audio the
+  I2S task had not read.
+
+Review fixes: the server releases an in-flight utterance when a socket drops
+(the cap bounds a live utterance, not how many dead ones accumulate), and the
+device stops capturing when the server refuses a window rather than earning a
+bad_frame per frame for as long as a finger is down.
+
 Version 1.1.0 (2026-08-25)
 ---------------------------
 Roadmap phase v1.1 -- streaming TTS playback. **A typed line is answered out

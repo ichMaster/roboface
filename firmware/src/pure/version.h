@@ -18,7 +18,7 @@ namespace roboface {
 // on the wire yet -- `hello` carries `proto_ver`, which is the contract version and a different
 // thing from the build's -- but a device that cannot say which firmware it is running is a
 // device you cannot debug from a serial log.
-inline constexpr const char* kFirmwareVersion = "1.1.0";
+inline constexpr const char* kFirmwareVersion = "1.2.0";
 
 // The board this build targets. v6 adds the FIRE, at which point this stops being a constant
 // and starts being a capability question; until then, saying it plainly beats implying it.
