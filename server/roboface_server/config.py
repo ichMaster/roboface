@@ -48,6 +48,14 @@ DEFAULT_GEMINI_THINKING_BUDGET = 0
 DEFAULT_ELEVENLABS_MODEL = "eleven_turbo_v2_5"
 DEFAULT_ELEVENLABS_OUTPUT_FORMAT = "pcm_16000"
 
+#: Deepgram defaults, from v1.3. `linear16` at 16 kHz is the device's capture format unchanged --
+#: the same `AUDIO_FMT` that TTS returns, so audio crosses the whole system without a conversion.
+DEFAULT_DEEPGRAM_MODEL = "nova-2"
+DEFAULT_DEEPGRAM_LANGUAGE = "uk"
+DEFAULT_DEEPGRAM_ENCODING = "linear16"
+DEFAULT_DEEPGRAM_SAMPLE_RATE = 16000
+DEFAULT_DEEPGRAM_ENDPOINT_MS = 500
+
 #: The accepted values of ``ROBOFACE_LOG_LEVEL``. Lower-case on the wire and in the
 #: file; the logging module maps them upward when it configures itself (RF-005).
 LOG_LEVELS = frozenset({"debug", "info", "warning", "error", "critical"})
@@ -80,6 +88,12 @@ class Settings:
     elevenlabs_voice_id: str
     elevenlabs_model: str
     elevenlabs_output_format: str
+    deepgram_api_key: str
+    deepgram_model: str
+    deepgram_language: str
+    deepgram_encoding: str
+    deepgram_sample_rate: int
+    deepgram_endpoint_ms: int
 
     def __repr__(self) -> str:
         """Never render the key.
@@ -100,6 +114,7 @@ class Settings:
         # covered only the first would be a redaction that fails the moment the system grows --
         # which is exactly how the original finding happened.
         tts_key = "***" if self.elevenlabs_api_key else "unset"
+        asr_key = "***" if self.deepgram_api_key else "unset"
         return (
             f"Settings(ws_host={self.ws_host!r}, ws_port={self.ws_port!r}, "
             f"log_level={self.log_level!r}, gemini_api_key={key}, "
@@ -108,7 +123,10 @@ class Settings:
             f"elevenlabs_api_key={tts_key}, "
             f"elevenlabs_voice_id={self.elevenlabs_voice_id!r}, "
             f"elevenlabs_model={self.elevenlabs_model!r}, "
-            f"elevenlabs_output_format={self.elevenlabs_output_format!r})"
+            f"elevenlabs_output_format={self.elevenlabs_output_format!r}, "
+            f"deepgram_api_key={asr_key}, "
+            f"deepgram_model={self.deepgram_model!r}, "
+            f"deepgram_language={self.deepgram_language!r})"
         )
 
     def require_gemini_api_key(self) -> str:
@@ -211,6 +229,13 @@ def load_settings(
     tts_model = _resolve("ELEVENLABS_MODEL", resolved_environ, file_values)
     tts_format = _resolve("ELEVENLABS_OUTPUT_FORMAT", resolved_environ, file_values)
 
+    asr_key = _resolve("DEEPGRAM_API_KEY", resolved_environ, file_values)
+    asr_model = _resolve("DEEPGRAM_MODEL", resolved_environ, file_values)
+    asr_language = _resolve("DEEPGRAM_LANGUAGE", resolved_environ, file_values)
+    asr_encoding = _resolve("DEEPGRAM_ENCODING", resolved_environ, file_values)
+    asr_rate = _resolve("DEEPGRAM_SAMPLE_RATE", resolved_environ, file_values)
+    asr_endpoint = _resolve("DEEPGRAM_ENDPOINT_MS", resolved_environ, file_values)
+
     return Settings(
         ws_host=host,
         ws_port=DEFAULT_WS_PORT if raw_port is None else _parse_port(raw_port),
@@ -229,4 +254,14 @@ def load_settings(
         elevenlabs_voice_id=voice_id or "",
         elevenlabs_model=tts_model or DEFAULT_ELEVENLABS_MODEL,
         elevenlabs_output_format=tts_format or DEFAULT_ELEVENLABS_OUTPUT_FORMAT,
+        deepgram_api_key=asr_key or "",
+        deepgram_model=asr_model or DEFAULT_DEEPGRAM_MODEL,
+        deepgram_language=asr_language or DEFAULT_DEEPGRAM_LANGUAGE,
+        deepgram_encoding=asr_encoding or DEFAULT_DEEPGRAM_ENCODING,
+        deepgram_sample_rate=(
+            DEFAULT_DEEPGRAM_SAMPLE_RATE if asr_rate is None else int(asr_rate)
+        ),
+        deepgram_endpoint_ms=(
+            DEFAULT_DEEPGRAM_ENDPOINT_MS if asr_endpoint is None else int(asr_endpoint)
+        ),
     )

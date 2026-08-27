@@ -10,6 +10,11 @@ from pathlib import Path
 
 import pytest
 from roboface_server.config import (
+    DEFAULT_DEEPGRAM_ENCODING,
+    DEFAULT_DEEPGRAM_ENDPOINT_MS,
+    DEFAULT_DEEPGRAM_LANGUAGE,
+    DEFAULT_DEEPGRAM_MODEL,
+    DEFAULT_DEEPGRAM_SAMPLE_RATE,
     DEFAULT_ELEVENLABS_MODEL,
     DEFAULT_ELEVENLABS_OUTPUT_FORMAT,
     DEFAULT_GEMINI_MODEL,
@@ -36,6 +41,12 @@ def _settings(**overrides: object) -> Settings:
         "elevenlabs_voice_id": "",
         "elevenlabs_model": DEFAULT_ELEVENLABS_MODEL,
         "elevenlabs_output_format": DEFAULT_ELEVENLABS_OUTPUT_FORMAT,
+        "deepgram_api_key": "",
+        "deepgram_model": DEFAULT_DEEPGRAM_MODEL,
+        "deepgram_language": DEFAULT_DEEPGRAM_LANGUAGE,
+        "deepgram_encoding": DEFAULT_DEEPGRAM_ENCODING,
+        "deepgram_sample_rate": DEFAULT_DEEPGRAM_SAMPLE_RATE,
+        "deepgram_endpoint_ms": DEFAULT_DEEPGRAM_ENDPOINT_MS,
     }
     fields.update(overrides)
     return Settings(**fields)  # type: ignore[arg-type]
@@ -123,8 +134,8 @@ def test_only_the_landed_phases_variables_are_read(tmp_path: Path) -> None:
 
     ARCHITECTURE §Configuration assigns each variable to the phase that introduces it, and
     reading one early would let an unset future key look configured. v0.2 added the three
-    Gemini keys and **v1.1 added the four ElevenLabs ones**, so those are now expected; the
-    ASR and canon keys are not, and will arrive with v1.3 and v4.1.
+    Gemini keys, v1.1 the four ElevenLabs ones and **v1.3 the six Deepgram ones**, so all of
+    those are now expected; the canon key is not, and arrives with v4.1.
 
     This test is meant to fail when a phase lands, and it did: it was asserting that
     ``ELEVENLABS_API_KEY`` must not be read, which was true right up until RF-030. Updating it
@@ -132,7 +143,6 @@ def test_only_the_landed_phases_variables_are_read(tmp_path: Path) -> None:
     """
     settings = load_settings(
         {
-            "DEEPGRAM_API_KEY": "should-never-be-read",
             "ROBOFACE_CANON_PATH": "should-never-be-read",
         },
         env_file=_no_file(tmp_path),
@@ -151,6 +161,12 @@ def test_only_the_landed_phases_variables_are_read(tmp_path: Path) -> None:
         "elevenlabs_voice_id",
         "elevenlabs_model",
         "elevenlabs_output_format",
+        "deepgram_api_key",
+        "deepgram_model",
+        "deepgram_language",
+        "deepgram_encoding",
+        "deepgram_sample_rate",
+        "deepgram_endpoint_ms",
     }
 
 
@@ -272,6 +288,23 @@ def test_repr_never_contains_the_tts_key_either(tmp_path: Path) -> None:
 
 def test_the_tts_key_absence_is_shown_the_same_way(tmp_path: Path) -> None:
     assert "elevenlabs_api_key=unset" in repr(load_settings({}, env_file=_no_file(tmp_path)))
+
+
+ASR_SECRET = "dg_TOTALLY-SECRET-DEEPGRAM-KEY-77"
+
+
+def test_repr_never_contains_the_asr_key_either(tmp_path: Path) -> None:
+    """Three vendors now. A redaction that covered two would fail on the third, which is how the
+    original finding happened in the first place."""
+    settings = load_settings(
+        {"GEMINI_API_KEY": SECRET, "ELEVENLABS_API_KEY": TTS_SECRET,
+         "DEEPGRAM_API_KEY": ASR_SECRET},
+        env_file=_no_file(tmp_path),
+    )
+    rendered = repr(settings)
+    for secret in (SECRET, TTS_SECRET, ASR_SECRET):
+        assert secret not in rendered
+    assert "deepgram_api_key=***" in rendered
 
 
 def test_the_non_secret_tts_settings_are_still_visible(tmp_path: Path) -> None:
