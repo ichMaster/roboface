@@ -88,7 +88,10 @@ class AudioIo {
     //: Keep the microphone running with no window open. Step 1 of active listening: the frames
     //: are discarded, and the only question this answers is whether an always-on recorder still
     //: captures at full rate.
-    bool startMonitoring();
+    //: Called for every captured frame, window or not. Step 2: the VAD sees the room without
+    //: being allowed to act on it.
+    using FrameObserver = void (*)(const int16_t* samples, std::size_t count, uint32_t frame_ms);
+    bool startMonitoring(FrameObserver observer = nullptr);
     bool isMonitoring() const { return monitoring_; }
 
     bool startListening(FrameSink sink);
@@ -154,6 +157,7 @@ class AudioIo {
     std::size_t capture_slot_ = 0;
     bool listening_ = false;
     bool monitoring_ = false;
+    FrameObserver observer_ = nullptr;
     FrameSink sink_ = nullptr;
     roboface::CaptureTally tally_;
     float level_ = 0.0f;

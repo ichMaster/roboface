@@ -24,6 +24,7 @@
 #include "pure/console.h"
 #include "pure/ptt.h"
 #include "pure/transcript.h"
+#include "pure/vad.h"
 #include "pure/line_reader.h"
 #include "pure/state.h"
 #include "pure/version.h"
@@ -88,6 +89,11 @@ uint32_t loopback_until_ms = 0;
 // The serial chat console (v0.5). It borrows the screen the way the self-test does, and gives back
 // the state it took -- the discipline lives in `pure/console.h` where a host test proves it is
 // total over the state enum.
+//: Step 2: the endpointer hears every frame and its decisions are counted, not acted on.
+roboface::Endpointer endpointer;
+uint32_t vad_starts = 0;
+uint32_t vad_ends = 0;
+
 roboface::ConsoleMode console;
 roboface::Transcript transcript;
 
@@ -157,6 +163,14 @@ bool storeCapturedFrame(const uint8_t* data, std::size_t length) {
     return audio.captureToBacklog(data, length) == length;
 }
 
+void onCapturedFrame(const int16_t* samples, std::size_t count, uint32_t frame_ms) {
+    switch (endpointer.feed(samples, count, frame_ms)) {
+        case roboface::VadEvent::kSpeechStarted: ++vad_starts; break;
+        case roboface::VadEvent::kSpeechEnded: ++vad_ends; break;
+        default: break;
+    }
+}
+
 // Open the listening window: the frame first, then the microphone. In that order, because a device
 // that captured before announcing would have audio with no window to put it in, and the server
 // would rightly call it a protocol violation.
@@ -190,9 +204,10 @@ void endListening() {
     if (!audio.isListening()) return;
     audio.stopListening();
     ws.sendListenStop();
-    Serial.printf("[listen] sent %u frames (%u ms)\n",
+    Serial.printf("[listen] sent %u frames (%u ms) · vad starts=%u ends=%u\n",
                   static_cast<unsigned>(audio.tally().frames()),
-                  static_cast<unsigned>(audio.tally().durationMs()));
+                  static_cast<unsigned>(audio.tally().durationMs()),
+                  static_cast<unsigned>(vad_starts), static_cast<unsigned>(vad_ends));
     // Leaves the device *thinking*, which is now correct as written: recognition follows, then a
     // reply, and the terminal `reply` frame ends the turn. v1.2 added a kTurnEnded here because it
     // had neither; v1.3 removes it, as that comment said it would.
@@ -685,7 +700,7 @@ void setup() {
     // Step 1 of active listening: the recorder runs from boot with no window open. Nothing is sent
     // and nothing is decided -- the only question is whether an always-on recorder still captures
     // at full rate, which is the property every later step depends on.
-    if (!audio.startMonitoring()) {
+    if (!audio.startMonitoring(&onCapturedFrame)) {
         Serial.println("[mic] monitoring did not start");
     }
 

@@ -61,7 +61,8 @@ std::size_t AudioIo::write(const uint8_t* data, std::size_t length) {
     return backlog_.write(data, length);
 }
 
-bool AudioIo::startMonitoring() {
+bool AudioIo::startMonitoring(FrameObserver observer) {
+    observer_ = observer;
     if (monitoring_ || listening_) return true;
     if (speaking_) return false;
     if (M5.Speaker.isEnabled()) M5.Speaker.end();
@@ -166,6 +167,11 @@ void AudioIo::tick(uint32_t now_ms) {
                 roboface::peakLevel(capture_[completed], roboface::kCaptureFrameSamples);
             if (peak > peak_seen_) peak_seen_ = peak;
             level_ = roboface::decayToward(level_, peak);
+
+            if (observer_ != nullptr) {
+                observer_(capture_[completed], roboface::kCaptureFrameSamples,
+                          roboface::kCaptureFrameMs);
+            }
 
             if (listening_ && sink_ != nullptr && sink_(frame, roboface::kCaptureFrameBytes)) {
                 tally_.recordFrame(roboface::kCaptureFrameBytes);
