@@ -101,7 +101,6 @@ bool AudioIo::startMonitoring(FrameObserver observer) {
     if (monitoring_ || listening_) return true;
     if (!beginCapture()) return false;
     pre_roll_slots_.clear();
-    last_frame_ms_ = millis();
     monitoring_ = true;
     return true;
 }
@@ -116,10 +115,24 @@ void AudioIo::stopMonitoring() {
     if (!listening_ && M5.Mic.isEnabled()) M5.Mic.end();
 }
 
-std::size_t AudioIo::pendingPreRoll() const { return pre_roll_slots_.held(); }
-
-int AudioIo::micQueueDepth() const { return M5.Mic.isRecording(); }
-bool AudioIo::micEnabled() const { return M5.Mic.isEnabled(); }
+std::size_t AudioIo::flushPreRoll(FrameSink sink) {
+    if (sink == nullptr) return 0;
+    const std::size_t held = pre_roll_slots_.held();
+    std::size_t sent = 0;
+    for (std::size_t i = 0; i < held; ++i) {  // oldest first -- the order the audio happened in
+        const std::size_t slot = pre_roll_slots_.readSlot(i);
+        if (slot >= kPreRollFrames) break;
+        if (!sink(reinterpret_cast<const uint8_t*>(pre_roll_[slot]), roboface::kCaptureFrameBytes)) {
+            break;
+        }
+        tally_.recordFrame(roboface::kCaptureFrameBytes);
+        ++sent;
+    }
+    // Consumed either way: these frames are now part of the utterance, and replaying them into a
+    // later one would put the same audio on the wire twice.
+    pre_roll_slots_.clear();
+    return sent;
+}
 
 bool AudioIo::startListening(FrameSink sink) {
     if (listening_) return true;
@@ -129,11 +142,6 @@ bool AudioIo::startListening(FrameSink sink) {
 
     sink_ = sink;
     tally_.reset();
-    drained_ = 0;
-    refused_ = 0;
-    // The ring stops being only a pre-roll the moment a window opens: it is now the send queue,
-    // and may use its whole capacity while the backlog drains.
-    pre_roll_slots_.setWanted(kPreRollFrames);
     peak_seen_ = 0.0f;
     listening_ = true;
     return true;
@@ -171,94 +179,51 @@ void AudioIo::playBacklog() {
 }
 
 void AudioIo::drainCapturedFrame() {
-    // A frame is ready when the recorder has stopped filling it. Fewer than two queued means one
-    // has completed, and the slots complete in the order they were armed -- so the one that freed
-    // is `capture_slot_`.
+    // A frame is ready when the recorder has stopped filling it. Sending happens here, in the
+    // loop, rather than in an interrupt: the socket write can block, and blocking inside the
+    // I2S callback would drop the samples arriving behind it.
+    // Fewer than two queued means one has completed, and the slots complete in the order they
+    // were armed -- so the one that freed is `capture_slot_`.
     if (M5.Mic.isRecording() >= 2) return;
-    ++drained_;
-    last_frame_ms_ = millis();
 
+    const auto* frame = reinterpret_cast<const uint8_t*>(capture_[capture_slot_]);
     const std::size_t completed = capture_slot_;
     capture_slot_ = capture_slot_ == 0 ? 1 : 0;
 
-    // **Everything that reads this buffer happens before it is handed back**, because `record`
-    // gives it to the DMA immediately and the recorder then owns it. The peak, the endpointer's
-    // scan of all 320 samples and the copy into the ring are microseconds of local work; done
-    // after the re-arm they read a blend of two moments, and audio that is part-old and part-new
-    // sounds nearly right and recognises as nothing -- the failure that cost an evening in v1.3.
+    // Re-arm the freed slot **before** sending it onward, so the microphone is back to two
+    // queued while this frame is on the wire. Sending first would leave the queue one deep
+    // for the duration of the send, which is the same gap in a smaller form.
+    M5.Mic.record(capture_[completed], roboface::kCaptureFrameSamples,
+                  roboface::kCaptureSampleRate);
+
     const float peak = roboface::peakLevel(capture_[completed], roboface::kCaptureFrameSamples);
     if (peak > peak_seen_) peak_seen_ = peak;
     level_ = roboface::decayToward(level_, peak);
 
     // The observer sees every frame, window or not -- it is what decides whether there should be
-    // a window at all.
+    // a window at all. It runs before the send so the decision is never a frame behind.
     if (observer_ != nullptr) {
         observer_(capture_[completed], roboface::kCaptureFrameSamples, roboface::kCaptureFrameMs);
     }
 
-    // **Every captured frame goes into the ring, window or not.** With no window it is pre-roll,
-    // kept in case one opens; with a window it is queued behind whatever pre-roll has not gone out
-    // yet, which is what keeps the utterance in order. One queue, so there is no moment where two
-    // sources of frames have to be merged.
+    if (listening_) {
+        if (sink_ != nullptr && sink_(frame, roboface::kCaptureFrameBytes)) {
+            tally_.recordFrame(roboface::kCaptureFrameBytes);
+        }
+        return;
+    }
+
+    // No window: keep the frame in case one opens in a moment. How many are kept is the ring's
+    // business -- a shorter pre-roll setting caps it without the storage changing.
     const std::size_t slot = pre_roll_slots_.writeSlot();
-    if (slot < kPreRollFrames) {
-        for (std::size_t i = 0; i < roboface::kCaptureFrameSamples; ++i) {
-            pre_roll_[slot][i] = capture_[completed][i];
-        }
-    }
-
-    // Re-armed as soon as the reading is done and **before anything is sent**. The recorder has
-    // two buffers -- 40 ms -- and a socket write is milliseconds: sending several frames before
-    // re-arming lets the queue run dry, the recorder go idle, and capture stop for the rest of the
-    // window. Measured, that produced exactly the pre-roll and one live frame, for any window
-    // length, and it looked from the frame count like the link had failed rather than the mic.
-    M5.Mic.record(capture_[completed], roboface::kCaptureFrameSamples,
-                  roboface::kCaptureSampleRate);
-}
-
-void AudioIo::restartCaptureIfStalled(uint32_t now_ms) {
-    // A recorder that starts and then produces nothing is the failure this exists for, and it is
-    // silent: `record` keeps accepting buffers, `isRecording()` sits at its maximum, `isEnabled()`
-    // says yes, and not one frame ever completes. The I2S driver logs its allocation failure and
-    // nothing above it notices.
-    //
-    // v1.3 was accidentally immune: it began the microphone for each window, so a bad start cost
-    // one utterance. v1.4 begins it once and leaves it running, which turns the same failure into
-    // a device that is deaf until someone reboots it.
-    if (last_frame_ms_ == 0) last_frame_ms_ = now_ms;
-    if (now_ms - last_frame_ms_ < kCaptureStallMs) return;
-    last_frame_ms_ = now_ms;
-    M5.Mic.end();
-    if (beginCapture()) {
-        Serial.println("[mic] recorder stalled — restarted");
-    } else {
-        Serial.println("[mic] recorder stalled — restart failed");
-    }
-}
-
-void AudioIo::sendQueuedFrames() {
-    if (!listening_ || sink_ == nullptr) return;
-    // **Bounded.** More than the capture rate so the pre-roll backlog drains -- one frame arrives
-    // per 20 ms and two leave -- without ever handing the socket a burst it answers by refusing.
-    for (std::size_t sent = 0; sent < kFramesPerTick; ++sent) {
-        if (pre_roll_slots_.held() == 0) return;
-        const std::size_t slot = pre_roll_slots_.readSlot(0);  // oldest: the order it happened in
-        if (slot >= kPreRollFrames) return;
-        if (!sink_(reinterpret_cast<const uint8_t*>(pre_roll_[slot]), roboface::kCaptureFrameBytes)) {
-            ++refused_;
-            return;  // the link is busy; the frame stays queued for the next tick
-        }
-        pre_roll_slots_.dropOldest();
-        tally_.recordFrame(roboface::kCaptureFrameBytes);
+    if (slot >= kPreRollFrames) return;  // pre-roll disabled: no slot to write
+    for (std::size_t i = 0; i < roboface::kCaptureFrameSamples; ++i) {
+        pre_roll_[slot][i] = capture_[completed][i];
     }
 }
 
 void AudioIo::tick(uint32_t now_ms) {
-    if (listening_ || monitoring_) {
-        drainCapturedFrame();
-        restartCaptureIfStalled(now_ms);
-    }
-    sendQueuedFrames();
+    if (listening_ || monitoring_) drainCapturedFrame();
 
     if (!speaking_) return;
 

@@ -68,13 +68,6 @@ bool debug_line = false;  // the tiny corner diagnostic; off by default
 //: trigger in RF-037 ends on release instead; this exists so capture can be driven from a script.
 uint32_t listen_until_ms = 0;
 
-//: When the open window opened, for the runaway cap. Zero means none is open.
-uint32_t listen_opened_ms = 0;
-
-//: Loops since the last status line -- the number that says whether the main loop is running at
-//: the rate everything else assumes.
-uint32_t loop_count = 0;
-
 //: Interims arrive several times a second and serial is slow. Four a second is enough to watch
 //: recognition working and cheap enough not to starve capture.
 constexpr uint32_t kPartialLogIntervalMs = 250;
@@ -218,18 +211,12 @@ bool beginListening() {
         Serial.println("[listen] microphone did not start");
         return false;
     }
-    // The audio that convinced the endpointer this was speech is already queued, and goes out
-    // ahead of everything captured afterwards. Detection needs a few frames to be sure and those
-    // frames are already words: without them the recogniser receives every utterance with its
-    // first syllable missing.
-    //
-    // Queued, not flushed here. Sending them in one burst starved the recorder -- its two buffers
-    // are 40 ms and a socket write is milliseconds -- and capture stopped for the rest of the
-    // window, which read as a dead link rather than a stalled microphone.
-    const std::size_t pre_rolled = audio.pendingPreRoll();
-    if (pre_rolled > 0) Serial.printf("[listen] pre-roll %u frames queued\n",
+    // The audio that convinced the endpointer this was speech, sent before anything captured
+    // afterwards. Detection needs a few frames to be sure and those frames are already words: with
+    // no pre-roll the recogniser receives every utterance with its first syllable missing.
+    const std::size_t pre_rolled = audio.flushPreRoll(&sendCapturedFrame);
+    if (pre_rolled > 0) Serial.printf("[listen] pre-roll %u frames\n",
                                       static_cast<unsigned>(pre_rolled));
-    listen_opened_ms = millis();
     apply(roboface::DeviceEvent::kListenStarted);
     return true;
 }
@@ -240,18 +227,12 @@ void endListening() {
     if (!audio.isListening()) return;
     audio.stopListening();
     ws.sendListenStop();
-    Serial.printf("[listen] sent %u frames (%u ms) · drained %u · refused %u\n",
+    Serial.printf("[listen] sent %u frames (%u ms)\n",
                   static_cast<unsigned>(audio.tally().frames()),
-                  static_cast<unsigned>(audio.tally().durationMs()),
-                  static_cast<unsigned>(audio.framesDrained()),
-                  static_cast<unsigned>(audio.framesRefused()));
-    Serial.printf("[listen] mic enabled=%d queue=%d speaking=%d monitoring=%d\n",
-                  static_cast<int>(audio.micEnabled()), audio.micQueueDepth(),
-                  static_cast<int>(audio.isSpeaking()), static_cast<int>(audio.isMonitoring()));
+                  static_cast<unsigned>(audio.tally().durationMs()));
     // Leaves the device *thinking*, which is now correct as written: recognition follows, then a
     // reply, and the terminal `reply` frame ends the turn. v1.2 added a kTurnEnded here because it
     // had neither; v1.3 removes it, as that comment said it would.
-    listen_opened_ms = 0;
     apply(roboface::DeviceEvent::kListenStopped);
     // The next utterance starts from silence, not from wherever this one left the counters.
     endpointer.reset();
@@ -371,17 +352,6 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
 
         case roboface::ParseResult::kAsr:
             Serial.printf("\n[heard] %s\n", frame.text.c_str());
-            // **The utterance is over** -- the recogniser said so, and it knew before this device
-            // did (§Turn lifecycle: it endpoints at ~500 ms while the local end-pause is still
-            // waiting out a longer, deliberately forgiving one). Without closing here the device
-            // keeps capturing into a window the server has already closed: it shows a listening
-            // face while the reply is being spoken, streams audio that is dropped at the far end,
-            // and enters half-duplex late.
-            //
-            // Through `endListening` rather than a second closing path, so the voice route, the
-            // finger route and this one cannot drift apart. The `listen_stop` it sends is the
-            // duplicate the server was made idempotent for.
-            if (audio.isListening()) endListening();
             return;
 
         case roboface::ParseResult::kTtsEnd:
@@ -842,7 +812,6 @@ void setup() {
 }
 
 void loop() {
-    ++loop_count;
     M5.update();
     const uint32_t now_ms = millis();
 
@@ -881,15 +850,7 @@ void loop() {
     // What the endpointer decided during `audio.tick`, acted on here rather than inside the audio
     // path. Both triggers -- a voice and a finger -- go through the same `beginListening` /
     // `endListening`, so there is one definition of what a window is and they cannot drift.
-    // Switching the feature off stops it **starting** windows. It must not strip the machine of
-    // its ability to finish the one it is in: a window opened a moment before `/vad off` would
-    // otherwise never close, the device would stream until the server's size cap ended it with an
-    // error, and it would sit in `kListening` refusing every later hold -- turning the feature off
-    // would be what broke the device. `kSpeechEnded` and `kDiscarded` close and clean up; neither
-    // can create a turn, so neither needs gating.
-    if (!active_listening && pending_vad == roboface::VadEvent::kSpeechStarted) {
-        pending_vad = roboface::VadEvent::kNone;
-    }
+    if (!active_listening) pending_vad = roboface::VadEvent::kNone;
     switch (pending_vad) {
         case roboface::VadEvent::kSpeechStarted:
             pending_vad = roboface::VadEvent::kNone;
@@ -961,18 +922,6 @@ void loop() {
         last_meter_ms = now_ms;
         needs_push = true;
     }
-    // A window that has run far past any sentence. In a noisy room the endpointer stays in speech
-    // and its end-pause never elapses, so nothing else here would ever close this -- and the thing
-    // that eventually does is the server's 30 s cap, which arrives as a protocol error and puts a
-    // fault on the screen. The device closes its own window first, normally.
-    if (audio.isListening() && listen_opened_ms != 0 &&
-        now_ms - listen_opened_ms >= roboface::kVadMaxUtteranceMs) {
-        Serial.printf("[vad] window ran past %u s — closing it\n",
-                      static_cast<unsigned>(roboface::kVadMaxUtteranceMs / 1000));
-        listen_until_ms = 0;
-        endListening();
-    }
-
     if (listen_until_ms != 0 && now_ms >= listen_until_ms) {
         listen_until_ms = 0;
         endListening();
@@ -999,23 +948,19 @@ void loop() {
     if (now_ms - last_status_ms >= kStatusIntervalMs) {
         last_status_ms = now_ms;
         Serial.printf(
-            "[status] %s · link %s %s · ws %s · batt %d%%%s · vad %s · mic q=%d drained=%u "
-            "queued=%u · audio %s buf=%u q=%u ref=%u drop=%u · up %lus\n",
+            "[status] %s · link %s %s · ws %s · batt %d%%%s · vad %s · audio %s buf=%u q=%u "
+            "ref=%u drop=%u · up %lus\n",
             roboface::toString(state), net.isUp() ? "up" : "down", net.ipAddress(),
             ws.isConnected() ? "connected" : "disconnected", battery_percent,
             battery_charging ? " (charging)" : "",
             // Which trigger is live is never a guess: a device that has quietly fallen back to
             // PTT looks exactly like one that is listening and not hearing you.
             !active_listening ? "off" : (audio.isMonitoring() ? "listening" : "suspended"),
-            audio.micQueueDepth(), static_cast<unsigned>(audio.framesDrained()),
-            static_cast<unsigned>(audio.pendingPreRoll()),
             audio.isSpeaking() ? "on" : "off", static_cast<unsigned>(audio.buffered()),
             static_cast<unsigned>(audio.bytesQueued()),
             static_cast<unsigned>(audio.chunksRefused()),
             static_cast<unsigned>(audio.bytesDropped()),
-            static_cast<unsigned long>(loop_count),
             static_cast<unsigned long>(now_ms / 1000));
-        loop_count = 0;
     }
 
     delay(5);

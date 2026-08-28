@@ -50,21 +50,12 @@ inline constexpr uint32_t kVadEndPauseMs = 700;
 
 //: How much audio before the trigger is kept, so the first syllable is never lost. Detection needs
 //: a few frames to be sure, and those frames are already speech.
-inline constexpr uint32_t kVadPreRollMs = 200;
+inline constexpr uint32_t kVadPreRollMs = 300;
 
 //: Quiet frames tolerated inside speech without restarting the end-pause count. A plosive closes
 //: the vocal tract completely -- the gap in "a **p**ple" is real silence, and an endpointer without
 //: hangover ends the utterance in the middle of the word.
 inline constexpr uint32_t kVadHangoverMs = 120;
-
-//: The longest a single window may stay open. An endpointer in a noisy room can be kept in
-//: `kSpeaking` indefinitely -- the end-pause never elapses because the noise never stops -- and
-//: nothing else on the device would ever close the window.
-//:
-//: Without this the server's `MAX_UTTERANCE_BYTES` (30 s) is what ends it, as a protocol error,
-//: which reaches the person as a fault on the screen for the crime of sitting in a noisy room.
-//: Deliberately well under that: the device closes its own window, normally, first.
-inline constexpr uint32_t kVadMaxUtteranceMs = 15000;
 
 //: What the endpointer decided about the frame just fed to it.
 enum class VadEvent {
