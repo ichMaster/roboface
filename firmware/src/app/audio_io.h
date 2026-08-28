@@ -85,6 +85,12 @@ class AudioIo {
     // never both hold it, which is why both paths go through this one class.
 
     // Take the bus for capture and begin. Idempotent.
+    //: Keep the microphone running with no window open. Step 1 of active listening: the frames
+    //: are discarded, and the only question this answers is whether an always-on recorder still
+    //: captures at full rate.
+    bool startMonitoring();
+    bool isMonitoring() const { return monitoring_; }
+
     bool startListening(FrameSink sink);
 
     // Stop capturing and release the bus. Safe when not listening.
@@ -147,6 +153,7 @@ class AudioIo {
     int16_t capture_[2][roboface::kCaptureFrameSamples] = {};
     std::size_t capture_slot_ = 0;
     bool listening_ = false;
+    bool monitoring_ = false;
     FrameSink sink_ = nullptr;
     roboface::CaptureTally tally_;
     float level_ = 0.0f;

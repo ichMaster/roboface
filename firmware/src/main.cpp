@@ -682,6 +682,13 @@ void setup() {
                       static_cast<unsigned>(ESP.getFreeHeap() / 1024), SPEAKER_VOLUME);
     }
 
+    // Step 1 of active listening: the recorder runs from boot with no window open. Nothing is sent
+    // and nothing is decided -- the only question is whether an always-on recorder still captures
+    // at full rate, which is the property every later step depends on.
+    if (!audio.startMonitoring()) {
+        Serial.println("[mic] monitoring did not start");
+    }
+
     ws.onEvent(onSocketEvent);
     // A binary frame is `tts_audio`: it carries no envelope, and what gives it meaning is that the
     // server is speaking (`server_binary_meaning`). Taking the bus here rather than at the start of

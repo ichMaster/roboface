@@ -61,8 +61,32 @@ std::size_t AudioIo::write(const uint8_t* data, std::size_t length) {
     return backlog_.write(data, length);
 }
 
+bool AudioIo::startMonitoring() {
+    if (monitoring_ || listening_) return true;
+    if (speaking_) return false;
+    if (M5.Speaker.isEnabled()) M5.Speaker.end();
+    auto mic_cfg = M5.Mic.config();
+    mic_cfg.magnification = mic_gain_;
+    M5.Mic.config(mic_cfg);
+    if (!M5.Mic.begin()) return false;
+    capture_slot_ = 0;
+    monitoring_ = true;
+    M5.Mic.record(capture_[0], roboface::kCaptureFrameSamples, roboface::kCaptureSampleRate);
+    M5.Mic.record(capture_[1], roboface::kCaptureFrameSamples, roboface::kCaptureSampleRate);
+    return true;
+}
+
 bool AudioIo::startListening(FrameSink sink) {
     if (listening_) return true;
+    // Already monitoring means the recorder is running and armed: take the window over it rather
+    // than restarting the codec underneath a live capture.
+    if (monitoring_) {
+        sink_ = sink;
+        tally_.reset();
+        peak_seen_ = 0.0f;
+        listening_ = true;
+        return true;
+    }
     // One bus, two peripherals -- the mirror of `startSpeaking`. Anything the speaker still holds
     // is abandoned: a person pressing to talk has superseded whatever was being said to them.
     if (speaking_) abort();
@@ -97,7 +121,7 @@ void AudioIo::stopListening() {
     listening_ = false;
     sink_ = nullptr;
     level_ = 0.0f;  // the meter must not hold the last word's level after the window closes
-    if (M5.Mic.isEnabled()) M5.Mic.end();
+    if (!monitoring_ && M5.Mic.isEnabled()) M5.Mic.end();
 }
 
 void AudioIo::playBacklog() {
@@ -110,6 +134,7 @@ void AudioIo::playBacklog() {
     // configured for capture on this board, and `Speaker.begin()` then reports success while
     // producing nothing -- capture reads a healthy 72% peak and the speaker is silent, which is
     // the most misleading pair of symptoms in the whole subsystem.
+    monitoring_ = false;
     if (M5.Mic.isEnabled()) M5.Mic.end();
     M5.Speaker.end();
     delay(20);
@@ -120,7 +145,7 @@ void AudioIo::playBacklog() {
 }
 
 void AudioIo::tick(uint32_t now_ms) {
-    if (listening_) {
+    if (listening_ || monitoring_) {
         // A frame is ready when the recorder has stopped filling it. Sending happens here, in the
         // loop, rather than in an interrupt: the socket write can block, and blocking inside the
         // I2S callback would drop the samples arriving behind it.
@@ -142,7 +167,7 @@ void AudioIo::tick(uint32_t now_ms) {
             if (peak > peak_seen_) peak_seen_ = peak;
             level_ = roboface::decayToward(level_, peak);
 
-            if (sink_ != nullptr && sink_(frame, roboface::kCaptureFrameBytes)) {
+            if (listening_ && sink_ != nullptr && sink_(frame, roboface::kCaptureFrameBytes)) {
                 tally_.recordFrame(roboface::kCaptureFrameBytes);
             }
         }
