@@ -27,9 +27,6 @@
 #include <cstdint>
 
 #include "pure/capture.h"
-#include "pure/half_duplex.h"
-#include "pure/pre_roll.h"
-#include "pure/vad.h"
 #include "pure/level.h"
 #include "pure/pcm_ring.h"
 
@@ -68,10 +65,6 @@ class AudioIo {
     //: pause for the network and a gap is better than a stall that loses the rest of the sentence.
     using FrameSink = bool (*)(const uint8_t* data, std::size_t length);
 
-    //: Called for **every** captured frame, whether or not a window is open. This is what lets the
-    //: VAD hear the room before anyone has asked it to listen.
-    using FrameObserver = void (*)(const int16_t* samples, std::size_t count, uint32_t frame_ms);
-
     // Allocates the PSRAM backlog. Returns false if it could not -- a renderer that failed to
     // allocate must say so rather than presenting a mute device as a working one.
     bool begin(uint8_t volume, uint8_t mic_gain = 16);
@@ -92,26 +85,6 @@ class AudioIo {
     // never both hold it, which is why both paths go through this one class.
 
     // Take the bus for capture and begin. Idempotent.
-    //: Capture with no window open: frames reach the observer and the pre-roll ring, and go
-    //: nowhere else. Active listening needs the microphone running *before* there is anything to
-    //: send, because the decision to send is made from what it hears.
-    bool startMonitoring(FrameObserver observer);
-    void stopMonitoring();
-    bool isMonitoring() const { return monitoring_; }
-
-    //: True once, on the loop where listening resumed after playback -- the caller's cue to clear
-    //: its endpointer. Consumed by reading it, so the reset happens once and not on every loop.
-    bool takeMonitorResumed() {
-        const bool resumed = monitor_resumed_;
-        monitor_resumed_ = false;
-        return resumed;
-    }
-
-    //: Send everything the pre-roll ring holds through `sink`, oldest first. Returns the frames
-    //: sent. Detection takes a few frames to be sure, and those frames are already speech -- so
-    //: without this the utterance reaches the recogniser with its first syllable missing.
-    std::size_t flushPreRoll(FrameSink sink);
-
     bool startListening(FrameSink sink);
 
     // Stop capturing and release the bus. Safe when not listening.
@@ -166,14 +139,6 @@ class AudioIo {
   private:
     void releaseBus();
 
-    //: Claim the shared bus for input and arm both queue slots. Shared by monitoring and by a
-    //: window opened without monitoring, so the two cannot drift apart.
-    bool beginCapture();
-
-    //: Read one completed frame, if the recorder has finished one. The ordering inside is load
-    //: bearing and was arrived at the hard way -- do not reorder it.
-    void drainCapturedFrame();
-
     roboface::PcmRing backlog_;
 
     //: Two capture frames, alternating: the microphone records into one while the other is being
@@ -182,22 +147,7 @@ class AudioIo {
     int16_t capture_[2][roboface::kCaptureFrameSamples] = {};
     std::size_t capture_slot_ = 0;
     bool listening_ = false;
-    bool monitoring_ = false;
-    //: Whether the application wants the room monitored at all, independent of whether the bus is
-    //: momentarily busy. Playback suspends `monitoring_`; this is what says to put it back.
-    roboface::HalfDuplexGuard duplex_;
-    bool monitor_resumed_ = false;
     FrameSink sink_ = nullptr;
-    FrameObserver observer_ = nullptr;
-
-    //: The pre-roll ring, sized at compile time for the longest pre-roll the settings may ask for.
-    //: 15 frames of 640 bytes is ~9.6 KB of internal RAM -- worth stating, because internal RAM is
-    //: also where the I2S DMA buffers come from and there is not much of it left (see `/mem`).
-    static constexpr std::size_t kPreRollFrames = roboface::preRollFrames(roboface::kVadPreRollMs);
-    int16_t pre_roll_[kPreRollFrames][roboface::kCaptureFrameSamples] = {};
-    //: Where each frame goes and what order they come back out -- pure, and host-tested, because
-    //: the failure it prevents is replaying audio in the wrong order rather than losing it.
-    roboface::PreRollRing pre_roll_slots_{kPreRollFrames, kPreRollFrames};
     roboface::CaptureTally tally_;
     float level_ = 0.0f;
     float peak_seen_ = 0.0f;
