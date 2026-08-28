@@ -33,7 +33,10 @@ namespace roboface {
 //: The peak level, 0..1, above which a frame counts as loud. The microphone runs at a fixed
 //: magnification and speech at desk distance sits well under half scale, so this is deliberately
 //: low; `minimum speech` and the zero-crossing gate are what reject the noise it lets through.
-inline constexpr float kVadSensitivity = 0.06f;
+//: Measured on the board: at 6% the room's own noise floor keeps the endpointer permanently in
+//: speech, so the end-pause never elapses and an utterance never finishes. 25% is above the room
+//: and below ordinary speech at desk distance.
+inline constexpr float kVadSensitivity = 0.25f;
 
 //: Zero crossings per frame below which a loud frame is treated as rumble rather than voice. At
 //: 16 kHz a 20 ms frame is 320 samples; voiced speech crosses zero on the order of tens of times,

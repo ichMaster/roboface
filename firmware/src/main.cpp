@@ -93,6 +93,43 @@ uint32_t loopback_until_ms = 0;
 roboface::Endpointer endpointer;
 uint32_t vad_starts = 0;
 uint32_t vad_ends = 0;
+//: What the endpointer decided, acted on by the loop rather than inside the audio path -- opening
+//: a window from there would re-enter `audio.tick` while it is draining a frame.
+roboface::VadEvent pending_vad = roboface::VadEvent::kNone;
+//: The loudest frame and its zero-crossing count since the last status line. The endpointer's two
+//: thresholds are exactly these two numbers, so printing them turns picking a threshold from
+//: guesswork into reading the room.
+float peak_recent = 0.0f;
+std::size_t crossings_recent = 0;
+
+//: Calibration: per-frame peak (as a percent) and zero-crossing count, collected over a fixed
+//: window so the two thresholds the endpointer uses can be *read off the room* instead of guessed.
+//: One byte and two per frame -- 750 frames is 15 s and costs 2.2 KB, which internal RAM can spare.
+constexpr std::size_t kCalFrames = 750;
+uint8_t cal_peak[kCalFrames] = {};
+uint16_t cal_zc[kCalFrames] = {};
+std::size_t cal_count = 0;
+uint32_t cal_until_ms = 0;
+const char* cal_label = "";
+
+//: The `pct`-th percentile of a sorted copy. Percentiles rather than a mean: what matters for a
+//: threshold is where the bulk of the frames sit, and one door slam should not move it.
+uint8_t percentileOf(uint8_t* values, std::size_t count, int pct) {
+    if (count == 0) return 0;
+    for (std::size_t i = 1; i < count; ++i) {  // insertion sort: count is small and this is a test
+        const uint8_t key = values[i];
+        std::size_t j = i;
+        while (j > 0 && values[j - 1] > key) { values[j] = values[j - 1]; --j; }
+        values[j] = key;
+    }
+    std::size_t index = static_cast<std::size_t>(count * pct / 100);
+    if (index >= count) index = count - 1;
+    return values[index];
+}
+//: When the open window opened, so one that never ends can be ended. The server's 30 s size cap
+//: would otherwise end it as a protocol error and leave the device sitting in `error`.
+uint32_t listen_opened_ms = 0;
+constexpr uint32_t kMaxWindowMs = 15000;
 
 roboface::ConsoleMode console;
 roboface::Transcript transcript;
@@ -164,9 +201,25 @@ bool storeCapturedFrame(const uint8_t* data, std::size_t length) {
 }
 
 void onCapturedFrame(const int16_t* samples, std::size_t count, uint32_t frame_ms) {
+    const float peak = roboface::peakLevel(samples, count);
+    if (cal_until_ms != 0 && cal_count < kCalFrames) {
+        cal_peak[cal_count] = static_cast<uint8_t>(peak * 100.0f);
+        cal_zc[cal_count] = static_cast<uint16_t>(roboface::zeroCrossings(samples, count));
+        ++cal_count;
+    }
+    if (peak > peak_recent) {
+        peak_recent = peak;
+        crossings_recent = roboface::zeroCrossings(samples, count);
+    }
     switch (endpointer.feed(samples, count, frame_ms)) {
-        case roboface::VadEvent::kSpeechStarted: ++vad_starts; break;
-        case roboface::VadEvent::kSpeechEnded: ++vad_ends; break;
+        case roboface::VadEvent::kSpeechStarted:
+            ++vad_starts;
+            pending_vad = roboface::VadEvent::kSpeechStarted;
+            break;
+        case roboface::VadEvent::kSpeechEnded:
+            ++vad_ends;
+            pending_vad = roboface::VadEvent::kSpeechEnded;
+            break;
         default: break;
     }
 }
@@ -174,43 +227,48 @@ void onCapturedFrame(const int16_t* samples, std::size_t count, uint32_t frame_m
 // Open the listening window: the frame first, then the microphone. In that order, because a device
 // that captured before announcing would have audio with no window to put it in, and the server
 // would rightly call it a protocol violation.
-void beginListening() {
-    if (audio.isListening()) return;
+bool beginListening() {
+    if (audio.isListening()) return true;
     if (!ws.isConnected()) {
         Serial.println("[listen] no connection — not listening");
-        return;
+        return false;
     }
     if (!roboface::canStartTurn(state)) {
         Serial.printf("[busy] not idle (%s) — not listening\n", roboface::toString(state));
-        return;
+        return false;
     }
     if (!ws.sendListenStart()) {
         Serial.println("[listen] could not open the window");
-        return;
+        return false;
     }
     if (!audio.startListening(&sendCapturedFrame)) {
         // The window is open on the server and the microphone did not start. Close it rather than
         // leaving the server waiting for audio that will never arrive.
         ws.sendListenStop();
         Serial.println("[listen] microphone did not start");
-        return;
+        return false;
     }
+    listen_opened_ms = millis();
     apply(roboface::DeviceEvent::kListenStarted);
+    return true;
 }
 
 // Close it: the microphone first, then the frame, so the last captured samples are on the wire
 // before the server is told the utterance is over.
-void endListening() {
+void endListening(const char* why = "?") {
     if (!audio.isListening()) return;
     audio.stopListening();
     ws.sendListenStop();
-    Serial.printf("[listen] sent %u frames (%u ms) · vad starts=%u ends=%u\n",
+    Serial.printf("[listen] closed by %s · sent %u frames (%u ms) · vad starts=%u ends=%u\n", why,
                   static_cast<unsigned>(audio.tally().frames()),
                   static_cast<unsigned>(audio.tally().durationMs()),
                   static_cast<unsigned>(vad_starts), static_cast<unsigned>(vad_ends));
     // Leaves the device *thinking*, which is now correct as written: recognition follows, then a
     // reply, and the terminal `reply` frame ends the turn. v1.2 added a kTurnEnded here because it
     // had neither; v1.3 removes it, as that comment said it would.
+    listen_opened_ms = 0;
+    endpointer.reset();
+    pending_vad = roboface::VadEvent::kNone;
     apply(roboface::DeviceEvent::kListenStopped);
 }
 
@@ -605,6 +663,19 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
         return;
     }
 
+    if (line.text.rfind("/cal", 0) == 0) {
+        unsigned seconds = 5;
+        const std::size_t space = line.text.find(' ');
+        if (space != std::string::npos) {
+            const int parsed = std::atoi(line.text.c_str() + space + 1);
+            if (parsed > 0 && parsed <= 15) seconds = static_cast<unsigned>(parsed);
+        }
+        cal_count = 0;
+        cal_until_ms = millis() + seconds * 1000;
+        Serial.printf("[cal] вимірюю %u с...\n", seconds);
+        return;
+    }
+
     if (line.text == "/faces") {
         startSelfTest();
         return;
@@ -753,6 +824,26 @@ void loop() {
     //
     // `M5.update()` has already refreshed the panel this loop. `getDetail().isPressed()` is the
     // level; `PushToTalk` turns it into the edges that open and close exactly one window.
+    // A voice and a finger go through the same beginListening/endListening, so the two triggers
+    // cannot drift apart.
+    switch (pending_vad) {
+        case roboface::VadEvent::kSpeechStarted:
+            pending_vad = roboface::VadEvent::kNone;
+            listen_until_ms = 0;
+            // **A refused window is not a window.** Without this the endpointer stays convinced
+            // speech is still going -- it never fires again, and the device is deaf for the rest
+            // of the session. Measured: one refusal at boot, before the socket was up, was enough.
+            if (!beginListening()) endpointer.reset();
+            break;
+        case roboface::VadEvent::kSpeechEnded:
+            pending_vad = roboface::VadEvent::kNone;
+            endListening("vad-end");
+            break;
+        default:
+            pending_vad = roboface::VadEvent::kNone;
+            break;
+    }
+
     switch (ptt.update(M5.Touch.getDetail().isPressed(), now_ms)) {
         case roboface::PttEvent::kStarted:
             // A timed `/listen` window and a finger must not both own the microphone.
@@ -760,7 +851,7 @@ void loop() {
             beginListening();
             break;
         case roboface::PttEvent::kStopped:
-            endListening();
+            endListening("ptt");
             break;
         case roboface::PttEvent::kTapped:
             // Deliberately nothing on the wire. DEVICE_UI gives press-and-hold to PTT; a tap is
@@ -788,9 +879,36 @@ void loop() {
         last_meter_ms = now_ms;
         needs_push = true;
     }
+    if (audio.isListening() && listen_opened_ms != 0 &&
+        now_ms - listen_opened_ms >= kMaxWindowMs) {
+        listen_until_ms = 0;
+        endListening("cap");
+    }
+
+    if (cal_until_ms != 0 && now_ms >= cal_until_ms) {
+        cal_until_ms = 0;
+        uint16_t zc_median = 0;
+        if (cal_count > 0) {
+            // The crossing count of the frames that were actually loud -- a quiet frame's crossings
+            // say nothing about whether speech crosses zero often.
+            std::size_t loud = 0;
+            for (std::size_t i = 0; i < cal_count; ++i) if (cal_zc[i] > zc_median) zc_median = cal_zc[i];
+            (void)loud;
+        }
+        const uint8_t p10 = percentileOf(cal_peak, cal_count, 10);
+        const uint8_t p50 = percentileOf(cal_peak, cal_count, 50);
+        const uint8_t p90 = percentileOf(cal_peak, cal_count, 90);
+        const uint8_t p99 = percentileOf(cal_peak, cal_count, 99);
+        Serial.printf("[cal] кадрів=%u · peak p10=%u%% p50=%u%% p90=%u%% max=%u%% · zc max=%u\n",
+                      static_cast<unsigned>(cal_count), static_cast<unsigned>(p10),
+                      static_cast<unsigned>(p50), static_cast<unsigned>(p90),
+                      static_cast<unsigned>(p99), static_cast<unsigned>(zc_median));
+        return;
+    }
+
     if (listen_until_ms != 0 && now_ms >= listen_until_ms) {
         listen_until_ms = 0;
-        endListening();
+        endListening("timer");
     }
     if (loopback_until_ms != 0 && now_ms >= loopback_until_ms) {
         loopback_until_ms = 0;
@@ -814,15 +932,20 @@ void loop() {
     if (now_ms - last_status_ms >= kStatusIntervalMs) {
         last_status_ms = now_ms;
         Serial.printf(
-            "[status] %s · link %s %s · ws %s · batt %d%%%s · audio %s buf=%u q=%u ref=%u drop=%u · up %lus\n",
+            "[status] %s · link %s %s · ws %s · batt %d%%%s · mon=%d vad s=%lu e=%lu peak=%d%% zc=%u · audio %s buf=%u q=%u ref=%u drop=%u · up %lus\n",
             roboface::toString(state), net.isUp() ? "up" : "down", net.ipAddress(),
             ws.isConnected() ? "connected" : "disconnected", battery_percent,
             battery_charging ? " (charging)" : "",
+            static_cast<int>(audio.isMonitoring()),
+            static_cast<unsigned long>(vad_starts), static_cast<unsigned long>(vad_ends),
+            static_cast<int>(peak_recent * 100.0f), static_cast<unsigned>(crossings_recent),
             audio.isSpeaking() ? "on" : "off", static_cast<unsigned>(audio.buffered()),
             static_cast<unsigned>(audio.bytesQueued()),
             static_cast<unsigned>(audio.chunksRefused()),
             static_cast<unsigned>(audio.bytesDropped()),
             static_cast<unsigned long>(now_ms / 1000));
+        peak_recent = 0.0f;
+        crossings_recent = 0;
     }
 
     delay(5);
