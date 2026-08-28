@@ -50,7 +50,7 @@ inline constexpr uint32_t kVadEndPauseMs = 700;
 
 //: How much audio before the trigger is kept, so the first syllable is never lost. Detection needs
 //: a few frames to be sure, and those frames are already speech.
-inline constexpr uint32_t kVadPreRollMs = 300;
+inline constexpr uint32_t kVadPreRollMs = 200;
 
 //: Quiet frames tolerated inside speech without restarting the end-pause count. A plosive closes
 //: the vocal tract completely -- the gap in "a **p**ple" is real silence, and an endpointer without

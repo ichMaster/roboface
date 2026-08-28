@@ -107,10 +107,9 @@ class AudioIo {
         return resumed;
     }
 
-    //: Send everything the pre-roll ring holds through `sink`, oldest first. Returns the frames
-    //: sent. Detection takes a few frames to be sure, and those frames are already speech -- so
-    //: without this the utterance reaches the recogniser with its first syllable missing.
-    std::size_t flushPreRoll(FrameSink sink);
+    //: Frames captured but not yet sent. With no window open this is the pre-roll -- the audio
+    //: that convinced the endpointer, which the utterance would otherwise start without.
+    std::size_t pendingPreRoll() const;
 
     bool startListening(FrameSink sink);
 
@@ -130,6 +129,12 @@ class AudioIo {
 
     bool isListening() const { return listening_; }
     const roboface::CaptureTally& tally() const { return tally_; }
+    std::size_t framesDrained() const { return drained_; }
+    std::size_t framesRefused() const { return refused_; }
+    //: What the driver says about itself, for the one question a frame count cannot answer: is the
+    //: recorder running at all, or is its queue simply never completing?
+    int micQueueDepth() const;
+    bool micEnabled() const;
 
     //: 0..1, from the frame just captured. The meter reads this rather than the raw samples: the
     //: envelope is arithmetic and belongs in `pure/`, and the drawing should not be handed a
@@ -174,6 +179,20 @@ class AudioIo {
     //: bearing and was arrived at the hard way -- do not reorder it.
     void drainCapturedFrame();
 
+    //: Hand queued frames to the sink, oldest first and a bounded number per tick.
+    void sendQueuedFrames();
+
+    //: Restart the recorder if it has produced nothing for far longer than a frame takes.
+    void restartCaptureIfStalled(uint32_t now_ms);
+
+    //: How long without a completed frame means the recorder is not running. Frames are 20 ms and
+    //: the queue holds two, so anything past a few hundred milliseconds is a stall, not lateness.
+    static constexpr uint32_t kCaptureStallMs = 500;
+
+    //: How many queued frames one tick may send. Two outruns the recorder's one per 20 ms, so a
+    //: pre-roll backlog drains steadily, without ever bursting at the socket.
+    static constexpr std::size_t kFramesPerTick = 2;
+
     roboface::PcmRing backlog_;
 
     //: Two capture frames, alternating: the microphone records into one while the other is being
@@ -187,6 +206,19 @@ class AudioIo {
     //: momentarily busy. Playback suspends `monitoring_`; this is what says to put it back.
     roboface::HalfDuplexGuard duplex_;
     bool monitor_resumed_ = false;
+
+    //: Frames drained from the recorder, and frames the sink refused. The tally counts what was
+    //: *accepted*, so on its own it cannot tell "the microphone stopped producing" from "the link
+    //: stopped taking" -- two very different faults that look identical from a frame count.
+    //: When a frame last completed. The recorder can be *started* successfully and still never
+    //: produce anything -- `M5.Mic.begin()` returns true when the I2S driver failed to allocate
+    //: its DMA buffers, which on this board happens whenever internal RAM is tight. Before v1.4
+    //: every window began the microphone afresh, so a bad start lasted one utterance; monitoring
+    //: begins it once at boot, so a bad start lasts until the device is rebooted.
+    uint32_t last_frame_ms_ = 0;
+
+    std::size_t drained_ = 0;
+    std::size_t refused_ = 0;
     FrameSink sink_ = nullptr;
     FrameObserver observer_ = nullptr;
 

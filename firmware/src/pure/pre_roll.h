@@ -46,6 +46,11 @@ class PreRollRing {
         return slot;
     }
 
+    //: Forget the oldest frame -- it has been sent, and the ring is now also the send queue.
+    void dropOldest() {
+        if (held_ > 0) --held_;
+    }
+
     //: The slot holding the `index`-th oldest frame, for `index` in `[0, held())`. Oldest first,
     //: because that is the order the audio happened in and the only order it can be replayed in.
     std::size_t readSlot(std::size_t index) const {

@@ -71,6 +71,10 @@ uint32_t listen_until_ms = 0;
 //: When the open window opened, for the runaway cap. Zero means none is open.
 uint32_t listen_opened_ms = 0;
 
+//: Loops since the last status line -- the number that says whether the main loop is running at
+//: the rate everything else assumes.
+uint32_t loop_count = 0;
+
 //: Interims arrive several times a second and serial is slow. Four a second is enough to watch
 //: recognition working and cheap enough not to starve capture.
 constexpr uint32_t kPartialLogIntervalMs = 250;
@@ -214,11 +218,16 @@ bool beginListening() {
         Serial.println("[listen] microphone did not start");
         return false;
     }
-    // The audio that convinced the endpointer this was speech, sent before anything captured
-    // afterwards. Detection needs a few frames to be sure and those frames are already words: with
-    // no pre-roll the recogniser receives every utterance with its first syllable missing.
-    const std::size_t pre_rolled = audio.flushPreRoll(&sendCapturedFrame);
-    if (pre_rolled > 0) Serial.printf("[listen] pre-roll %u frames\n",
+    // The audio that convinced the endpointer this was speech is already queued, and goes out
+    // ahead of everything captured afterwards. Detection needs a few frames to be sure and those
+    // frames are already words: without them the recogniser receives every utterance with its
+    // first syllable missing.
+    //
+    // Queued, not flushed here. Sending them in one burst starved the recorder -- its two buffers
+    // are 40 ms and a socket write is milliseconds -- and capture stopped for the rest of the
+    // window, which read as a dead link rather than a stalled microphone.
+    const std::size_t pre_rolled = audio.pendingPreRoll();
+    if (pre_rolled > 0) Serial.printf("[listen] pre-roll %u frames queued\n",
                                       static_cast<unsigned>(pre_rolled));
     listen_opened_ms = millis();
     apply(roboface::DeviceEvent::kListenStarted);
@@ -231,9 +240,14 @@ void endListening() {
     if (!audio.isListening()) return;
     audio.stopListening();
     ws.sendListenStop();
-    Serial.printf("[listen] sent %u frames (%u ms)\n",
+    Serial.printf("[listen] sent %u frames (%u ms) · drained %u · refused %u\n",
                   static_cast<unsigned>(audio.tally().frames()),
-                  static_cast<unsigned>(audio.tally().durationMs()));
+                  static_cast<unsigned>(audio.tally().durationMs()),
+                  static_cast<unsigned>(audio.framesDrained()),
+                  static_cast<unsigned>(audio.framesRefused()));
+    Serial.printf("[listen] mic enabled=%d queue=%d speaking=%d monitoring=%d\n",
+                  static_cast<int>(audio.micEnabled()), audio.micQueueDepth(),
+                  static_cast<int>(audio.isSpeaking()), static_cast<int>(audio.isMonitoring()));
     // Leaves the device *thinking*, which is now correct as written: recognition follows, then a
     // reply, and the terminal `reply` frame ends the turn. v1.2 added a kTurnEnded here because it
     // had neither; v1.3 removes it, as that comment said it would.
@@ -828,6 +842,7 @@ void setup() {
 }
 
 void loop() {
+    ++loop_count;
     M5.update();
     const uint32_t now_ms = millis();
 
@@ -984,19 +999,23 @@ void loop() {
     if (now_ms - last_status_ms >= kStatusIntervalMs) {
         last_status_ms = now_ms;
         Serial.printf(
-            "[status] %s · link %s %s · ws %s · batt %d%%%s · vad %s · audio %s buf=%u q=%u "
-            "ref=%u drop=%u · up %lus\n",
+            "[status] %s · link %s %s · ws %s · batt %d%%%s · vad %s · mic q=%d drained=%u "
+            "queued=%u · audio %s buf=%u q=%u ref=%u drop=%u · up %lus\n",
             roboface::toString(state), net.isUp() ? "up" : "down", net.ipAddress(),
             ws.isConnected() ? "connected" : "disconnected", battery_percent,
             battery_charging ? " (charging)" : "",
             // Which trigger is live is never a guess: a device that has quietly fallen back to
             // PTT looks exactly like one that is listening and not hearing you.
             !active_listening ? "off" : (audio.isMonitoring() ? "listening" : "suspended"),
+            audio.micQueueDepth(), static_cast<unsigned>(audio.framesDrained()),
+            static_cast<unsigned>(audio.pendingPreRoll()),
             audio.isSpeaking() ? "on" : "off", static_cast<unsigned>(audio.buffered()),
             static_cast<unsigned>(audio.bytesQueued()),
             static_cast<unsigned>(audio.chunksRefused()),
             static_cast<unsigned>(audio.bytesDropped()),
+            static_cast<unsigned long>(loop_count),
             static_cast<unsigned long>(now_ms / 1000));
+        loop_count = 0;
     }
 
     delay(5);
