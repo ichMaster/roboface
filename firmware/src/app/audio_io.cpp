@@ -72,6 +72,26 @@ std::size_t AudioIo::write(const uint8_t* data, std::size_t length) {
     return backlog_.write(data, length);
 }
 
+std::size_t AudioIo::flushPreRoll() {
+    if (sink_ == nullptr) return 0;
+    const std::size_t held = pre_roll_slots_.held();
+    std::size_t sent = 0;
+    for (std::size_t i = 0; i < held; ++i) {  // oldest first -- the order the audio happened in
+        const std::size_t slot = pre_roll_slots_.readSlot(i);
+        if (slot >= kPreRollFrames) break;
+        if (!sink_(reinterpret_cast<const uint8_t*>(pre_roll_[slot]),
+                   roboface::kCaptureFrameBytes)) {
+            break;
+        }
+        tally_.recordFrame(roboface::kCaptureFrameBytes);
+        ++sent;
+    }
+    // Consumed either way: these frames belong to this utterance, and replaying them into a later
+    // one would put the same audio on the wire twice.
+    pre_roll_slots_.clear();
+    return sent;
+}
+
 bool AudioIo::startMonitoring(FrameObserver observer) {
     observer_ = observer;
     monitor_wanted_ = true;
@@ -195,8 +215,18 @@ void AudioIo::tick(uint32_t now_ms) {
                           roboface::kCaptureFrameMs);
             }
 
-            if (listening_ && sink_ != nullptr && sink_(frame, roboface::kCaptureFrameBytes)) {
-                tally_.recordFrame(roboface::kCaptureFrameBytes);
+            if (listening_) {
+                if (sink_ != nullptr && sink_(frame, roboface::kCaptureFrameBytes)) {
+                    tally_.recordFrame(roboface::kCaptureFrameBytes);
+                }
+            } else {
+                // No window: keep the frame in case one opens in a moment.
+                const std::size_t slot = pre_roll_slots_.writeSlot();
+                if (slot < kPreRollFrames) {
+                    for (std::size_t i = 0; i < roboface::kCaptureFrameSamples; ++i) {
+                        pre_roll_[slot][i] = capture_[completed][i];
+                    }
+                }
             }
         }
     }

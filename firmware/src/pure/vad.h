@@ -33,26 +33,28 @@ namespace roboface {
 //: The peak level, 0..1, above which a frame counts as loud. The microphone runs at a fixed
 //: magnification and speech at desk distance sits well under half scale, so this is deliberately
 //: low; `minimum speech` and the zero-crossing gate are what reject the noise it lets through.
-//: **Measured**, not chosen. `/cal 10` in a quiet room and again over ten seconds of ordinary
-//: speech at desk distance:
+//: **Measured**, not chosen. `/cal 10` in a quiet room, over ordinary speech, and over deliberately
+//: quiet speech at desk distance -- with `MIC_GAIN` at 20, which is the gain that stopped the
+//: signal clipping:
 //:
-//:            p50   p90   max
-//:   silence   9%   13%    23%
-//:   speech    9%   23%    99%
+//:                 p50   p90   max
+//:   silence        3%    3%    4%
+//:   speech         9%   34%   62%
+//:   quiet speech   5%   16%   43%
 //:
-//: The threshold sits between the two p90s. Note p50 is identical: half the frames of a person
-//: speaking *are* room tone, because speech has gaps -- which is why the duration rules below
-//: matter more than this number does.
-inline constexpr float kVadSensitivity = 0.17f;
+//: 7% clears every silent frame ever measured (max 4%) and sits well inside the working range of
+//: even quiet speech. The earlier value of 17% was derived from a *clipping* microphone, where the
+//: same speech measured p50 84% and p90 99% -- a square wave, which every level meter reports as
+//: an excellent signal and which recognition returns nothing for.
+inline constexpr float kVadSensitivity = 0.07f;
 
 //: Zero crossings per frame below which a loud frame is treated as rumble rather than voice.
 //:
-//: **Measured, and it discriminates nothing in this room**: silence reached 130 crossings, speech
-//: 114 -- the noise floor here is broadband, so it crosses zero at least as often as a voice does.
-//: Kept low deliberately: it still rejects the sub-100 Hz rumble it was added for (that case
-//: measured a handful of crossings), and it must not reject anything else, because on this
-//: evidence it cannot tell speech from a quiet room.
-inline constexpr std::size_t kVadMinCrossings = 6;
+//: Kept low and used only as a rumble guard, not as a discriminator. Measured, silence reached 27
+//: crossings and speech 149 -- so it *could* separate them here, but it is the level that does the
+//: work, and a crossing count tuned to one room is a threshold that fails quietly in another. What
+//: this still rejects is the sub-100 Hz thump it was added for, which measured a handful.
+inline constexpr std::size_t kVadMinCrossings = 10;
 
 //: How long speech must last before the utterance is worth sending. Below this it is a cough, a
 //: chair, a door -- discarded without ever becoming a turn.

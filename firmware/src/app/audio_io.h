@@ -27,6 +27,7 @@
 #include <cstdint>
 
 #include "pure/capture.h"
+#include "pure/pre_roll.h"
 #include "pure/level.h"
 #include "pure/pcm_ring.h"
 
@@ -93,6 +94,11 @@ class AudioIo {
     using FrameObserver = void (*)(const int16_t* samples, std::size_t count, uint32_t frame_ms);
     bool startMonitoring(FrameObserver observer = nullptr);
     bool isMonitoring() const { return monitoring_; }
+
+    //: Send everything captured before the window opened, oldest first. Detection needs a few
+    //: frames to be sure and those frames are already words: without this every utterance reaches
+    //: the recogniser with its first syllable missing.
+    std::size_t flushPreRoll();
 
     //: Consumed by reading: the endpointer is cleared once when hearing resumes, not every tick.
     bool takeMonitorResumed() {
@@ -168,6 +174,13 @@ class AudioIo {
     //: Whether the room should be monitored at all, independent of whether the bus is momentarily
     //: busy. Playback clears `monitoring_`; this is what says to put it back afterwards.
     bool monitor_wanted_ = false;
+
+    //: The last few frames captured with no window open. 10 frames is 200 ms -- enough for the
+    //: syllable detection spends confirming itself, and 6.4 KB of the internal RAM the I2S DMA
+    //: buffers also come out of, which is why it is not larger.
+    static constexpr std::size_t kPreRollFrames = 10;
+    int16_t pre_roll_[kPreRollFrames][roboface::kCaptureFrameSamples] = {};
+    roboface::PreRollRing pre_roll_slots_{kPreRollFrames, kPreRollFrames};
     //: True once, on the tick where listening resumed -- the caller's cue to clear its endpointer.
     bool monitor_resumed_ = false;
     FrameSink sink_ = nullptr;

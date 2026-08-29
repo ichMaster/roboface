@@ -37,11 +37,16 @@
 // at desk distance and adds distortion that sounds like a bad voice rather than a loud one.
 #define SPEAKER_VOLUME 120
 
-// Microphone input gain (M5Unified's `magnification`). The library default of 16 leaves the Core
-// S3's ES7210 reading about 1% of full scale for normal speech at desk distance, which is far too
-// quiet for recognition. Raise until speech reads roughly 30-60% on `/loopback`'s peak figure --
-// high enough to hear, low enough not to clip.
-#define MIC_GAIN 64
+// Microphone input gain (M5Unified's `magnification`). Measured with `/cal`, not guessed: the
+// number to aim at is a median frame peak around 30% while speaking, which leaves room for the
+// loud syllables without flattening them.
+//
+// 64 was set while the I2S bus was misconfigured and the microphone was barely hearing anything.
+// With that fixed the same value clips hard -- `/cal` measured p50 at 84% and p90 at 99% for
+// ordinary speech, which is a square wave, not a voice, and recognition returns nothing for it.
+// The level looks *excellent* in every meter while this happens, which is what makes it worth
+// stating here.
+#define MIC_GAIN 20
 
 // --- Active listening (v1.4) -------------------------------------------------------------
 // Hands-free: the microphone is always open and a VAD decides when to open the uplink. Set to 0

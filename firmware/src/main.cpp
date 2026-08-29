@@ -255,6 +255,10 @@ bool beginListening() {
         Serial.println("[listen] microphone did not start");
         return false;
     }
+    const std::size_t pre_rolled = audio.flushPreRoll();
+    if (pre_rolled > 0) {
+        Serial.printf("[listen] pre-roll %u кадрів\n", static_cast<unsigned>(pre_rolled));
+    }
     listen_opened_ms = millis();
     apply(roboface::DeviceEvent::kListenStarted);
     return true;
