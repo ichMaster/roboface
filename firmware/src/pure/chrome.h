@@ -61,11 +61,20 @@ struct ChromeFacts {
     // branch per version.
     bool level_meter_wanted = false;
     bool carousel_wanted = false;
+    //: The microphone is off -- active listening is switched off and no window can open.
+    //:
+    //: One of the three things DEVICE_UI keeps permanently visible, with the fault and the live
+    //: camera. The rule there is "nothing permanent but a problem", and a device that cannot hear
+    //: you *is* a problem when you did not mean it: without this the only way to discover it is to
+    //: speak and get no answer, which is indistinguishable from every other failure in this file.
+    bool mic_muted = false;
 };
 
 struct ChromeVisibility {
     bool link = false;
     bool battery = false;
+    //: Never fades. See `ChromeFacts::mic_muted`.
+    bool mic_muted = false;
     BandTenant band = BandTenant::kNothing;
 };
 
@@ -111,6 +120,11 @@ class Chrome {
             shown.battery = false;
         }
 
+        // The microphone: shown while it is off, and **no timer is consulted**. That omission is
+        // the rule, not an oversight -- a device that cannot hear you must not quietly stop saying
+        // so after three seconds.
+        shown.mic_muted = facts_.mic_muted;
+
         shown.band = band();
         return shown;
     }
@@ -134,6 +148,7 @@ class Chrome {
     LinkState link() const { return facts_.link; }
     int batteryPercent() const { return facts_.battery_percent; }
     bool charging() const { return facts_.charging; }
+    bool micMuted() const { return facts_.mic_muted; }
 
     // How long the current indicator state has been settled -- the drawing code uses this to place
     // itself within the 120 ms in / 400 ms out fade rather than tracking its own clock.

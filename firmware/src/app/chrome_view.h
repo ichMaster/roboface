@@ -27,6 +27,7 @@ class ChromeView {
 
   private:
     void drawLink(M5Canvas& canvas, roboface::LinkState state, uint8_t alpha);
+    void drawMuted(M5Canvas& canvas);
     void drawBattery(M5Canvas& canvas, int percent, bool charging, uint8_t alpha);
     void drawFaultLine(M5Canvas& canvas, roboface::ErrorCode code);
     void drawLevelMeter(M5Canvas& canvas, float level);

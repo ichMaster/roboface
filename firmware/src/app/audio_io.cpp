@@ -120,6 +120,15 @@ bool AudioIo::startMonitoring(FrameObserver observer) {
     return true;
 }
 
+void AudioIo::stopMonitoring() {
+    monitor_wanted_ = false;
+    monitoring_ = false;
+    pre_roll_slots_.clear();
+    // Released only if nothing is listening through it: `stopListening` owns that case, and
+    // tearing the codec down under a live capture is churn this subsystem has been burnt by.
+    if (!listening_ && M5.Mic.isEnabled()) M5.Mic.end();
+}
+
 bool AudioIo::startListening(FrameSink sink) {
     if (listening_) return true;
     // Already monitoring means the recorder is running and armed: take the window over it rather

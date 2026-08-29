@@ -59,6 +59,11 @@ The face is the button. Gestures split into two families: **affection**, which t
 | Swipe up / tap outside | — | control | dismiss the sheet |
 | Two-finger tap | — | control | mute / unmute the microphone |
 
+> **v1.4, temporarily:** mute is on the **single tap**, not two fingers. The single tap belongs to
+> the affection reflex, but the reflexes are v2.5 and do not exist yet — and a mute nobody can
+> reach is not a feature. It moves to two fingers when the reflexes land. Recorded here rather
+> than left as a silent difference between this table and the firmware.
+
 **Why the hold does two jobs.** The concept assigns both PTT and the carousel to a long press; they are layered by *duration and intent* rather than split into two gestures. A hold is PTT from the first millisecond — that is the common case and it must not wait. Only a hold that passes 1.2 s **with no speech detected** converts to the carousel, and the conversion is announced by the dots appearing. Speaking at any point keeps it a PTT hold.
 
 ### The status sheet

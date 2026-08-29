@@ -105,6 +105,8 @@ class AudioIo {
     //: being allowed to act on it.
     using FrameObserver = void (*)(const int16_t* samples, std::size_t count, uint32_t frame_ms);
     bool startMonitoring(FrameObserver observer = nullptr);
+    //: Stop hearing the room. The microphone is released only if no window is open on top of it.
+    void stopMonitoring();
     bool isMonitoring() const { return monitoring_; }
 
     //: Send everything captured before the window opened, oldest first. Detection needs a few

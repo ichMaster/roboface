@@ -90,6 +90,10 @@ uint32_t loopback_until_ms = 0;
 // the state it took -- the discipline lives in `pure/console.h` where a host test proves it is
 // total over the state enum.
 //: Step 2: the endpointer hears every frame and its decisions are counted, not acted on.
+//: Whether the room is being listened to at all. Toggled by a tap; off is v1.3's
+//: behaviour -- press and hold to talk.
+bool active_listening = ACTIVE_LISTENING != 0;
+
 roboface::Endpointer endpointer;
 uint32_t vad_starts = 0;
 uint32_t vad_ends = 0;
@@ -315,6 +319,7 @@ void updateChrome(uint32_t now_ms, bool fault_active, roboface::ErrorCode fault)
     // The meter is wanted exactly while the microphone is open. The band arbitrates -- a fault
     // outranks it, per DEVICE_UI -- so this states a want rather than a decision.
     facts.level_meter_wanted = audio.isListening();
+    facts.mic_muted = !active_listening;
     chrome.update(now_ms, facts);
 
     const roboface::ChromeVisibility after = chrome.visibility();
@@ -880,12 +885,35 @@ void loop() {
         case roboface::PttEvent::kStopped:
             endListening("ptt");
             break;
-        case roboface::PttEvent::kTapped:
+        case roboface::PttEvent::kTapped: {
+            // A tap toggles active listening. DEVICE_UI reserves the single tap for the affection
+            // reflex and puts mute on a two-finger tap -- but the reflexes are v2.5 and do not
+            // exist yet, and a mute nobody can reach is not a feature. Moves to two fingers when
+            // the reflexes land; recorded in DEVICE_UI so the two do not disagree quietly.
+            active_listening = !active_listening;
+            if (active_listening) {
+                if (!audio.startMonitoring(&onCapturedFrame)) {
+                    Serial.println("[vad] мікрофон не запустився — лишаюсь вимкненим");
+                    active_listening = false;
+                } else {
+                    endpointer.reset();
+                    pending_vad = roboface::VadEvent::kNone;
+                }
+            } else {
+                // A window already open is closed with it: switching the microphone off must mean
+                // off, not "off after this sentence".
+                if (audio.isListening()) endListening("mute");
+                audio.stopMonitoring();
+            }
+            Serial.printf("\n[mic] активне слухання %s\n", active_listening ? "увімкнено"
+                                                                              : "вимкнено");
+            needs_push = true;  // the indicator changes now, not at the next repaint
+            break;
+        }
             // Deliberately nothing on the wire. DEVICE_UI gives press-and-hold to PTT; a tap is
             // reserved, and treating it as a very short utterance would send the server a window
             // with nothing in it.
-            Serial.println("\n[touch] tap — hold to talk");
-            break;
+
         case roboface::PttEvent::kNone:
             break;
     }

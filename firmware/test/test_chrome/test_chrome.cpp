@@ -291,8 +291,38 @@ static void test_the_band_empties_when_listening_ends() {
                           static_cast<int>(chrome.visibility().band));
 }
 
+//: The microphone indicator never fades. DEVICE_UI keeps exactly three things permanently
+//: visible -- a fault, a live camera, and a muted microphone -- and this is the one a person is
+//: most likely to have caused by accident, so discovering it by speaking and getting no answer is
+//: the worst way to find out.
+static void test_the_mute_indicator_never_fades() {
+    roboface::Chrome chrome;
+    roboface::ChromeFacts facts;
+    facts.link = roboface::LinkState::kConnected;
+    facts.mic_muted = true;
+
+    chrome.update(0, facts);
+    TEST_ASSERT_TRUE(chrome.visibility().mic_muted);
+
+    // Long past every settle timer in the file.
+    chrome.update(600000, facts);
+    TEST_ASSERT_TRUE(chrome.visibility().mic_muted);
+}
+
+//: And absent while the microphone is live: the normal state is not news.
+static void test_a_live_microphone_shows_nothing() {
+    roboface::Chrome chrome;
+    roboface::ChromeFacts facts;
+    facts.link = roboface::LinkState::kConnected;
+    facts.mic_muted = false;
+    chrome.update(0, facts);
+    TEST_ASSERT_FALSE(chrome.visibility().mic_muted);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_the_mute_indicator_never_fades);
+    RUN_TEST(test_a_live_microphone_shows_nothing);
     RUN_TEST(test_the_meter_owns_the_band_while_listening);
     RUN_TEST(test_a_fault_outranks_the_meter);
     RUN_TEST(test_the_carousel_outranks_both);
