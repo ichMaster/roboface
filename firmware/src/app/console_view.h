@@ -1,7 +1,7 @@
 // The serial chat console's screen half: the conversation, drawn where the face usually is.
 //
 // Glue, because it is drawing. It composes exactly like `ChromeView` -- into the sprite
-// `StubRenderer` owns, never straight to the panel -- so the transcript, the face area and chrome
+// `ProceduralRenderer` owns, never straight to the panel -- so the transcript, the face area and chrome
 // are pushed in one operation and cannot tear against each other.
 //
 // It keeps to the face's 264x184 safe area (DEVICE_UI §Layout). The outer bands belong to chrome,

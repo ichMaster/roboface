@@ -17,7 +17,7 @@
 #include "app/chrome_view.h"
 #include "app/console_view.h"
 #include "app/net.h"
-#include "app/stub_renderer.h"
+#include "app/procedural_renderer.h"
 #include "app/ws.h"
 #include "config.h"
 #include "pure/chrome.h"
@@ -35,7 +35,7 @@ namespace {
 
 app::Net net;
 app::Ws ws;
-app::StubRenderer renderer;
+app::ProceduralRenderer renderer;
 app::ChromeView chrome_view;
 app::ConsoleView console_view;
 app::AudioIo audio;
