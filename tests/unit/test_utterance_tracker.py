@@ -105,3 +105,49 @@ def test_whitespace_only_finals_are_ignored() -> None:
 def test_an_ellipsis_counts_as_a_terminator() -> None:
     tracker = UtteranceTracker()
     assert tracker.feed(final("Ну…")) == "Ну…"
+
+
+# ---------------------------------------------------------------------------------------
+# An empty final must not discard a good draft (v1.4)
+# ---------------------------------------------------------------------------------------
+
+
+def test_an_empty_final_keeps_the_most_confident_draft() -> None:
+    # Observed against Deepgram, on audio the same vendor transcribes perfectly in batch mode:
+    # it publishes the sentence as an interim and then closes the span with an empty final. Taking
+    # only finals -- otherwise exactly right, since interims are drafts -- answers silence to
+    # someone who spoke clearly.
+    tracker = UtteranceTracker()
+    tracker.feed(ASRChunk(text="Як", is_final=False, confidence=0.57))
+    tracker.feed(ASRChunk(text="Як тебе звати?", is_final=False, confidence=0.90))
+    assert tracker.finish() == "Як тебе звати?"
+
+
+def test_the_draft_is_chosen_by_confidence_not_by_length() -> None:
+    # Length alone would happily prefer a long mishearing to a short correct one.
+    tracker = UtteranceTracker()
+    tracker.feed(ASRChunk(text="Привіт!", is_final=False, confidence=0.95))
+    tracker.feed(ASRChunk(text="при віт як с прави там", is_final=False, confidence=0.20))
+    assert tracker.finish() == "Привіт!"
+
+
+def test_a_real_final_still_wins_over_any_draft() -> None:
+    # The fallback is a last resort, never a competitor: a settled final is the vendor saying it
+    # will not change its mind, and a draft must never override it.
+    tracker = UtteranceTracker()
+    tracker.feed(ASRChunk(text="чернетка яка не збулася", is_final=False, confidence=0.99))
+    assert tracker.feed(ASRChunk(text="Привіт, як справи?", is_final=True)) == "Привіт, як справи?"
+
+
+def test_silence_still_resolves_to_nothing() -> None:
+    # The fallback must not invent an utterance where there was none -- v1.2's press-and-hold
+    # produces zero-byte utterances routinely, and the right answer to silence is silence.
+    tracker = UtteranceTracker()
+    assert tracker.finish() is None
+
+
+def test_a_draft_does_not_survive_into_the_next_utterance() -> None:
+    tracker = UtteranceTracker()
+    tracker.feed(ASRChunk(text="перша фраза", is_final=False, confidence=0.9))
+    assert tracker.finish() == "перша фраза"
+    assert tracker.finish() is None

@@ -122,6 +122,12 @@ class ASRChunk:
 
     text: str
     is_final: bool
+    #: How sure the vendor is, 0..1. Optional in the seam -- a provider that does not report it
+    #: leaves it at 0.0 -- and used for one decision: which draft to keep when the final arrives
+    #: empty. Deepgram does that regularly, publishing a good transcript as an interim and then
+    #: closing the span with nothing, and picking the surviving draft by *length* would prefer a
+    #: long mishearing over a short correct one.
+    confidence: float = 0.0
 
 
 @runtime_checkable

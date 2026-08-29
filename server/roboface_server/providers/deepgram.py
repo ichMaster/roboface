@@ -150,7 +150,11 @@ def _parse_message(raw: str | bytes) -> ASRChunk | None:
     transcript = alternatives[0].get("transcript")
     if not isinstance(transcript, str) or not transcript.strip():
         return None
-    return ASRChunk(text=transcript, is_final=bool(payload.get("is_final")))
+    raw_confidence = alternatives[0].get("confidence")
+    confidence = float(raw_confidence) if isinstance(raw_confidence, (int, float)) else 0.0
+    return ASRChunk(
+        text=transcript, is_final=bool(payload.get("is_final")), confidence=confidence
+    )
 
 
 class DeepgramProvider:

@@ -37,6 +37,10 @@ class UtteranceTracker:
     _held: str = ""
     #: The newest interim, which replaces rather than accumulates.
     _interim: str = ""
+    #: The most confident interim seen since the last settled text -- the fallback for a final
+    #: that arrives empty. See `finish`.
+    _best_interim: str = ""
+    _best_confidence: float = -1.0
 
     def feed(self, chunk: ASRChunk) -> str | None:
         """Absorb one chunk. Returns the utterance if it is now complete, else ``None``."""
@@ -46,6 +50,19 @@ class UtteranceTracker:
             # Interims *replace*. Deepgram revises them constantly -- "прив" becomes "привіт"
             # becomes "привіт як" -- so accumulating produces every draft concatenated.
             self._interim = text
+            # But the best one is *kept*, because a final can arrive empty and throw away a
+            # perfectly good transcript. See `finish`.
+            #
+            # Chosen by the vendor's own confidence rather than by length. Deepgram revises as it
+            # goes -- "Як" at 0.57 becomes "Як тебе звати?" at 0.90 -- and length alone would just
+            # as happily prefer a long mishearing over a short correct one. Ties go to the longer
+            # draft, which is the later and more complete revision of the same span.
+            better = chunk.confidence > self._best_confidence or (
+                chunk.confidence == self._best_confidence and len(text) > len(self._best_interim)
+            )
+            if better:
+                self._best_interim = text
+                self._best_confidence = chunk.confidence
             return None
 
         self._interim = ""
@@ -60,6 +77,8 @@ class UtteranceTracker:
 
         if text[-1] in TERMINATORS:
             self._settled.append(text)
+            self._best_interim = ""  # superseded: this span is settled
+            self._best_confidence = -1.0
             return self._resolve()
 
         # Settled but unfinished: a breath, not an ending.
@@ -78,8 +97,33 @@ class UtteranceTracker:
         return self._resolve()
 
     def finish(self) -> str | None:
-        """The audio window closed. Same as the backstop, for a device that stopped sending."""
-        return self.utterance_end()
+        """The audio window closed. Same as the backstop, for a device that stopped sending.
+
+        **With one addition the backstop does not need: an empty final does not discard a good
+        interim.** Observed against Deepgram, on audio the same vendor transcribes perfectly in
+        batch mode:
+
+            duration 1.00  is_final=false  "Як"
+            duration 2.08  is_final=false  "Як тебе звати?"   confidence 0.905
+            duration 2.64  is_final=true   ""
+
+        The recogniser heard the sentence, published it as an interim, and then closed the span
+        with an empty final. Taking only finals -- which is otherwise exactly right, since interims
+        are drafts -- throws the sentence away and answers silence to someone who spoke clearly.
+
+        This happens when the window closes shortly after the speech ends: the vendor never gets
+        the trailing silence its own endpointing wants, and finalises on the stream closing
+        instead. Which is precisely the normal case for a device with its own VAD.
+        """
+        # Taken **before** resolving, because resolving resets the tracker -- and the reset
+        # clears exactly the value this fallback exists to read.
+        fallback = self._best_interim.strip()
+        resolved = self.utterance_end()
+        if resolved:
+            return resolved
+        # Nothing survived as a final. A remembered interim is a draft, and a draft of a real
+        # sentence beats nothing at all.
+        return fallback or None
 
     @property
     def partial(self) -> str:
@@ -100,6 +144,8 @@ class UtteranceTracker:
         self._settled.clear()
         self._held = ""
         self._interim = ""
+        self._best_interim = ""
+        self._best_confidence = -1.0
 
     def _resolve(self) -> str | None:
         """The finished utterance, or ``None`` when nothing was said.

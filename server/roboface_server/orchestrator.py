@@ -23,6 +23,7 @@ rolling window and the SQLite table arrive with it.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from collections.abc import AsyncIterator
 from contextlib import suppress
@@ -339,6 +340,10 @@ class ListeningTurn:
         self._queued_bytes = 0
         self._sent_bytes = 0
         self._first_push: float | None = None
+        #: A digest of exactly what went to the vendor, to compare against what the router
+        #: assembled. Identical bytes recognising differently would mean the fault is in the
+        #: session; different bytes would mean it never was.
+        self._sent_digest = hashlib.sha256()
         self._writer = asyncio.create_task(self._write())
         self._done = asyncio.Event()
         self._error: ProviderError | None = None
@@ -364,6 +369,7 @@ class ListeningTurn:
                     self._first_push = time.monotonic()
                 await self._session.push(frame)
                 self._sent_bytes += len(frame)
+                self._sent_digest.update(frame)
         except asyncio.CancelledError:
             raise
         except ProviderError as exc:
@@ -432,6 +438,7 @@ class ListeningTurn:
             ),
             ms=int((time.monotonic() - drain_started) * 1000),
             complete=drained,
+            sent_digest=self._sent_digest.hexdigest()[:16],
             level="info" if drained else "warning",
         )
         await self._session.finish()

@@ -17,6 +17,7 @@ from roboface_server.config import (
     DEFAULT_DEEPGRAM_SAMPLE_RATE,
     DEFAULT_ELEVENLABS_MODEL,
     DEFAULT_ELEVENLABS_OUTPUT_FORMAT,
+    DEFAULT_ELEVENLABS_VOICE_SETTINGS,
     DEFAULT_GEMINI_MODEL,
     DEFAULT_GEMINI_THINKING_BUDGET,
     DEFAULT_LOG_LEVEL,
@@ -41,6 +42,7 @@ def _settings(**overrides: object) -> Settings:
         "elevenlabs_voice_id": "",
         "elevenlabs_model": DEFAULT_ELEVENLABS_MODEL,
         "elevenlabs_output_format": DEFAULT_ELEVENLABS_OUTPUT_FORMAT,
+        "elevenlabs_voice_settings": dict(DEFAULT_ELEVENLABS_VOICE_SETTINGS),
         "deepgram_api_key": "",
         "deepgram_model": DEFAULT_DEEPGRAM_MODEL,
         "deepgram_language": DEFAULT_DEEPGRAM_LANGUAGE,
@@ -134,7 +136,7 @@ def test_only_the_landed_phases_variables_are_read(tmp_path: Path) -> None:
 
     ARCHITECTURE §Configuration assigns each variable to the phase that introduces it, and
     reading one early would let an unset future key look configured. v0.2 added the three
-    Gemini keys, v1.1 the four ElevenLabs ones and **v1.3 the six Deepgram ones**, so all of
+    Gemini keys, v1.1 the four ElevenLabs ones (five since the voice gained its settings) and **v1.3 the six Deepgram ones**, so all of
     those are now expected; the canon key is not, and arrives with v4.1.
 
     This test is meant to fail when a phase lands, and it did: it was asserting that
@@ -161,6 +163,7 @@ def test_only_the_landed_phases_variables_are_read(tmp_path: Path) -> None:
         "elevenlabs_voice_id",
         "elevenlabs_model",
         "elevenlabs_output_format",
+        "elevenlabs_voice_settings",
         "deepgram_api_key",
         "deepgram_model",
         "deepgram_language",
@@ -349,3 +352,35 @@ def test_the_key_does_not_leak_through_a_structured_log_line(tmp_path: Path) -> 
     rendered = stream.getvalue()
     assert SECRET not in rendered
     assert json_module.loads(rendered)["settings"].startswith("Settings(")
+
+
+# ---------------------------------------------------------------------------------------
+# The voice's delivery (v1.4)
+# ---------------------------------------------------------------------------------------
+
+
+def test_voice_settings_default_to_the_documented_character(tmp_path: Path) -> None:
+    settings = load_settings({}, env_file=_no_file(tmp_path))
+    assert settings.elevenlabs_voice_settings == DEFAULT_ELEVENLABS_VOICE_SETTINGS
+
+
+def test_voice_settings_override_only_what_they_name(tmp_path: Path) -> None:
+    # A partial object is a partial override, not a replacement: naming `stability` must not
+    # silently drop `similarity_boost` and take the voice's own default for it instead.
+    settings = load_settings(
+        {"ELEVENLABS_VOICE_SETTINGS": '{"stability": 0.7}'}, env_file=_no_file(tmp_path)
+    )
+    assert settings.elevenlabs_voice_settings["stability"] == 0.7
+    assert (
+        settings.elevenlabs_voice_settings["similarity_boost"]
+        == DEFAULT_ELEVENLABS_VOICE_SETTINGS["similarity_boost"]
+    )
+
+
+def test_malformed_voice_settings_are_refused_not_ignored(tmp_path: Path) -> None:
+    # The whole point of validating these. A voice that is subtly wrong is far harder to notice
+    # than one that fails to load: nothing errors, replies still play, and the character is simply
+    # not the one the specification describes.
+    for bad in ('{"stability": 0.4', '["stability"]', '{"stabilty": 0.4}', '{"stability": "high"}'):
+        with pytest.raises(ConfigError):
+            load_settings({"ELEVENLABS_VOICE_SETTINGS": bad}, env_file=_no_file(tmp_path))
