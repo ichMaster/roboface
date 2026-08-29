@@ -1,3 +1,29 @@
+Version 1.4.1 (2026-08-29)
+---------------------------
+- RoboFace has its own voice: an original ElevenLabs Voice Design voice rather
+  than a preset, with the brief it was designed from kept in VOICE.md so it can
+  be regenerated. Delivery is now steerable at all -- the provider previously
+  sent no voice settings, so expressiveness was whatever the voice defaulted to.
+  Slower (speed 0.9) because at full rate it clipped its own word endings, and
+  Ukrainian carries meaning in the endings.
+- Tapping the screen switches active listening off and on. A slashed microphone
+  in the status cluster says when it is off, and never fades.
+- An empty final no longer throws away a good transcript. Deepgram regularly
+  publishes the sentence as an interim and then closes the span with nothing --
+  the normal case for a device with its own VAD, which never gives the vendor the
+  trailing silence its endpointing wants. The most confident draft now survives.
+  `ASRChunk` carries `confidence` for that choice, because picking by length
+  would prefer a long mishearing to a short correct one.
+- The endpointer no longer cuts a phrase into fragments: end-pause 1200 ms,
+  hangover 400 ms. At 800 ms the gap between two words closed the window
+  mid-sentence and the recogniser received pieces -- a 1.9 s fragment returned
+  nothing where a 3.2 s one returned a full transcript.
+- Playback waits for a quarter second of audio before starting, instead of
+  beginning on the first byte and stuttering.
+- A status-line diagnostic was costing a quarter of every capture window. That is
+  the third time in one evening that a diagnostic starved the thing it was
+  diagnosing; this board has no headroom to pay for being observed.
+
 Version 1.4.0 (2026-08-29)
 ---------------------------
 - Active listening: speech opens the uplink and the recogniser or the local
