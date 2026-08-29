@@ -1,3 +1,28 @@
+Version 2.1.0 (2026-08-29)
+---------------------------
+- The face is alive. A layered procedural renderer replaces the stub: it blinks
+  every few seconds, breathes, and drifts its gaze, and a change of state
+  crossfades rather than snapping.
+- The layer bank (`pure/layers.h`) turns a recipe into shapes -- eye openness as
+  a height, a brow angle as two endpoints, a mouth as three control points -- so
+  the renderer decides nothing and v2.6's skins cannot each become a different
+  character by interpreting the same numbers differently.
+- The idle loop (`pure/idle.h`) is randomised but deterministic: a fixed interval
+  reads as a metronome, an unseeded random is untestable, a seeded one is both.
+  `intensity` scales it without the loop knowing what an emotion is.
+- Crossfade (`pure/crossfade.h`) is eased, and an interrupted fade restarts from
+  where the face *is* -- two state changes inside a second is the case that
+  happens constantly in practice and never in a demo.
+- 15-18 FPS with audio running, and the status line now reports the face's frame
+  rate and the capture rate together, because either alone hides the trade.
+- `StubRenderer` is gone. The `IFaceRenderer` seam is unchanged: v0.4 fixed it
+  against a stub so that v2 would implement rather than invent, and it did.
+
+Found in review: the face was clearing the whole sprite every frame and wiping
+the chrome with it -- the link, the battery and the muted-microphone indicator
+would have vanished 55 ms after every event. The face and the chrome share a
+buffer but not a schedule, which is now a stated convention.
+
 Version 1.4.2 (2026-08-29)
 ---------------------------
 - PSRAM works. The Core S3's chip is quad-mode and `memory_type` said octal, so
