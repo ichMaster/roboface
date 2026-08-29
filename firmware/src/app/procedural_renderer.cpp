@@ -70,9 +70,11 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
     geometry.eye_offset_y += static_cast<int>(idle.gaze_y);
     geometry.centre_x += static_cast<int>(idle.gaze_x);
 
-    // Nothing moved: skip the compose entirely. A settled face is the common case -- the device is
-    // idle most of the time -- and a renderer that redrew an unchanged frame would spend the whole
-    // budget RF-058 is meant to protect on producing the same pixels.
+    // Skip the compose when nothing moved. **Narrower than it sounds**: the breath is a continuous
+    // wave, so this only fires when the idle is *stilled* -- `intensity` at zero, which is what
+    // v2.2 does during a turn -- and no fade is running. Said plainly because the tempting version
+    // of this comment ("a settled face costs nothing") would send the next person chasing a frame
+    // budget straight past the renderer.
     const bool moved = !has_drawn_ || crossfade_.isFading() || idle_.isBlinking() ||
                        roboface::areDistinct(frame, last_drawn_) ||
                        idle.bob_y != 0.0f || idle.gaze_x != 0.0f;
@@ -85,7 +87,16 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
 }
 
 void ProceduralRenderer::compose(const roboface::LayerBank& bank) {
-    sprite_.fillSprite(kBackground);
+    // **The face area only.** The outer 28 px bands belong to chrome (DEVICE_UI §Layout), and the
+    // stub said so in its own docstring -- but the stub redrew only on an event, so clearing the
+    // whole sprite cost nothing. This renderer redraws on its own schedule, ~18 times a second,
+    // while `render()` still runs only when something happens: a full-sprite clear would wipe the
+    // link, the battery and the muted-microphone indicator within 55 ms of each event and leave
+    // them gone until the next one.
+    //
+    // Which would have been read as the chrome flickering, and looked for in the chrome.
+    sprite_.fillRect(roboface::kFaceLeft, roboface::kFaceTop, roboface::kFaceWidth,
+                     roboface::kFaceHeight, kBackground);
 
     const uint16_t glow = dimmed(kGlow, bank.brightness);
     const uint16_t ink = dimmed(kInk, bank.brightness);
