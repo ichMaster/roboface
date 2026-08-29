@@ -1,3 +1,29 @@
+Version 1.4.0 (2026-08-29)
+---------------------------
+- Active listening: speech opens the uplink and the recogniser or the local
+  end-pause closes it. No touch involved; press-and-hold remains as the backup.
+- Pure endpointer (`pure/vad.h`) with sensitivity, minimum speech, end-pause,
+  pre-roll and hangover, driven by frame duration rather than a clock -- an hour
+  of audio runs in a millisecond on the host.
+- Pre-roll ring: the frames captured while detection was confirming itself are
+  sent ahead of live audio, so the first syllable reaches the recogniser.
+- Half-duplex: playback suspends the monitor and every route out of playback
+  resumes it, so a reply that ends unexpectedly cannot leave the device deaf.
+- The server acts on the recogniser's own endpointing instead of waiting for
+  `listen_stop`, and a `listen_stop` for an already-settled utterance is
+  idempotent rather than an error.
+- `/cal` measures the per-frame level distribution, so the VAD thresholds are
+  read off the room instead of guessed.
+- `tools/hw-tests.sh`: six board tests, each spoken aloud by the device itself,
+  with the results and the listener's answer written to one log.
+
+Four hardware faults found and fixed along the way, none of them visible from
+the test suite: the I2S bus left configured for the wrong direction (the
+microphone "worked" and heard nothing; the speaker refused every reply), an
+unsigned underflow that closed every listening window 53 ms after it opened, a
+microphone gain set while the microphone was deaf and clipping badly once it was
+not, and a missing pre-roll that cost the first syllable of every utterance.
+
 Version 1.3.1 (2026-08-28)
 ---------------------------
 - Fixed the capture race: `tick` re-armed the buffer it was about to read, so the
