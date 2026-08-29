@@ -181,10 +181,13 @@ void a_second_utterance_reports_its_own_transitions() {
     roboface::Endpointer vad;
     const auto speech = voicedFrame();
     const auto quiet = silentFrame();
+    // Derived from the setting rather than written out, so tuning the end-pause -- which is a
+    // measurement, and has already moved twice -- does not break a test about transitions.
+    const uint32_t past_the_pause = roboface::kVadEndPauseMs + 200;
     TEST_ASSERT_TRUE(feedFor(vad, speech, 600) == roboface::VadEvent::kSpeechStarted);
-    TEST_ASSERT_TRUE(feedFor(vad, quiet, 800) == roboface::VadEvent::kSpeechEnded);
+    TEST_ASSERT_TRUE(feedFor(vad, quiet, past_the_pause) == roboface::VadEvent::kSpeechEnded);
     TEST_ASSERT_TRUE(feedFor(vad, speech, 600) == roboface::VadEvent::kSpeechStarted);
-    TEST_ASSERT_TRUE(feedFor(vad, quiet, 800) == roboface::VadEvent::kSpeechEnded);
+    TEST_ASSERT_TRUE(feedFor(vad, quiet, past_the_pause) == roboface::VadEvent::kSpeechEnded);
 }
 
 //: Pre-roll is rounded **up** to whole frames: a ring one frame short would clip the first syllable,
@@ -249,7 +252,8 @@ void an_utterance_can_always_be_finished() {
     const auto quiet = silentFrame();
     TEST_ASSERT_TRUE(feedFor(vad, speech, 600) == roboface::VadEvent::kSpeechStarted);
     // Whatever the caller does with its own switch, the end of this utterance is still reported.
-    TEST_ASSERT_TRUE(feedFor(vad, quiet, 800) == roboface::VadEvent::kSpeechEnded);
+    TEST_ASSERT_TRUE(feedFor(vad, quiet, roboface::kVadEndPauseMs + 200) ==
+                     roboface::VadEvent::kSpeechEnded);
     TEST_ASSERT_FALSE(vad.inUtterance());
 }
 

@@ -65,9 +65,16 @@ inline constexpr std::size_t kVadMinCrossings = 10;
 //: 40 ms and then genuinely over.
 inline constexpr uint32_t kVadMinSpeechMs = 150;
 
-//: How long the room must be quiet before the utterance is over. Long enough to survive the pause
-//: inside a sentence, short enough that the answer does not feel late.
-inline constexpr uint32_t kVadEndPauseMs = 800;
+//: How long the room must be quiet before the utterance is over.
+//:
+//: **Measured, and longer than it first seems it should be.** At 800 ms a phrase was cut into
+//: pieces: the pause between two words, plus the quiet syllables either side of it, was enough to
+//: close the window mid-sentence. The recogniser then received fragments -- a 1.9 s piece returned
+//: nothing at all, while a 3.2 s one from the same voice returned a full transcript.
+//:
+//: The trade is honest: this is how long the answer waits after you stop talking. 1200 ms is a
+//: natural pause and still comfortably under the point where a person wonders whether it heard.
+inline constexpr uint32_t kVadEndPauseMs = 1200;
 
 //: How much audio before the trigger is kept, so the first syllable is never lost. Detection needs
 //: a few frames to be sure, and those frames are already speech.
@@ -76,10 +83,13 @@ inline constexpr uint32_t kVadPreRollMs = 300;
 //: Quiet frames tolerated inside speech without restarting the end-pause count. A plosive closes
 //: the vocal tract completely -- the gap in "a **p**ple" is real silence, and an endpointer without
 //: hangover ends the utterance in the middle of the word.
-//: Raised from 120 ms on the same evidence: between two syllables the level drops back to room
-//: tone, so a short hangover ends the utterance inside a word. This is what lets an intermittent
-//: run of loud frames accumulate into one utterance instead of a string of discarded fragments.
-inline constexpr uint32_t kVadHangoverMs = 250;
+//: Quiet frames tolerated inside speech before the end-pause even starts counting.
+//:
+//: Raised twice, on measurement both times. Between two syllables the level drops back to room
+//: tone -- and with only half of a speaking person's frames clearing the threshold at all, a short
+//: hangover ends the utterance inside a word. This is what lets an intermittent run of loud frames
+//: read as one continuous phrase rather than a string of fragments.
+inline constexpr uint32_t kVadHangoverMs = 400;
 
 //: What the endpointer decided about the frame just fed to it.
 enum class VadEvent {
