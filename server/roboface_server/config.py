@@ -58,10 +58,14 @@ DEFAULT_ELEVENLABS_OUTPUT_FORMAT = "pcm_16000"
 #: because a reply is synthesised **phrase by phrase** as it streams, so timbre drift would be
 #: audible inside a single sentence.
 DEFAULT_ELEVENLABS_VOICE_SETTINGS: Final[dict[str, float | bool]] = {
-    "stability": 0.35,
+    "stability": 0.45,
     "similarity_boost": 0.75,
-    "style": 0.55,
+    "style": 0.45,
     "use_speaker_boost": True,
+    # Below 1.0 because the character is quick and an excited voice at full rate clips its own
+    # word endings -- Ukrainian carries a lot of meaning in the endings, so the last syllable
+    # going missing is not a matter of polish. Slower here buys articulation, not calm.
+    "speed": 0.90,
 }
 
 #: Deepgram defaults, from v1.3. `linear16` at 16 kHz is the device's capture format unchanged --

@@ -43,8 +43,9 @@ these defaults.
 
 | Setting | Value | Why |
 |---|---|---|
-| `stability` | 0.35 | The one that matters. High flattens every phrase into the same read; low lets pitch and pace move. Below ~0.25 the tone starts drifting between sentences. |
-| `style` | 0.55 | Carries the speaker's own inflection through. Above ~0.7 it over-performs and costs latency. |
+| `speed` | 0.90 | An excited voice at full rate clips its own word endings, and **Ukrainian carries meaning in the endings** — a missing last syllable is not a matter of polish, it changes the case. Slower here buys articulation, not calm. |
+| `stability` | 0.45 | High flattens every phrase into the same read; low lets pitch and pace move. Raised from 0.35 together with the speed: some of the swallowed endings were the pitch moving mid-word. Below ~0.25 the tone drifts between sentences. |
+| `style` | 0.45 | Carries the speaker's own inflection through. Above ~0.7 it over-performs, costs latency, and rushes. |
 | `similarity_boost` | 0.75 | Keeps timbre steady. Matters more here than usual — a reply is synthesised **phrase by phrase** as it streams, so drift would be audible inside one sentence. |
 | `use_speaker_boost` | true | Clarity through a small desk speaker, the only way anyone hears this. |
 

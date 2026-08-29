@@ -494,6 +494,31 @@ class Router:
             with suppress(Exception):
                 await session.close()
 
+    def _dump_utterance(self, chunks: list[bytes]) -> None:
+        """Save the utterance as a WAV when `ROBOFACE_DUMP_AUDIO` names a directory. Debug only.
+
+        When recognition returns nothing there are two candidate explanations -- the microphone
+        heard nothing usable, or the audio was fine and something downstream mishandled it -- and
+        no amount of reading either side's code separates them. The bytes do, because they can be
+        played and because the vendor's batch API will say what it makes of them.
+        """
+        directory = os.environ.get("ROBOFACE_DUMP_AUDIO")
+        if not directory or not chunks:
+            return
+        audio = b"".join(chunks)
+        try:
+            target = Path(directory)
+            target.mkdir(parents=True, exist_ok=True)
+            path = target / f"utterance-{len(audio)}.wav"
+            with wave.open(str(path), "wb") as out:
+                out.setnchannels(1)
+                out.setsampwidth(2)
+                out.setframerate(16000)
+                out.writeframes(audio)
+            log("audio.dumped", path=str(path), bytes=len(audio))
+        except OSError as problem:  # pragma: no cover -- a debug aid must never break a turn
+            log("audio.dump_failed", problem=str(problem), level="warning")
+
     def _end_utterance(self, conn: Connection) -> None:
         """Close the window and release what was collected.
 
@@ -502,6 +527,7 @@ class Router:
         invariant that will disagree with itself.
         """
         _dump_utterance(conn.utterance)
+        self._dump_utterance(conn.utterance)
         conn.binary_phase = BinaryPhase.IDLE
         conn.utterance.clear()
         conn.utterance_bytes = 0
