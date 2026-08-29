@@ -1,3 +1,19 @@
+Version 1.4.2 (2026-08-29)
+---------------------------
+- PSRAM works. The Core S3's chip is quad-mode and `memory_type` said octal, so
+  it initialised in the wrong mode: still detected, `psramFound()` true, and zero
+  bytes contributed to the allocator. Everything fell back to internal RAM.
+
+      before:  psram size=0            internal free=35 748
+      after:   psram size=8 385 863    internal free=261 896
+
+  The audio backlog gets its full 256 KB instead of a 48 KB fallback, and the
+  consequence that cost the most time is gone: with internal RAM exhausted,
+  `i2s_alloc_dma_buffer` could not find a contiguous block, so the microphone
+  reported a successful start and captured nothing.
+
+  Held since v1.1 and deferred three times. It was one word.
+
 Version 1.4.1 (2026-08-29)
 ---------------------------
 - RoboFace has its own voice: an original ElevenLabs Voice Design voice rather
