@@ -117,6 +117,7 @@ def build_responder(settings: Settings) -> Responder:
             settings.elevenlabs_voice_id,
             settings.elevenlabs_model,
             settings.elevenlabs_output_format,
+            voice_settings=settings.elevenlabs_voice_settings,
         )
     else:
         log("tts.disabled", reason="no ELEVENLABS_API_KEY or ELEVENLABS_VOICE_ID", level="warning")

@@ -18,10 +18,12 @@ someone must fail at startup rather than on its first turn.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 from dotenv import dotenv_values
 
@@ -47,6 +49,20 @@ DEFAULT_GEMINI_THINKING_BUDGET = 0
 #: a decoder on an ESP32 in the middle of a latency budget.
 DEFAULT_ELEVENLABS_MODEL = "eleven_turbo_v2_5"
 DEFAULT_ELEVENLABS_OUTPUT_FORMAT = "pcm_16000"
+
+#: How the voice is delivered, not which voice it is. Defaults are the character in
+#: `specification/features/VOICE.md`: expressive rather than even, warm rather than soothing.
+#:
+#: `stability` is the one that matters. High values flatten every phrase into the same read; low
+#: values let pitch and pace move. `similarity_boost` matters more here than in most applications
+#: because a reply is synthesised **phrase by phrase** as it streams, so timbre drift would be
+#: audible inside a single sentence.
+DEFAULT_ELEVENLABS_VOICE_SETTINGS: Final[dict[str, float | bool]] = {
+    "stability": 0.35,
+    "similarity_boost": 0.75,
+    "style": 0.55,
+    "use_speaker_boost": True,
+}
 
 #: Deepgram defaults, from v1.3. `linear16` at 16 kHz is the device's capture format unchanged --
 #: the same `AUDIO_FMT` that TTS returns, so audio crosses the whole system without a conversion.
@@ -88,6 +104,7 @@ class Settings:
     elevenlabs_voice_id: str
     elevenlabs_model: str
     elevenlabs_output_format: str
+    elevenlabs_voice_settings: dict[str, float | bool]
     deepgram_api_key: str
     deepgram_model: str
     deepgram_language: str
@@ -124,6 +141,7 @@ class Settings:
             f"elevenlabs_voice_id={self.elevenlabs_voice_id!r}, "
             f"elevenlabs_model={self.elevenlabs_model!r}, "
             f"elevenlabs_output_format={self.elevenlabs_output_format!r}, "
+            f"elevenlabs_voice_settings={self.elevenlabs_voice_settings!r}, "
             f"deepgram_api_key={asr_key}, "
             f"deepgram_model={self.deepgram_model!r}, "
             f"deepgram_language={self.deepgram_language!r})"
@@ -201,6 +219,32 @@ def _parse_log_level(raw: str) -> str:
     return level
 
 
+def _voice_settings(raw: str | None) -> dict[str, float | bool]:
+    """Parse `ELEVENLABS_VOICE_SETTINGS`, or fall back to the documented character.
+
+    **Refused rather than ignored** when malformed. A voice that is subtly wrong is far harder to
+    notice than one that fails to load: nothing errors, the replies still play, and the character
+    is simply not the one the specification describes -- which someone would eventually try to fix
+    by editing the value that was already being discarded.
+    """
+    if not raw:
+        return dict(DEFAULT_ELEVENLABS_VOICE_SETTINGS)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"ELEVENLABS_VOICE_SETTINGS is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ConfigError("ELEVENLABS_VOICE_SETTINGS must be a JSON object")
+    settings = dict(DEFAULT_ELEVENLABS_VOICE_SETTINGS)
+    for key, value in parsed.items():
+        if key not in DEFAULT_ELEVENLABS_VOICE_SETTINGS:
+            raise ConfigError(f"ELEVENLABS_VOICE_SETTINGS has no setting {key!r}")
+        if not isinstance(value, (int, float, bool)):
+            raise ConfigError(f"ELEVENLABS_VOICE_SETTINGS[{key!r}] must be a number or boolean")
+        settings[key] = value
+    return settings
+
+
 def load_settings(
     environ: Mapping[str, str] | None = None,
     *,
@@ -226,6 +270,7 @@ def load_settings(
 
     tts_key = _resolve("ELEVENLABS_API_KEY", resolved_environ, file_values)
     voice_id = _resolve("ELEVENLABS_VOICE_ID", resolved_environ, file_values)
+    voice_settings_raw = _resolve("ELEVENLABS_VOICE_SETTINGS", resolved_environ, file_values)
     tts_model = _resolve("ELEVENLABS_MODEL", resolved_environ, file_values)
     tts_format = _resolve("ELEVENLABS_OUTPUT_FORMAT", resolved_environ, file_values)
 
@@ -254,6 +299,7 @@ def load_settings(
         elevenlabs_voice_id=voice_id or "",
         elevenlabs_model=tts_model or DEFAULT_ELEVENLABS_MODEL,
         elevenlabs_output_format=tts_format or DEFAULT_ELEVENLABS_OUTPUT_FORMAT,
+        elevenlabs_voice_settings=_voice_settings(voice_settings_raw),
         deepgram_api_key=asr_key or "",
         deepgram_model=asr_model or DEFAULT_DEEPGRAM_MODEL,
         deepgram_language=asr_language or DEFAULT_DEEPGRAM_LANGUAGE,

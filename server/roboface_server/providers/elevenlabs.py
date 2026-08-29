@@ -13,7 +13,7 @@ adapter needs.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Final
+from typing import Any, Final
 
 from roboface_server.protocol import ErrorCode
 from roboface_server.providers.base import ProviderError
@@ -52,6 +52,7 @@ class ElevenLabsProvider:
         model: str,
         output_format: str,
         *,
+        voice_settings: dict[str, float | bool] | None = None,
         timeout_s: float = DEFAULT_TIMEOUT_S,
     ) -> None:
         if not api_key:
@@ -60,6 +61,7 @@ class ElevenLabsProvider:
             raise ProviderError("ELEVENLABS_VOICE_ID is not set", ErrorCode.TTS_FAILED)
         self._api_key = api_key
         self._voice_id = voice_id
+        self._voice_settings = dict(voice_settings or {})
         self._model = model
         self._output_format = output_format
         self._timeout_s = timeout_s
@@ -79,7 +81,11 @@ class ElevenLabsProvider:
         url = f"{API_BASE}/{self._voice_id}/stream"
         headers = {"xi-api-key": self._api_key, "content-type": "application/json"}
         params = {"output_format": self._output_format}
-        payload = {"text": text, "model_id": self._model}
+        payload: dict[str, Any] = {"text": text, "model_id": self._model}
+        # Omitted entirely when empty, so the voice's own defaults still apply -- sending an empty
+        # object would override them with nothing.
+        if self._voice_settings:
+            payload["voice_settings"] = self._voice_settings
 
         # PCM16 is two bytes per sample and the transport splits wherever it likes, so a chunk can
         # end mid-sample. Forwarding that would shift every following sample by a byte -- the audio
