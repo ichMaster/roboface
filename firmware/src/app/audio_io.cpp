@@ -65,7 +65,17 @@ bool AudioIo::startMonitoring(FrameObserver observer) {
     observer_ = observer;
     if (monitoring_ || listening_) return true;
     if (speaking_) return false;
+    // Give the bus up **and let it settle** before claiming it for input. `startSpeaking` already
+    // does this in the other direction, with a comment earned the hard way: ending one peripheral
+    // leaves the shared I2S configured for the direction it was in, and the other one's `begin()`
+    // then reports success while producing nothing at all.
+    //
+    // Measured here, at boot, where `M5.begin()` has just enabled the speaker: without the pause
+    // the recorder runs, frames arrive at the right rate, and every one of them is the same noise
+    // floor -- a person shouting 20 cm from the microphone measures identically to an empty room
+    // (p50 8%, max 41% either way). Nothing reports a fault.
     if (M5.Speaker.isEnabled()) M5.Speaker.end();
+    delay(20);
     auto mic_cfg = M5.Mic.config();
     mic_cfg.magnification = mic_gain_;
     M5.Mic.config(mic_cfg);

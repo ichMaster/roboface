@@ -33,23 +33,39 @@ namespace roboface {
 //: The peak level, 0..1, above which a frame counts as loud. The microphone runs at a fixed
 //: magnification and speech at desk distance sits well under half scale, so this is deliberately
 //: low; `minimum speech` and the zero-crossing gate are what reject the noise it lets through.
-//: Measured on the board: at 6% the room's own noise floor keeps the endpointer permanently in
-//: speech, so the end-pause never elapses and an utterance never finishes. 25% is above the room
-//: and below ordinary speech at desk distance.
-inline constexpr float kVadSensitivity = 0.25f;
+//: **Measured**, not chosen. `/cal 10` in a quiet room and again over ten seconds of ordinary
+//: speech at desk distance:
+//:
+//:            p50   p90   max
+//:   silence   9%   13%    23%
+//:   speech    9%   23%    99%
+//:
+//: The threshold sits between the two p90s. Note p50 is identical: half the frames of a person
+//: speaking *are* room tone, because speech has gaps -- which is why the duration rules below
+//: matter more than this number does.
+inline constexpr float kVadSensitivity = 0.17f;
 
-//: Zero crossings per frame below which a loud frame is treated as rumble rather than voice. At
-//: 16 kHz a 20 ms frame is 320 samples; voiced speech crosses zero on the order of tens of times,
-//: a sub-100 Hz thump only a handful.
-inline constexpr std::size_t kVadMinCrossings = 10;
+//: Zero crossings per frame below which a loud frame is treated as rumble rather than voice.
+//:
+//: **Measured, and it discriminates nothing in this room**: silence reached 130 crossings, speech
+//: 114 -- the noise floor here is broadband, so it crosses zero at least as often as a voice does.
+//: Kept low deliberately: it still rejects the sub-100 Hz rumble it was added for (that case
+//: measured a handful of crossings), and it must not reject anything else, because on this
+//: evidence it cannot tell speech from a quiet room.
+inline constexpr std::size_t kVadMinCrossings = 6;
 
 //: How long speech must last before the utterance is worth sending. Below this it is a cough, a
 //: chair, a door -- discarded without ever becoming a turn.
-inline constexpr uint32_t kVadMinSpeechMs = 250;
+//:
+//: Shorter than it looks it should be, for a measured reason: only the loudest fifth of a speaking
+//: person's frames clear the threshold, so requiring a long unbroken run of them would reject real
+//: speech. What keeps a cough out is this *together with* the hangover below -- a cough is loud for
+//: 40 ms and then genuinely over.
+inline constexpr uint32_t kVadMinSpeechMs = 150;
 
 //: How long the room must be quiet before the utterance is over. Long enough to survive the pause
 //: inside a sentence, short enough that the answer does not feel late.
-inline constexpr uint32_t kVadEndPauseMs = 700;
+inline constexpr uint32_t kVadEndPauseMs = 800;
 
 //: How much audio before the trigger is kept, so the first syllable is never lost. Detection needs
 //: a few frames to be sure, and those frames are already speech.
@@ -58,7 +74,10 @@ inline constexpr uint32_t kVadPreRollMs = 300;
 //: Quiet frames tolerated inside speech without restarting the end-pause count. A plosive closes
 //: the vocal tract completely -- the gap in "a **p**ple" is real silence, and an endpointer without
 //: hangover ends the utterance in the middle of the word.
-inline constexpr uint32_t kVadHangoverMs = 120;
+//: Raised from 120 ms on the same evidence: between two syllables the level drops back to room
+//: tone, so a short hangover ends the utterance inside a word. This is what lets an intermittent
+//: run of loud frames accumulate into one utterance instead of a string of discarded fragments.
+inline constexpr uint32_t kVadHangoverMs = 250;
 
 //: What the endpointer decided about the frame just fed to it.
 enum class VadEvent {

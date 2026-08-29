@@ -83,7 +83,13 @@ def split_lines(buffer: bytes) -> tuple[list[str], bytes]:
     return lines, buffer
 
 
-def watch(duration: float | None, to_send: list[str], send_after: float, quiet: bool) -> int:
+def watch(
+    duration: float | None,
+    to_send: list[str],
+    send_after: float,
+    quiet: bool,
+    log_path: str | None = None,
+) -> int:
     started = time.time()
     deadline = None if duration is None else started + duration
 
@@ -94,9 +100,20 @@ def watch(duration: float | None, to_send: list[str], send_after: float, quiet: 
     stdin_open = True
     read_failures = 0
 
+    # Everything printed also goes to the log when one is open. A test session is worth keeping:
+    # the interesting line is usually the one that scrolled past while you were talking to the
+    # board, and asking someone to reproduce a run to recover it is asking them to do it twice.
+    log_file = open(log_path, "a", encoding="utf-8") if log_path else None
+
+    def emit(text: str) -> None:
+        print(text, flush=True)
+        if log_file is not None:
+            log_file.write(text + "\n")
+            log_file.flush()  # flushed per line: a session that ends in a reset must still be read
+
     def note(message: str) -> None:
         if not quiet:
-            print(f"[board] {message}", flush=True)
+            emit(f"[board] {message}")
 
     note(f"watching {PORT_GLOB} — type a command and press Enter, Ctrl-C to stop")
     try:
@@ -145,7 +162,7 @@ def watch(duration: float | None, to_send: list[str], send_after: float, quiet: 
                 buffer += data
                 lines, buffer = split_lines(buffer)
                 for line in lines:
-                    print(line, flush=True)
+                    emit(line)
 
             # Forward anything typed at us. `select` with a zero timeout keeps this a poll rather
             # than a blocking read, so the board's output never stalls waiting for a keystroke --
@@ -186,7 +203,7 @@ def watch(duration: float | None, to_send: list[str], send_after: float, quiet: 
     finally:
         if connection is not None:
             if buffer:
-                print(buffer.decode("utf-8", "replace"), flush=True)
+                emit(buffer.decode("utf-8", "replace"))
             connection.close()
 
     return 0
@@ -201,6 +218,8 @@ def main() -> int:
     parser.add_argument("--send-after", type=float, default=2.0,
                         help="seconds to wait before sending (default 2)")
     parser.add_argument("--quiet", action="store_true", help="only the board's own output")
+    parser.add_argument("--log", metavar="FILE", default=None,
+                        help="append everything printed to FILE as well as the screen")
     args = parser.parse_args()
 
     if find_port() is None:
@@ -209,7 +228,7 @@ def main() -> int:
         if args.duration is None:
             return 1
 
-    return watch(args.duration, args.send, args.send_after, args.quiet)
+    return watch(args.duration, args.send, args.send_after, args.quiet, args.log)
 
 
 if __name__ == "__main__":
