@@ -49,7 +49,12 @@ constexpr uint32_t kStatusIntervalMs = 10000;
 // generous for a face that is currently static, and it is the difference between the loop serving
 // the network and the loop being one long sprite push: 320x240x16 is 153 KB, so the unconditional
 // push in every 5 ms iteration implied ~30 MB/s on a bus that carries about 5.
-constexpr uint32_t kMinPushIntervalMs = 33;
+//: The face's own frame interval. 55 ms is ~18 FPS, inside the 15-20 the roadmap asks for.
+//:
+//: Deliberately slower than the panel could manage. In v1 the display starved the microphone three
+//: separate times -- a 30 Hz repaint cost 53% of every capture window -- and the audio is the
+//: product while the animation is its presence. The face may drop a frame; the microphone may not.
+constexpr uint32_t kMinPushIntervalMs = 55;
 uint32_t last_push_ms = 0;
 bool needs_push = true;
 
@@ -133,6 +138,11 @@ uint8_t percentileOf(uint8_t* values, std::size_t count, int pct) {
 //: When the open window opened, so one that never ends can be ended. The server's 30 s size cap
 //: would otherwise end it as a protocol error and leave the device sitting in `error`.
 uint32_t listen_opened_ms = 0;
+
+//: Counters sampled at each status line, so the rates printed are per-interval rather than
+//: since-boot averages -- an average since boot hides a regression that started a minute ago.
+uint32_t frames_at_status = 0;
+uint32_t capture_at_status = 0;
 constexpr uint32_t kMaxWindowMs = 15000;
 
 roboface::ConsoleMode console;
@@ -930,6 +940,10 @@ void loop() {
         pending_vad = roboface::VadEvent::kNone;
     }
 
+    // The face animates on its own now: blinking, breathing, drifting. The renderer says whether
+    // anything actually moved, so a settled face still costs nothing.
+    if (renderer.isAnimating()) needs_push = true;
+
     // A live meter needs live repaints, but **not at the panel's full rate**. Marking the sprite
     // dirty every loop made the 33 ms cap fire constantly, and a full 153 KB sprite push at 30 Hz
     // left the loop unable to service the microphone within its 40 ms of buffering: capture
@@ -1002,10 +1016,23 @@ void loop() {
     if (now_ms - last_status_ms >= kStatusIntervalMs) {
         last_status_ms = now_ms;
         Serial.printf(
-            "[status] %s · link %s %s · ws %s · batt %d%%%s · mon=%d vad s=%lu e=%lu peak=%d%% zc=%u · audio %s buf=%u q=%u ref=%u drop=%u · up %lus\n",
+            "[status] %s · link %s %s · ws %s · batt %d%%%s · fps=%lu cap=%lu · mon=%d vad s=%lu e=%lu peak=%d%% zc=%u · audio %s buf=%u q=%u ref=%u drop=%u · up %lus\n",
             roboface::toString(state), net.isUp() ? "up" : "down", net.ipAddress(),
             ws.isConnected() ? "connected" : "disconnected", battery_percent,
             battery_charging ? " (charging)" : "",
+            // **Both numbers, side by side.** Either alone hides the trade: a face at 18 FPS that
+            // cost a third of the audio looks healthy in one and is a regression in the other. In
+            // v1 exactly that went unnoticed three separate times.
+            static_cast<unsigned long>((renderer.framesPushed() - frames_at_status) * 1000u /
+                                       kStatusIntervalMs),
+            // Saturating, because the capture tally resets at every window: a stale baseline
+            // larger than the current count would underflow into four billion, which is exactly
+            // the mistake the listening-window cap made earlier in this project. Unsigned
+            // subtraction against a counter someone else resets is worth distrusting on sight.
+            static_cast<unsigned long>(
+                audio.tally().frames() > capture_at_status
+                    ? (audio.tally().frames() - capture_at_status) * 1000u / kStatusIntervalMs
+                    : 0u),
             static_cast<int>(audio.isMonitoring()),
             static_cast<unsigned long>(vad_starts), static_cast<unsigned long>(vad_ends),
             static_cast<int>(peak_recent * 100.0f), static_cast<unsigned>(crossings_recent),
@@ -1016,6 +1043,8 @@ void loop() {
             static_cast<unsigned long>(now_ms / 1000));
         peak_recent = 0.0f;
         crossings_recent = 0;
+        frames_at_status = renderer.framesPushed();
+        capture_at_status = audio.tally().frames();
     }
 
     delay(5);
