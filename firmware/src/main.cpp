@@ -191,8 +191,15 @@ void apply(roboface::DeviceEvent event) {
 // One captured frame, straight onto the wire. Returning false tells `AudioIo` the frame did not
 // go; capture keeps running rather than stalling, because the microphone does not pause for the
 // network and a gap is better than losing the rest of the sentence.
+//: Кадри, які сокет не взяв. Лічильник тут, а не в `AudioIo`: відмова належить лінку, і без неї
+//: «надіслано 1 кадр» неможливо відрізнити від «мікрофон замовк після одного кадру» -- дві зовсім
+//: різні поломки з однаковим числом.
+uint32_t frames_refused = 0;
+
 bool sendCapturedFrame(const uint8_t* data, std::size_t length) {
-    return ws.sendAudio(data, length);
+    const bool sent = ws.sendAudio(data, length);
+    if (!sent) ++frames_refused;
+    return sent;
 }
 
 // The loopback sink: the same frames, into the playback buffer instead of onto the wire.
@@ -259,10 +266,13 @@ void endListening(const char* why = "?") {
     if (!audio.isListening()) return;
     audio.stopListening();
     ws.sendListenStop();
-    Serial.printf("[listen] closed by %s · sent %u frames (%u ms) · vad starts=%u ends=%u\n", why,
+    Serial.printf("[listen] closed by %s після %lu мс · sent %u frames (%u ms) · vad s=%u e=%u\n",
+                  why, static_cast<unsigned long>(listen_opened_ms == 0 ? 0u : millis() - listen_opened_ms),
                   static_cast<unsigned>(audio.tally().frames()),
                   static_cast<unsigned>(audio.tally().durationMs()),
                   static_cast<unsigned>(vad_starts), static_cast<unsigned>(vad_ends));
+    Serial.printf("[listen] відмов сокета: %lu\n", static_cast<unsigned long>(frames_refused));
+    frames_refused = 0;
     // Leaves the device *thinking*, which is now correct as written: recognition follows, then a
     // reply, and the terminal `reply` frame ends the turn. v1.2 added a kTurnEnded here because it
     // had neither; v1.3 removes it, as that comment said it would.
@@ -385,6 +395,15 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
 
         case roboface::ParseResult::kAsr:
             Serial.printf("\n[heard] %s\n", frame.text.c_str());
+            // **The utterance is over.** The recogniser decided it, and it decides better than the
+            // local end-pause: it endpoints on ~500 ms of silence, while this device's pause is
+            // reset by any scrap of room noise loud enough to pass the threshold.
+            //
+            // Without this the device stays in `listening`, and everything that follows fails in a
+            // way that looks unrelated: the reply is refused as arriving "outside a turn", and the
+            // speaker cannot take the shared bus because the microphone still holds it
+            // (`I2S: register I2S object to platform failed`). The person simply hears nothing.
+            if (audio.isListening()) endListening("asr");
             return;
 
         case roboface::ParseResult::kTtsEnd:
@@ -879,8 +898,15 @@ void loop() {
         last_meter_ms = now_ms;
         needs_push = true;
     }
-    if (audio.isListening() && listen_opened_ms != 0 &&
-        now_ms - listen_opened_ms >= kMaxWindowMs) {
+    // `millis()`, **not** the loop's `now_ms`. `now_ms` is read at the top of the iteration and
+    // `listen_opened_ms` is stamped later in the same one, so `now_ms - listen_opened_ms` is
+    // negative -- and on a uint32_t that is about four billion, which is always past any cap.
+    //
+    // Measured: every window closed 53 ms after it opened, which is why each one carried a single
+    // frame, never reported an end, and reopened immediately. The counter said "closed by cap" and
+    // was telling the truth; the cap was simply arriving four billion milliseconds early.
+    const uint32_t window_open_ms = listen_opened_ms == 0 ? 0 : millis() - listen_opened_ms;
+    if (audio.isListening() && listen_opened_ms != 0 && window_open_ms >= kMaxWindowMs) {
         listen_until_ms = 0;
         endListening("cap");
     }
