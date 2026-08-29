@@ -103,7 +103,9 @@ def watch(
     # Everything printed also goes to the log when one is open. A test session is worth keeping:
     # the interesting line is usually the one that scrolled past while you were talking to the
     # board, and asking someone to reproduce a run to recover it is asking them to do it twice.
-    log_file = open(log_path, "a", encoding="utf-8") if log_path else None
+    # Not a `with`: the file has to stay open for the whole watch loop, and the loop is the body
+    # of this function. Closed in the `finally` below, on every path out.
+    log_file = open(log_path, "a", encoding="utf-8") if log_path else None  # noqa: SIM115
 
     def emit(text: str) -> None:
         print(text, flush=True)
@@ -205,6 +207,8 @@ def watch(
             if buffer:
                 emit(buffer.decode("utf-8", "replace"))
             connection.close()
+        if log_file is not None:
+            log_file.close()
 
     return 0
 

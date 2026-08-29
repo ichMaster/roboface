@@ -233,3 +233,4 @@ firmware/src/config.h
 
 # macOS
 .DS_Store
+hw-test.log
