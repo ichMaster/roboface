@@ -56,6 +56,7 @@ void AudioIo::startSpeaking() {
     M5.Speaker.setVolume(volume_);
     speaking_ = true;
     draining_ = false;
+    primed_ = false;
 }
 
 std::size_t AudioIo::write(const uint8_t* data, std::size_t length) {
@@ -241,6 +242,12 @@ void AudioIo::tick(uint32_t now_ms) {
     // the whole backlog at once and then recycles the three pool buffers underneath audio the I2S
     // task has not read yet. TTS never showed this because its chunks arrive network-paced; a
     // loopback recording is already buffered, drains in one tick, and plays as silence.
+    // Wait for a cushion before the first sample, but never once the reply is complete -- at that
+    // point what is in the ring is all there will ever be, and holding it back would simply cut
+    // the end off short replies.
+    if (!primed_ && (draining_ || backlog_.size() >= kPlaybackPrimeBytes)) primed_ = true;
+    if (!primed_) return;
+
     while (!backlog_.empty() && M5.Speaker.isPlaying(kChannel) < 2) {
         uint8_t* buffer = pool_[slot_];
         const std::size_t got = backlog_.readSamples(buffer, kChunkBytes);
@@ -291,6 +298,7 @@ void AudioIo::releaseBus() {
     M5.Speaker.end();
     speaking_ = false;
     draining_ = false;
+    primed_ = false;
     backlog_.clear();
 
     // Hearing again is restored here because **every** route out of playback passes through this

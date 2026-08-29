@@ -214,9 +214,13 @@ void onCapturedFrame(const int16_t* samples, std::size_t count, uint32_t frame_m
         cal_zc[cal_count] = static_cast<uint16_t>(roboface::zeroCrossings(samples, count));
         ++cal_count;
     }
+    // Only while calibrating. This runs on **every** captured frame, and the endpointer already
+    // scans the same 320 samples for the same thing -- doing it twice more for a status line cost
+    // a quarter of the frames in a window, which reaches the recogniser as speech full of holes.
+    // A diagnostic must not compete with the thing it is diagnosing.
     if (peak > peak_recent) {
         peak_recent = peak;
-        crossings_recent = roboface::zeroCrossings(samples, count);
+        if (cal_until_ms != 0) crossings_recent = roboface::zeroCrossings(samples, count);
     }
     switch (endpointer.feed(samples, count, frame_ms)) {
         case roboface::VadEvent::kSpeechStarted:

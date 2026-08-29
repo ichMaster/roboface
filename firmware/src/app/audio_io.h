@@ -49,6 +49,18 @@ inline constexpr std::size_t kFallbackBacklogBytes = 48 * 1024;
 //: is acted on promptly, long enough that queueing is not the dominant cost.
 inline constexpr std::size_t kChunkBytes = 1024;
 
+//: How much of a reply must be in hand before the speaker is allowed to start. At 32 kB/s this is
+//: a quarter of a second of cushion.
+//:
+//: Playback used to begin on the first byte that arrived, which sounds like the fastest possible
+//: answer and is in fact the choppiest: the speaker drains the handful of bytes it was given and
+//: then waits, so the reply arrives in audible pieces. Synthesis is per phrase and the network is
+//: not smooth, so some cushion is the difference between a voice and a stutter.
+//:
+//: It costs a quarter second of time-to-first-audio, which is real and worth stating -- but a
+//: reply that is heard late is better than one that is heard broken.
+inline constexpr std::size_t kPlaybackPrimeBytes = 8 * 1024;
+
 //: Buffers in flight. `playRaw` queues two per channel, so three is one more than can be pending
 //: and a refill never lands on memory the I2S task is still reading.
 inline constexpr std::size_t kChunkSlots = 3;
@@ -191,6 +203,8 @@ class AudioIo {
     std::size_t slot_ = 0;
     bool speaking_ = false;
     bool draining_ = false;
+    //: Whether enough of the reply has arrived to start playing it out.
+    bool primed_ = false;
     uint8_t volume_ = 120;
     uint8_t mic_gain_ = 16;
     uint32_t bytes_queued_ = 0;
