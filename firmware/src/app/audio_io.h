@@ -94,6 +94,13 @@ class AudioIo {
     bool startMonitoring(FrameObserver observer = nullptr);
     bool isMonitoring() const { return monitoring_; }
 
+    //: Consumed by reading: the endpointer is cleared once when hearing resumes, not every tick.
+    bool takeMonitorResumed() {
+        const bool resumed = monitor_resumed_;
+        monitor_resumed_ = false;
+        return resumed;
+    }
+
     bool startListening(FrameSink sink);
 
     // Stop capturing and release the bus. Safe when not listening.
@@ -158,6 +165,11 @@ class AudioIo {
     bool listening_ = false;
     bool monitoring_ = false;
     FrameObserver observer_ = nullptr;
+    //: Whether the room should be monitored at all, independent of whether the bus is momentarily
+    //: busy. Playback clears `monitoring_`; this is what says to put it back afterwards.
+    bool monitor_wanted_ = false;
+    //: True once, on the tick where listening resumed -- the caller's cue to clear its endpointer.
+    bool monitor_resumed_ = false;
     FrameSink sink_ = nullptr;
     roboface::CaptureTally tally_;
     float level_ = 0.0f;

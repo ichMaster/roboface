@@ -886,6 +886,14 @@ void loop() {
     now_ms_for_log = now_ms;
     audio.tick(now_ms);
 
+    // Hearing came back after the device finished speaking. Clear the endpointer rather than
+    // letting it carry the reply across: the silence during playback is not part of anyone's
+    // pause, and the tail of the last sentence is not the start of the next one.
+    if (audio.takeMonitorResumed()) {
+        endpointer.reset();
+        pending_vad = roboface::VadEvent::kNone;
+    }
+
     // A live meter needs live repaints, but **not at the panel's full rate**. Marking the sprite
     // dirty every loop made the 33 ms cap fire constantly, and a full 153 KB sprite push at 30 Hz
     // left the loop unable to service the microphone within its 40 ms of buffering: capture

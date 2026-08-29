@@ -38,9 +38,20 @@ bool AudioIo::begin(uint8_t volume, uint8_t mic_gain) {
 
 void AudioIo::startSpeaking() {
     if (speaking_) return;  // the bus is already ours; switching again would glitch the output
-    // One bus, two peripherals. End the microphone first so I2S is not torn down under a live
-    // capture -- v1.2's capture path will do the reverse.
+    // One bus, two peripherals, and **the mirror of `startMonitoring`** -- including the pause,
+    // which matters more now that the microphone runs continuously and therefore always holds the
+    // bus when a reply arrives. Without it `M5.Speaker.begin()` meets a port still configured for
+    // capture and the driver refuses outright:
+    //
+    //     E I2S: register I2S object to platform failed
+    //
+    // The reply is generated, the text reaches the screen, and the person hears nothing at all.
+    //
+    // `monitoring_` is cleared first so `tick` stops draining a recorder that is about to be shut
+    // down; `releaseBus` puts it back when playback is over, by every route out.
+    monitoring_ = false;
     if (M5.Mic.isEnabled()) M5.Mic.end();
+    delay(20);
     if (!M5.Speaker.begin()) return;
     M5.Speaker.setVolume(volume_);
     speaking_ = true;
@@ -63,6 +74,7 @@ std::size_t AudioIo::write(const uint8_t* data, std::size_t length) {
 
 bool AudioIo::startMonitoring(FrameObserver observer) {
     observer_ = observer;
+    monitor_wanted_ = true;
     if (monitoring_ || listening_) return true;
     if (speaking_) return false;
     // Give the bus up **and let it settle** before claiming it for input. `startSpeaking` already
@@ -250,6 +262,15 @@ void AudioIo::releaseBus() {
     speaking_ = false;
     draining_ = false;
     backlog_.clear();
+
+    // Hearing again is restored here because **every** route out of playback passes through this
+    // one function -- drained, cancelled, aborted, faulted. A reply that ended by a path nobody
+    // anticipated would otherwise leave the device permanently deaf while looking perfectly
+    // healthy: connected, idle, a face on the screen, and no answer to anything said to it.
+    if (monitor_wanted_ && !listening_) {
+        delay(20);
+        if (startMonitoring(observer_)) monitor_resumed_ = true;
+    }
 }
 
 }  // namespace app
