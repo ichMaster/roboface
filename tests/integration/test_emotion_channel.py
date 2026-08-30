@@ -240,3 +240,44 @@ def test_every_turn_shape_drives_the_face(text: str) -> None:
         turn = device.collect_turn()
 
     assert turn.emotions, f"no emotion frame for {text!r}"
+
+
+# --------------------------------------------------------------------------------------
+# A report that does not arrive first (code review #3)
+# --------------------------------------------------------------------------------------
+
+
+def test_a_report_arriving_after_the_deltas_still_reaches_the_face() -> None:
+    """The schema declares `emotion` first and pins the property ordering, so Gemini sends it
+    first. The **seam** does not promise that — `LLMProvider.stream`'s own docstring says the two
+    arrive interleaved — and a consumer that read the report once, at the first delta, would show
+    `neutral` for the whole of a reply the model had labelled.
+
+    Silently: a plausible face, a complete answer, nothing in any log.
+    """
+    provider = MockLLMProvider(
+        deltas=["Так", ", ", "звісно."],
+        report=ModelReport(emotion="joy", intensity=0.9),
+        report_after_deltas=True,
+    )
+    with connect(_app(provider)) as device:
+        device.hello()
+        device.send(TextIn(text="привіт"))
+        turn = device.collect_turn()
+
+    assert Emotion.JOY in [frame.emotion for frame in turn.emotions]
+    speaking = [frame for frame in turn.emotions if frame.speaking]
+    assert speaking[-1].emotion is Emotion.JOY
+    assert speaking[-1].intensity == 0.9
+
+
+def test_a_late_report_does_not_duplicate_frames_when_it_never_changes() -> None:
+    """The check is `is not`, on the object rather than its value, so a report that stays the same
+    emits one frame however many deltas follow it. A per-delta emission would be a `emotion{}` on
+    the wire for every word."""
+    with connect(_app(MockLLMProvider(deltas=["a", "b", "c", "d"]))) as device:
+        device.hello()
+        device.send(TextIn(text="привіт"))
+        turn = device.collect_turn()
+
+    assert len([frame for frame in turn.emotions if frame.speaking]) == 1

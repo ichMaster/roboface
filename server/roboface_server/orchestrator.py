@@ -261,6 +261,7 @@ class Orchestrator:
             yield EmotionEvent(
                 frame=frame_for(TurnState.REPLYING, report=stream.report, speaking=True)
             )
+            reported = stream.report
 
             collected.append(first)
             yield ReplyDelta(text=first)
@@ -275,11 +276,34 @@ class Orchestrator:
                         yield chunk
 
                 async for delta in stream:
+                    # **A report that arrives late is still the model's word** (code review #3).
+                    # The response schema declares it first and pins the property ordering, so
+                    # Gemini does not do this -- but the *seam* does not promise it: its own
+                    # docstring says the two arrive interleaved, and a provider revision that
+                    # reordered them would otherwise leave the face on `neutral` for a reply the
+                    # model had labelled. Silently, with a plausible face and a complete answer.
+                    if stream.report is not reported:
+                        reported = stream.report
+                        yield EmotionEvent(
+                            frame=frame_for(TurnState.REPLYING, report=reported, speaking=True)
+                        )
+
                     collected.append(delta)
                     yield ReplyDelta(text=delta)
                     for phrase in splitter.feed(delta):
                         async for chunk in self._speak(phrase):
                             yield chunk
+
+                # And once more after the loop. A report arriving with or after the *last* event
+                # is never seen from inside it: `_ReplyStream` skips reports, so the iterator
+                # swallows one and then ends. Checking only inside the loop would leave exactly
+                # the last-position case broken -- which is where a provider that appends its
+                # metadata would put it.
+                if stream.report is not reported:
+                    reported = stream.report
+                    yield EmotionEvent(
+                        frame=frame_for(TurnState.REPLYING, report=reported, speaking=True)
+                    )
 
                 # The tail. Most replies from a desk companion are a sentence or two and end
                 # without terminal punctuation ever arriving, so without this the last -- often

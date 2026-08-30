@@ -62,7 +62,13 @@ class MockLLMProvider:
         fail_at_index: int | None = None,
         error: ProviderError | None = None,
         report: ModelReport | None = _NO_REPORT,
+        report_after_deltas: bool = False,
     ) -> None:
+        #: Emit the report **after** the text instead of before it. The real schema does not do
+        #: this -- `property_ordering` is pinned -- but the seam explicitly allows it, and a
+        #: consumer that reads the report once at the first delta would silently show the wrong
+        #: face for the whole reply (code review #3). A lever exists so that is testable.
+        self.report_after_deltas = report_after_deltas
         #: What the model says about its own state, yielded **before** the first delta -- the
         #: order the real provider guarantees, so a test that depends on it is testing the
         #: contract rather than an accident of this mock.
@@ -90,7 +96,7 @@ class MockLLMProvider:
         # Before the first delta and before the first delay: the report is what the real schema
         # produces first, and a mock that emitted it later would let a first-token-budget test
         # pass for the wrong reason.
-        if self.report is not None:
+        if self.report is not None and not self.report_after_deltas:
             yield self.report
 
         for index, delta in enumerate(self.deltas):
@@ -99,6 +105,9 @@ class MockLLMProvider:
             if self.delay_s and index == self.delay_before_index:
                 await asyncio.sleep(self.delay_s)
             yield ReplyText(text=delta)
+
+        if self.report is not None and self.report_after_deltas:
+            yield self.report
 
         # A failure index past the end means "fail after the last delta" -- a stream that ends
         # in an error rather than a completion, which is a different case from failing part of
