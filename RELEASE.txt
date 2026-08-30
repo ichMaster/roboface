@@ -1,3 +1,31 @@
+Version 2.5.0 (2026-08-30)
+---------------------------
+- Both microphones. The Core S3 has two on an ES7210 and the device used one
+  of them; frames are now captured interleaved and taken apart in pure logic
+  before level, VAD, direction or the uplink see them.
+- The face looks toward a voice. Direction comes from the level balance --
+  the header states why the textbook time-difference cue is unusable here:
+  ~40 mm of spacing is +/-2 samples at 16 kHz, which is a coin toss with
+  reverberation on it. The second channel's real contribution is coherence,
+  which separates one source from a room.
+- "No opinion" is carried end to end -- DirectionEstimate.present, Gaze | None
+  on the wire, and each renderer source skipped rather than contributing a
+  zero. A speaker directly in front of the device produces a balance near
+  zero, which is the absence of evidence, not an instruction to stare ahead.
+- A fourth event type, voice/direction, answered with neither a face nor a
+  line: the server remembers it per connection and attaches it to the frames
+  it had reason to send.
+- The uplink is made from both microphones -- averaged, which cannot clip and
+  halves the uncorrelated noise between them -- or from one when the other is
+  obstructed, with hysteresis so the choice cannot flap mid-word. The frame
+  size is unchanged and asserted so.
+- Coherence biases the VAD's sensitivity by a quarter each way and never
+  gates it: a person sitting in front of the device is the least directional
+  source there is.
+- pure/roots.h -- a square root that converges over the whole range. The
+  copied Newton loops silently returned a badly wrong answer above ~1e18,
+  which made two identical channels look like a noisy room.
+
 Version 2.4.1 (2026-08-30)
 ---------------------------
 - Mute is a button, not a gesture: a microphone glyph in the top-left corner,
