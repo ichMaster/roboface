@@ -113,10 +113,37 @@ git push origin "v<version>"
 > from the pushed commits — including any tag a later re-generation run left behind. Push the one tag
 > by name so a release publishes exactly what it cut.
 
+### Step 6.6: Deploy to the server
+
+**A release that is not on the server has not shipped.** The server does not run on the
+workstation — it runs on the box in [DEPLOYMENT.md](../../../DEPLOYMENT.md) §Topology — so tagging
+and pushing leaves the running service on the previous version, and the device keeps talking to
+that. This step is what makes a release real, and it runs from this machine:
+
+```bash
+tools/remote.sh deploy && tools/remote.sh restart && tools/remote.sh health
+```
+
+Then **verify the version that is actually serving**, rather than trusting the restart:
+
+```bash
+curl -s http://<server>:8000/openapi.json | python3 -c "import sys,json;print(json.load(sys.stdin)['info']['version'])"
+```
+
+It must equal the version just released. Checking this is not ceremony: a deploy that copied the
+files and left the old process holding the port reported success for four releases before anyone
+compared the two numbers, and the symptom was a device that seemed to be missing features it had.
+
+**Never fail the release retroactively.** The tag is already pushed by the time this runs, so a
+server that cannot be reached is *reported*, not rolled back — say plainly that the release is
+tagged but not live, and what to run when the box is back.
+
 ### Step 6.5: Emit tracking events
 
 `--emitter skill:release-version --scope phase=..,version=..`: after the tag → `release.tagged`
-(`tag`); after the push → `release.pushed` (`tag`, `remote`).
+(`tag`); after the push → `release.pushed` (`tag`, `remote`); after the deploy →
+`release.deployed` (`tag`, `host`, `serving` — the version the server actually reports, which is
+the point of the event).
 
 ### Step 7: Report
 
@@ -125,6 +152,7 @@ Released v<version>
   Branch: <branch>
   Commit: <short hash>
   Tag:    v<version>
+  Server: <host> serving <version>   (or: NOT DEPLOYED -- <why>)
   Files updated:
     - VERSION
     - README.md
@@ -134,6 +162,9 @@ Released v<version>
 
 ## Important Rules
 
+- **A release ships to the server.** Tagging is not shipping: the server runs on another box, and
+  the device talks to *that*. Deploy after pushing the tag, and confirm the version the server
+  reports rather than the fact that a restart returned zero.
 - **Never downgrade.** Refuse if the target version is less than or equal to the current version.
 - **Clean tree first.** If there are uncommitted changes, ask the user before proceeding.
 - **Annotated tags only.** Always use `git tag -a`, never lightweight tags.

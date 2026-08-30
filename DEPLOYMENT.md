@@ -81,6 +81,25 @@ RF_REMOTE=ich@192.168.1.50 tools/remote.sh status     # a different box, one com
 The port must also match `ROBOFACE_WS_PORT` in `server/.env`, which is what the server actually
 binds; `RF_REMOTE_PORT` is what the script checks and reports.
 
+## When to deploy
+
+**Whenever the server changes, and always as the last step of a release.** The `release-version`
+skill runs it (§Step 6.6): tagging and pushing leave the running service on the previous version,
+and the device is talking to the running service rather than to the tag.
+
+**Confirm the version the server reports** rather than the fact that `restart` exited zero:
+
+```bash
+curl -s http://192.168.1.197:8000/openapi.json \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['info']['version'])"
+```
+
+That check exists because of a real failure. Until 2026-08-30 `start` waited for **a** listener on
+the port instead of for its own; an older server with no PID file already held it, so every deploy
+reported success while the box went on serving code four releases old. The files on disk were
+current the whole time, which is what made it invisible — and the symptom presented as the *device*
+failing to handle frames it handled correctly.
+
 ## Day-to-day
 
 ```bash

@@ -97,6 +97,29 @@ Port 8420, never 8000 — the RoboFace server will own 8000. Run its pytest **fr
 
 `~/development/lumi` is the source of this repo's documentation shape and versioning standard.
 
+## The server runs on another machine — deploy is part of shipping
+
+**`192.168.1.197` (`ich-picobox`) is the server. The Mac is only where the code is written**, and
+it cannot host the server at all — an endpoint filter on the managed Mac accepts an inbound LAN
+connection and destroys the socket before the first read (DEPLOYMENT.md §Why the server does not run
+on the workstation). The device dials `.197`, so **code that has not been deployed there is code the
+device has never run**.
+
+```bash
+tools/remote.sh deploy && tools/remote.sh restart && tools/remote.sh health
+curl -s http://192.168.1.197:8000/openapi.json \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['info']['version'])"
+```
+
+**Deploy whenever the server changes, and always as the last step of a release** — `release-version`
+does it (§Step 6.6). Then check the version the server *reports*, not that the restart returned
+zero: until 2026-08-30 `remote.sh start` waited for any listener on the port rather than for its
+own, so a stray older process kept serving while every deploy said "started". The board ran a build
+four releases old and the symptom looked like missing firmware features.
+
+`firmware/src/config.h` is gitignored (it holds the WiFi password), so **nothing in the repository
+names the server host** — which is why this section exists.
+
 ## Testing
 
 [TESTING.md](TESTING.md) is the practical guide: the suites, driving the server with
