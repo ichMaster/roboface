@@ -241,9 +241,17 @@ class TouchGestures {
 
             if (zone_ == TouchZone::kMicButton) {
                 // Control, and it deliberately does **not** join the tap run: `taps_` is affection's
-                // counter, and a person reaching for mute has not petted anything. The refractory
-                // still applies -- a panel that reports one release as two must not toggle twice.
-                if (duration >= kPttHoldMs) return result;
+                // counter, and a person reaching for mute has not petted anything.
+                //
+                // **No duration limit, deliberately.** The first version required the press to be
+                // shorter than `kPttHoldMs`, and that was wrong for the same reason it was wrong
+                // everywhere else in this file: 120 ms is the threshold at which *push-to-talk*
+                // decides a hold is speech, and a deliberate press on a button is 150-250 ms. The
+                // button rejected every real press. A button has no second meaning for a long
+                // press, so it should accept any press that was not cancelled by sliding off it.
+                //
+                // The refractory still applies -- a panel that reports one release as two must not
+                // toggle twice.
                 if (reported_at_ms_ != 0 && sample.at_ms - reported_at_ms_ < kGestureRefractoryMs) {
                     return result;
                 }
@@ -291,9 +299,16 @@ class TouchGestures {
 
     //: Drop any run of taps. Called when the face changes state under the finger -- a run that
     //: spanned a reply would report a count nobody performed.
+    //:
+    //: **It does not abort the press in progress**, and that distinction cost a debugging session.
+    //: Clearing `held_` here meant a finger that was down when the state changed could never
+    //: complete: the release arrived to a classifier that had forgotten the press, and the gesture
+    //: silently evaporated. Since a press *itself* changes the state -- it opens a PTT window --
+    //: that made any press longer than 120 ms unclassifiable.
+    //:
+    //: What the review finding actually asked for is that the **count** not span a state change,
+    //: which is `taps_`. The press is a fact about a finger and no state change makes it untrue.
     void reset() {
-        held_ = false;
-        reported_hold_ = false;
         taps_ = 0;
         reported_at_ms_ = 0;
     }

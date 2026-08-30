@@ -144,6 +144,12 @@ constexpr uint32_t kMeterIntervalMs = 100;
 uint32_t last_meter_ms = 0;
 uint32_t now_ms_for_log = 0;
 
+//: Whether the press currently on the glass started on the microphone button, and the previous
+//: loop's press level that lets the down edge be found. Together they keep a control gesture out
+//: of push-to-talk -- see the touch block in `loop()`.
+bool press_began_on_button = false;
+bool was_pressed = false;
+
 //: Press-and-hold on the glass. The rules live in `pure/ptt.h`; this holds the instance and the
 //: panel is read once per loop.
 roboface::PushToTalk ptt;
@@ -1212,9 +1218,28 @@ void loop() {
     // **The affection half of the same finger** (v2.4). `PushToTalk` above decides what the touch
     // does to the microphone; `TouchGestures` decides what it meant to the character. Both are fed
     // the same panel state in the same loop, so they cannot disagree about whether a finger is down.
+    const auto detail = M5.Touch.getDetail();
+    const bool pressed = detail.isPressed();
+
+    // **A press that began on the microphone button is not push-to-talk.**
+    //
+    // `PushToTalk` is fed the raw panel level and has no idea *where* the finger is, so without
+    // this a press on the mute button opened a listening window after 120 ms -- the exact opposite
+    // of what the button says -- and the state change that caused then reached `gestures.reset()`,
+    // which used to wipe the press. The button therefore did nothing at all: no click, no toggle,
+    // and a microphone that turned itself on. Both halves are fixed; this is the half that keeps a
+    // control from driving the microphone it controls.
+    //
+    // Latched at the down edge, so sliding off the button cannot hand the rest of the press to PTT.
+    if (!pressed) {
+        press_began_on_button = false;
+    } else if (!was_pressed) {
+        press_began_on_button = roboface::inMicButton(detail.x, detail.y);
+    }
+    was_pressed = pressed;
+
     {
-        const auto detail = M5.Touch.getDetail();
-        const roboface::TouchSample sample{detail.isPressed(), detail.x, detail.y, now_ms,
+        const roboface::TouchSample sample{pressed, detail.x, detail.y, now_ms,
                                            M5.Touch.getCount()};
         const roboface::TouchResult touched = gestures.feed(sample, audio.isListening());
         if (touched.gesture != roboface::TouchGesture::kNone) {
@@ -1222,7 +1247,7 @@ void loop() {
         }
     }
 
-    switch (ptt.update(M5.Touch.getDetail().isPressed(), now_ms)) {
+    switch (ptt.update(pressed && !press_began_on_button, now_ms)) {
         case roboface::PttEvent::kStarted:
             // A timed `/listen` window and a finger must not both own the microphone.
             listen_until_ms = 0;

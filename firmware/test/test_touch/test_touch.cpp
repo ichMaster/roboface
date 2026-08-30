@@ -50,6 +50,44 @@ static void test_outside_the_face_is_not_affection() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kOutside), static_cast<int>(roboface::zoneAt(5, 230)));
 }
 
+static void test_a_press_survives_a_state_change_under_the_finger() {
+    // **The bug that made the button do nothing.** A press longer than the 120 ms PTT threshold
+    // opens a listening window, the device changes state, and `reset()` used to clear `held_` --
+    // so the release arrived at a classifier that had forgotten the press. Every deliberate press
+    // evaporated; only a flick shorter than 120 ms ever produced a gesture.
+    roboface::TouchGestures gestures;
+    gestures.feed({true, kCheekX, kCheekY, 1000});
+    gestures.reset();  // the state changed under the finger
+    const auto result = gestures.feed({false, kCheekX, kCheekY, 1100});
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kTap), static_cast<int>(result.gesture));
+}
+
+static void test_a_state_change_still_drops_the_tap_run() {
+    // And the finding `reset()` was written for is still fixed: a tap before a reply and one after
+    // must not merge into a multi-tap nobody performed. The count goes; the press does not.
+    roboface::TouchGestures gestures;
+    gestures.feed({true, kCheekX, kCheekY, 1000});
+    gestures.feed({false, kCheekX, kCheekY, 1050});
+
+    gestures.reset();  // a reply happened
+
+    gestures.feed({true, kCheekX, kCheekY, 1300});   // within kMultiTapWindowMs of the first
+    const auto second = gestures.feed({false, kCheekX, kCheekY, 1350});
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kTap), static_cast<int>(second.gesture));
+    TEST_ASSERT_EQUAL_UINT8(1, second.count);
+}
+
+static void test_the_button_survives_it_too() {
+    roboface::TouchGestures gestures;
+    gestures.feed({true, 10, 10, 1000});
+    gestures.reset();
+    const auto result = gestures.feed({false, 10, 10, 1200});
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kMicToggle), static_cast<int>(result.gesture));
+}
+
 static void test_the_microphone_button_owns_the_top_left_corner() {
     // The corner itself, the glyph, and the right-hand edge of the target.
     TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kMicButton), static_cast<int>(roboface::zoneAt(0, 0)));
@@ -113,6 +151,9 @@ static void test_sliding_off_the_button_cancels_it() {
 }
 
 static void test_the_button_is_never_a_stroke_or_a_carousel_hold() {
+    // Nothing fires *while* it is held -- no stroke, no carousel -- and the release is still the
+    // toggle however long the press lasted. A button that ignored a slow press would be a button
+    // that ignored a careful person.
     roboface::TouchGestures gestures;
     gestures.feed({true, 10, 10, 1000});
     for (uint32_t t = 1050; t <= 3000; t += 50) {
@@ -120,7 +161,19 @@ static void test_the_button_is_never_a_stroke_or_a_carousel_hold() {
         TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kNone), static_cast<int>(held.gesture));
     }
     const auto released = gestures.feed({false, 10, 10, 3050});
-    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kNone), static_cast<int>(released.gesture));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kMicToggle),
+                          static_cast<int>(released.gesture));
+}
+
+static void test_a_deliberate_press_is_not_too_slow_for_the_button() {
+    // 200 ms: what a person actually does when pressing a control they are looking at. The first
+    // version of this button required < 120 ms -- the push-to-talk threshold, borrowed for no
+    // reason -- and so rejected every real press.
+    roboface::TouchGestures gestures;
+    gestures.feed({true, 10, 10, 1000});
+    const auto result = gestures.feed({false, 10, 10, 1200});
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kMicToggle), static_cast<int>(result.gesture));
 }
 
 static void test_an_eye_is_where_the_renderer_draws_one() {
@@ -451,12 +504,16 @@ static void test_one_finger_is_still_affection() {
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_outside_the_face_is_not_affection);
+    RUN_TEST(test_a_press_survives_a_state_change_under_the_finger);
+    RUN_TEST(test_a_state_change_still_drops_the_tap_run);
+    RUN_TEST(test_the_button_survives_it_too);
     RUN_TEST(test_the_microphone_button_owns_the_top_left_corner);
     RUN_TEST(test_the_button_never_takes_a_pixel_from_the_face);
     RUN_TEST(test_tapping_the_button_is_the_toggle_and_not_affection);
     RUN_TEST(test_the_button_does_not_feed_the_affection_run);
     RUN_TEST(test_sliding_off_the_button_cancels_it);
     RUN_TEST(test_the_button_is_never_a_stroke_or_a_carousel_hold);
+    RUN_TEST(test_a_deliberate_press_is_not_too_slow_for_the_button);
     RUN_TEST(test_an_eye_is_where_the_renderer_draws_one);
     RUN_TEST(test_moving_the_eyes_moves_the_poke_zone);
     RUN_TEST(test_forehead_and_cheek_split_at_the_eyes);
