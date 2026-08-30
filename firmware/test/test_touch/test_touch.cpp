@@ -100,18 +100,68 @@ static void test_a_tap_is_a_tap() {
 }
 
 static void test_taps_in_quick_succession_accumulate() {
-    // DEVICE_UI: "repeated taps build joy". The count is what builds it.
+    // DEVICE_UI: "repeated taps build joy". The count is what builds it. Spaced past the refractory
+    // period so every tap is also reported -- the throttling has its own tests below.
     TouchGestures gestures;
     const auto out = replay(gestures, {
         {true,  kCheekX, kCheekY, 1000}, {false, kCheekX, kCheekY, 1050},
-        {true,  kCheekX, kCheekY, 1200}, {false, kCheekX, kCheekY, 1250},
-        {true,  kCheekX, kCheekY, 1400}, {false, kCheekX, kCheekY, 1450},
+        {true,  kCheekX, kCheekY, 1320}, {false, kCheekX, kCheekY, 1360},
+        {true,  kCheekX, kCheekY, 1640}, {false, kCheekX, kCheekY, 1680},
     });
 
     TEST_ASSERT_EQUAL_INT(3, static_cast<int>(out.size()));
     TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kTap), static_cast<int>(out[0].gesture));
     TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kMultiTap), static_cast<int>(out[1].gesture));
     TEST_ASSERT_EQUAL_INT(3, out[2].count);
+}
+
+//: **A burst is throttled, not discarded.**
+//:
+//: Drumming on the face produced a reflex and a wire frame per tap, which is more reaction than
+//: anyone wants and more traffic than the event is worth. The count still rises through the burst,
+//: so what comes out is fewer reactions, each stronger -- rather than the same one repeated.
+void a_burst_of_taps_is_throttled() {
+    TouchGestures gestures;
+    std::vector<TouchSample> drumming;
+    for (uint32_t t = 1000; t < 2000; t += 80) {
+        drumming.push_back({true, kCheekX, kCheekY, t});
+        drumming.push_back({false, kCheekX, kCheekY, t + 40});
+    }
+
+    std::vector<roboface::TouchResult> out;
+    for (const auto& sample : drumming) {
+        const auto result = gestures.feed(sample);
+        if (result.gesture != TouchGesture::kNone) out.push_back(result);
+    }
+
+    // A second of drumming is a dozen taps; at one report per 250 ms it is four or five.
+    TEST_ASSERT_TRUE(out.size() >= 3);
+    TEST_ASSERT_TRUE(out.size() <= 5);
+}
+
+void a_throttled_burst_still_builds_the_count() {
+    // The taps that were not reported were still counted -- which is what makes the throttling a
+    // rate limit rather than a loss.
+    TouchGestures gestures;
+    std::vector<roboface::TouchResult> out;
+    for (uint32_t t = 1000; t < 2000; t += 80) {
+        gestures.feed({true, kCheekX, kCheekY, t});
+        const auto result = gestures.feed({false, kCheekX, kCheekY, t + 40});
+        if (result.gesture != TouchGesture::kNone) out.push_back(result);
+    }
+
+    TEST_ASSERT_TRUE(out.back().count > out.front().count + 2);
+}
+
+void the_first_touch_is_never_withheld() {
+    // A refractory period that applied before anything had been reported would swallow the very
+    // first tap after a boot, which is the one most likely to be someone checking the device works.
+    TouchGestures gestures;
+    const auto out = replay(gestures, {
+        {true, kCheekX, kCheekY, 50}, {false, kCheekX, kCheekY, 90},
+    });
+
+    TEST_ASSERT_EQUAL_INT(1, static_cast<int>(out.size()));
 }
 
 static void test_taps_far_apart_do_not_accumulate() {
@@ -192,12 +242,15 @@ static void test_poking_an_eye_twice_is_still_a_poke() {
     const int eye_y = geometry.centre_y + geometry.eye_offset_y;
     const int eye_x = geometry.centre_x - geometry.eye_spacing / 2;
 
+    // Spaced past the refractory period: this test is about the *kind* surviving a second poke,
+    // not about the throttling, which has its own tests.
     TouchGestures gestures;
     const auto out = replay(gestures, {
         {true,  eye_x, eye_y, 1000}, {false, eye_x, eye_y, 1050},
-        {true,  eye_x, eye_y, 1200}, {false, eye_x, eye_y, 1250},
+        {true,  eye_x, eye_y, 1320}, {false, eye_x, eye_y, 1360},
     });
 
+    TEST_ASSERT_EQUAL_INT(2, static_cast<int>(out.size()));
     TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kPokeEye), static_cast<int>(out[1].gesture));
 }
 
@@ -329,6 +382,9 @@ int main(int, char**) {
     RUN_TEST(test_forehead_and_cheek_split_at_the_eyes);
     RUN_TEST(test_a_tap_is_a_tap);
     RUN_TEST(test_taps_in_quick_succession_accumulate);
+    RUN_TEST(a_burst_of_taps_is_throttled);
+    RUN_TEST(a_throttled_burst_still_builds_the_count);
+    RUN_TEST(the_first_touch_is_never_withheld);
     RUN_TEST(test_taps_far_apart_do_not_accumulate);
     RUN_TEST(test_a_slow_drag_across_the_face_is_a_stroke);
     RUN_TEST(test_a_stroke_is_reported_while_it_happens);

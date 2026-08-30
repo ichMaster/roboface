@@ -71,6 +71,18 @@ inline constexpr const char* toString(TouchGesture gesture) {
 //: rarely closer than half a second.
 inline constexpr uint32_t kMultiTapWindowMs = 400;
 
+//: How long after a reported gesture the next one is suppressed.
+//:
+//: **The count keeps rising; only the reporting is throttled.** That distinction is the whole
+//: design: a person drumming on the face should not produce twenty reflexes and twenty frames on
+//: the wire, but they also should not have their enthusiasm discarded. So a burst of taps yields
+//: one reaction every quarter second -- and each one is *stronger* than the last, because the taps
+//: in between were counted.
+//:
+//: 250 ms is slower than a person can deliberately double-tap and faster than they can notice a
+//: reaction being withheld.
+inline constexpr uint32_t kGestureRefractoryMs = 250;
+
 //: How far a finger must travel while held before it is a stroke rather than a hold that wobbled.
 //: A finger resting on glass drifts a few pixels; 40 px is about a fingertip's width at this size,
 //: so it cannot be reached without meaning it.
@@ -215,6 +227,14 @@ class TouchGestures {
             taps_ = continues ? static_cast<uint8_t>(taps_ + 1) : 1;
             last_tap_ms_ = sample.at_ms;
 
+            // **Throttled, not dropped.** `taps_` above already rose; what this suppresses is the
+            // report, so a burst produces one reaction every `kGestureRefractoryMs` and each is
+            // deeper than the last rather than the same one repeated.
+            if (reported_at_ms_ != 0 && sample.at_ms - reported_at_ms_ < kGestureRefractoryMs) {
+                return result;
+            }
+            reported_at_ms_ = sample.at_ms;
+
             result.zone = zone_;
             result.count = taps_;
             if (zone_ == TouchZone::kEye) {
@@ -236,6 +256,7 @@ class TouchGestures {
         held_ = false;
         reported_hold_ = false;
         taps_ = 0;
+        reported_at_ms_ = 0;
     }
 
     bool isHeld() const { return held_; }
@@ -251,6 +272,9 @@ class TouchGestures {
     int start_y_ = 0;
     int travelled_ = 0;
     uint8_t taps_ = 0;
+    //: When a gesture was last reported. Zero means never -- so the first touch after a boot or a
+    //: reset is never withheld.
+    uint32_t reported_at_ms_ = 0;
     TouchZone zone_ = TouchZone::kOutside;
 };
 
