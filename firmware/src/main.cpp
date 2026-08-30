@@ -1187,6 +1187,27 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
     // `on` / `off` as well as a bare toggle. **A script must be able to set a state, not flip
     // one** -- it cannot see the indicator, so a toggle leaves it guessing, and guessing wrong
     // means every scripted line afterwards is refused with `[busy] not idle`.
+    if (line.text.rfind("/face ", 0) == 0) {
+        // **Set, not cycle.** `/faces` runs the self-test through every expression on its own
+        // schedule, which is right for looking at them and useless for a script: a test that wants
+        // "the flame, sad" cannot wait for a carousel of expressions to come round to it.
+        const std::string name = line.text.substr(6);
+        const roboface::Emotion emotion = roboface::emotionFrom(name.c_str());
+        if (emotion == roboface::Emotion::kNeutral && name != "neutral") {
+            Serial.printf("\n[face] немає такої емоції: %s\n", name.c_str());
+            return;
+        }
+        roboface::EmotionFrame frame;
+        frame.emotion = emotion;
+        frame.intensity = 0.85f;
+        frame.ttl_ms = 30000;
+        server_face = true;
+        renderer.show(frame);
+        needs_push = true;
+        Serial.printf("\n[face] %s\n", name.c_str());
+        return;
+    }
+
     if (line.text == "/skins") {
         Serial.println("\n[skins] доступні:");
         for (std::size_t i = 0; i < roboface::kSkinCount; ++i) {
