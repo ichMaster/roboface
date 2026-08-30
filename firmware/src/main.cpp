@@ -49,12 +49,32 @@ constexpr uint32_t kStatusIntervalMs = 10000;
 // generous for a face that is currently static, and it is the difference between the loop serving
 // the network and the loop being one long sprite push: 320x240x16 is 153 KB, so the unconditional
 // push in every 5 ms iteration implied ~30 MB/s on a bus that carries about 5.
-//: The face's own frame interval. 55 ms is ~18 FPS, inside the 15-20 the roadmap asks for.
+//: The face's frame interval when nothing else needs the loop. 100 ms is 10 FPS.
 //:
-//: Deliberately slower than the panel could manage. In v1 the display starved the microphone three
-//: separate times -- a 30 Hz repaint cost 53% of every capture window -- and the audio is the
-//: product while the animation is its presence. The face may drop a frame; the microphone may not.
-constexpr uint32_t kMinPushIntervalMs = 55;
+//: **Below the 15-20 the roadmap asks for, deliberately, and measured.** At 18 FPS the face held
+//: its rate and capture collapsed to 35% of a window -- 260 frames where 750 were due. A 320x240
+//: 16-bit sprite is 150 KB, so each push is 150 KB over SPI; the rate is not the cost, the pushes
+//: are.
+//:
+//: And 10 FPS is enough for what this animation actually does. The breath moves 3 px over 4.2 s
+//: and the gaze 4 px over 9 s -- at 10 FPS that is 42 and 90 frames respectively, far more than
+//: either needs. The one motion that wants speed is the blink, and it is handled by lengthening
+//: the blink rather than by raising the rate for everything else.
+constexpr uint32_t kMinPushIntervalMs = 100;
+
+//: The face's frame interval **while the audio path is busy** -- capturing or speaking.
+//:
+//: Measured, not chosen. At 55 ms the face held 16 FPS and capture collapsed to 35% of a window.
+//: 300 ms is three frames a second: during a turn the face is holding one expression anyway.
+//:
+//: The rule RF-058 was written for: **the face may drop frames, the microphone may not.** During a
+//: turn the face is holding one expression anyway -- the idle loop is the thing that wants frames,
+//: and the idle loop is exactly what is not happening while someone is talking.
+//:
+//: There is a second, less obvious reason this matters. The endpointer measures time in *frames*,
+//: so dropped frames slow its clock: at a third of the capture rate its 1200 ms end-pause becomes
+//: nearly four real seconds, and the window stops closing on its own.
+constexpr uint32_t kBusyPushIntervalMs = 300;
 uint32_t last_push_ms = 0;
 bool needs_push = true;
 
@@ -143,6 +163,12 @@ uint32_t listen_opened_ms = 0;
 //: since-boot averages -- an average since boot hides a regression that started a minute ago.
 uint32_t frames_at_status = 0;
 uint32_t capture_at_status = 0;
+
+//: Frames the recorder has produced since boot, counted in the observer. Monotonic on purpose --
+//: unlike the send tally, which resets at every window and underflowed into four billion the first
+//: time it was subtracted against a stale baseline.
+uint32_t frames_captured = 0;
+uint32_t captured_at_status = 0;
 constexpr uint32_t kMaxWindowMs = 15000;
 
 roboface::ConsoleMode console;
@@ -222,6 +248,14 @@ bool storeCapturedFrame(const uint8_t* data, std::size_t length) {
 }
 
 void onCapturedFrame(const int16_t* samples, std::size_t count, uint32_t frame_ms) {
+    // Every frame the recorder produces, whether or not a window is open.
+    //
+    // `cap` in the status line counts frames *sent*, so it reads zero whenever nothing is
+    // listening -- which hides the question that matters most: is the microphone keeping up while
+    // the face animates? A VAD that never triggers looks identical whether the room is quiet or
+    // the recorder is starved, and those need opposite fixes.
+    ++frames_captured;
+
     const float peak = roboface::peakLevel(samples, count);
     if (cal_until_ms != 0 && cal_count < kCalFrames) {
         cal_peak[cal_count] = static_cast<uint8_t>(peak * 100.0f);
@@ -1005,7 +1039,9 @@ void loop() {
 
     pollPower(now_ms, /*force=*/false);
     updateChrome(now_ms, fault_active, fault_code);
-    if (needs_push && now_ms - last_push_ms >= kMinPushIntervalMs) {
+    const uint32_t push_interval =
+        (audio.isListening() || audio.isSpeaking()) ? kBusyPushIntervalMs : kMinPushIntervalMs;
+    if (needs_push && now_ms - last_push_ms >= push_interval) {
         if (console.isOn()) console_view.draw(renderer.canvas(), transcript);
         chrome_view.draw(renderer.canvas(), chrome, audio.inputLevel());
         renderer.push();
@@ -1016,7 +1052,8 @@ void loop() {
     if (now_ms - last_status_ms >= kStatusIntervalMs) {
         last_status_ms = now_ms;
         Serial.printf(
-            "[status] %s · link %s %s · ws %s · batt %d%%%s · fps=%lu cap=%lu · mon=%d vad s=%lu e=%lu peak=%d%% zc=%u · audio %s buf=%u q=%u ref=%u drop=%u · up %lus\n",
+            "[status] %s · link %s %s · ws %s · batt %d%%%s · fps=%lu mic=%lu cap=%lu · mon=%d "
+            "vad s=%lu e=%lu peak=%d%% zc=%u · audio %s buf=%u q=%u ref=%u drop=%u · up %lus\n",
             roboface::toString(state), net.isUp() ? "up" : "down", net.ipAddress(),
             ws.isConnected() ? "connected" : "disconnected", battery_percent,
             battery_charging ? " (charging)" : "",
@@ -1024,6 +1061,12 @@ void loop() {
             // cost a third of the audio looks healthy in one and is a regression in the other. In
             // v1 exactly that went unnoticed three separate times.
             static_cast<unsigned long>((renderer.framesPushed() - frames_at_status) * 1000u /
+                                       kStatusIntervalMs),
+            // `mic` is the recorder's own rate and should sit at ~50 whenever the microphone is
+            // running, window or no window. It is the number that separates "the room was quiet"
+            // from "the recorder is starved" -- two situations that look identical from `cap`,
+            // and that need opposite fixes.
+            static_cast<unsigned long>((frames_captured - captured_at_status) * 1000u /
                                        kStatusIntervalMs),
             // Saturating, because the capture tally resets at every window: a stale baseline
             // larger than the current count would underflow into four billion, which is exactly
@@ -1045,6 +1088,7 @@ void loop() {
         crossings_recent = 0;
         frames_at_status = renderer.framesPushed();
         capture_at_status = audio.tally().frames();
+        captured_at_status = frames_captured;
     }
 
     delay(5);

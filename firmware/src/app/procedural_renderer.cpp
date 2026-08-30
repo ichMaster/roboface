@@ -27,7 +27,17 @@ bool ProceduralRenderer::begin() {
     // exhausted the microphone reported a successful start and captured nothing. PSRAM only began
     // working in v1.4.2 -- before that this allocation would have taken half of what was left.
     sprite_.setPsram(true);
-    sprite_.setColorDepth(16);
+
+    // **8 bits, not 16, and this is the frame budget rather than a preference.**
+    //
+    // Measured: each push of a 320x240 16-bit sprite costs about 48 ms of blocked loop -- 150 KB
+    // over SPI -- which works out at roughly 2.4 lost microphone frames per drawn frame. At 7 FPS
+    // the recorder ran at 35 frames a second instead of 50. Lowering the frame rate only trades one
+    // for the other; halving the bytes moves the line.
+    //
+    // The face costs nothing in colour: a background, a glow and one ink. A 256-entry palette is
+    // more than this renderer will ever need, and v2.6's skins are a palette swap by design.
+    sprite_.setColorDepth(8);
     ready_ = sprite_.createSprite(kScreenWidth, kScreenHeight) != nullptr;
     if (!ready_) return false;  // say so rather than presenting a blank screen as a working one
 
@@ -38,6 +48,15 @@ bool ProceduralRenderer::begin() {
 }
 
 void ProceduralRenderer::show(roboface::DeviceState state) {
+    // **Listening has one settled face.** The drift is stilled while the device is paying
+    // attention: a gaze wandering off while someone is mid-sentence reads as distraction, which is
+    // the opposite of what the state means. Blinking stays -- a face that stops blinking stops
+    // looking alive and starts looking frozen.
+    //
+    // It also buys back frames exactly when they are needed: with the drift stopped, the
+    // unchanged-frame skip in `tick` finally fires, and the loop it frees is the loop the
+    // microphone wants.
+    idle_.setIntensity(state == roboface::DeviceState::kListening ? 0.0f : 1.0f);
     // Sets a target; the drawing happens in `tick`. A `show` that drew would make a state change
     // cost a frame at the moment the device is busiest -- which is exactly when states change.
     crossfade_.target(roboface::recipeFor(state));

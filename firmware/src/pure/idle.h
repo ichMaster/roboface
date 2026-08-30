@@ -18,9 +18,13 @@
 
 namespace roboface {
 
-//: How long the eyes stay shut. Fast -- a slow blink reads as sleepiness, which is a state the
-//: face expresses deliberately elsewhere and should not leak into rest.
-inline constexpr uint32_t kBlinkDurationMs = 120;
+//: How long the eyes stay shut.
+//:
+//: 200 ms rather than 120, and the reason is the frame rate rather than the blink. The face
+//: repaints ten times a second, so a 120 ms blink can fall between two frames and never be drawn
+//: at all -- a blink nobody sees is worse than no blink, because it is also paid for. 200 ms
+//: always spans at least two frames, and is still fast enough not to read as sleepiness.
+inline constexpr uint32_t kBlinkDurationMs = 200;
 
 //: The band a blink interval is drawn from. Human resting rate is wider than this, but a companion
 //: that goes eight seconds without blinking looks switched off.
@@ -81,13 +85,26 @@ class IdleLoop {
         next_blink_ms_ = random_.between(kBlinkMinIntervalMs, kBlinkMaxIntervalMs);
     }
 
-    //: 0 stills the face completely; 1 is full motion. Scales all three, so a later `EmotionFrame`
-    //: can damp or exaggerate the idle **without this loop knowing what an emotion is** -- which is
-    //: what keeps v2.2 an addition rather than a rewrite.
+    //: 0 stills the *drift* -- the breath and the gaze -- and 1 is full motion. Blinking is
+    //: deliberately **not** scaled by this: see `setBlinking`.
+    //:
+    //: Scales without the loop knowing what an emotion is, which is what keeps v2.2 an addition
+    //: rather than a rewrite.
     void setIntensity(float intensity) {
         intensity_ = intensity < 0.0f ? 0.0f : (intensity > 1.0f ? 1.0f : intensity);
     }
     float intensity() const { return intensity_; }
+
+    //: Blinking, separately from the drift, and separate for a reason a person can see.
+    //:
+    //: A face that is listening should be **still and attentive**, not wandering -- the drift reads
+    //: as distraction exactly when the device is supposed to be paying attention. But a face that
+    //: stops blinking entirely stops looking alive and starts looking frozen, which is how a person
+    //: tells a picture from a device.
+    //:
+    //: So listening stills the drift and keeps the blink. Two controls because they answer two
+    //: different questions.
+    void setBlinking(bool enabled) { blinking_enabled_ = enabled; }
 
     //: Start again from rest. Used when the face has been doing something else and the idle should
     //: not resume mid-blink.
@@ -118,10 +135,10 @@ class IdleLoop {
         }
 
         IdleOffsets offsets;
-        if (blinking_) {
-            // Shut, not squinting: a partial blink at this size looks like a rendering fault.
-            // Still scaled by intensity, so a stilled face does not blink either.
-            offsets.eye_scale = 1.0f - intensity_;
+        if (blinking_ && blinking_enabled_) {
+            // Shut, not squinting: a partial blink at this size looks like a rendering fault, so
+            // this is 0 or 1 and never in between.
+            offsets.eye_scale = 0.0f;
         }
         offsets.bob_y = intensity_ * kBreathAmplitudePx * wave(elapsed_ms_, kBreathPeriodMs);
         offsets.gaze_x = intensity_ * kGazeAmplitudePx * wave(elapsed_ms_, kGazePeriodMs);
@@ -155,6 +172,7 @@ class IdleLoop {
     uint32_t next_blink_ms_ = 0;
     uint32_t blink_started_ms_ = 0;
     bool blinking_ = false;
+    bool blinking_enabled_ = true;
 };
 
 }  // namespace roboface

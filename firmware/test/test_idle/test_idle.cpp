@@ -71,19 +71,30 @@ void a_blink_completes_in_its_duration() {
     TEST_ASSERT_TRUE(closed_ms <= roboface::kBlinkDurationMs + 20);
 }
 
-//: Intensity 0 stills the face without stopping the loop -- it keeps its schedule, it simply does
-//: not move. That distinction is what lets v2.2 damp the idle during a turn and resume it after,
-//: rather than restarting a blink cycle every time.
-void intensity_zero_stills_without_stopping() {
+//: Intensity 0 stills the *drift* without stopping the loop, and **keeps the blink**. That is the
+//: listening face: still and attentive rather than wandering, but still alive. A face that stops
+//: blinking stops looking like a device and starts looking like a picture of one.
+void intensity_zero_stills_the_drift_but_not_the_blink() {
     roboface::IdleLoop loop{3};
     loop.setIntensity(0.0f);
+    bool blinked = false;
     for (uint32_t elapsed = 0; elapsed < 20000; elapsed += kFrameMs) {
         const auto offsets = loop.advance(kFrameMs);
-        TEST_ASSERT_EQUAL_FLOAT(1.0f, offsets.eye_scale);
         TEST_ASSERT_TRUE(offsets.bob_y == 0.0f);
         TEST_ASSERT_TRUE(offsets.gaze_x == 0.0f);
+        if (offsets.eye_scale == 0.0f) blinked = true;
     }
+    TEST_ASSERT_TRUE(blinked);
     TEST_ASSERT_TRUE(loop.elapsedMs() >= 20000);
+}
+
+//: And blinking can be switched off on its own, for the states that want a completely fixed face.
+void blinking_can_be_switched_off_separately() {
+    roboface::IdleLoop loop{3};
+    loop.setBlinking(false);
+    for (uint32_t elapsed = 0; elapsed < 20000; elapsed += kFrameMs) {
+        TEST_ASSERT_EQUAL_FLOAT(1.0f, loop.advance(kFrameMs).eye_scale);
+    }
 }
 
 //: And full intensity closes the eyes completely during a blink -- a partial blink at this size
@@ -169,7 +180,8 @@ int main(int, char**) {
     RUN_TEST(different_seeds_give_different_sequences);
     RUN_TEST(intervals_stay_within_the_band);
     RUN_TEST(a_blink_completes_in_its_duration);
-    RUN_TEST(intensity_zero_stills_without_stopping);
+    RUN_TEST(intensity_zero_stills_the_drift_but_not_the_blink);
+    RUN_TEST(blinking_can_be_switched_off_separately);
     RUN_TEST(a_blink_closes_the_eyes_completely);
     RUN_TEST(motion_stays_within_its_amplitudes);
     RUN_TEST(the_breath_actually_moves);
