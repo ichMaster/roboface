@@ -28,6 +28,7 @@
 
 #include "pure/capture.h"
 #include "pure/pre_roll.h"
+#include "pure/envelope.h"
 #include "pure/level.h"
 #include "pure/pcm_ring.h"
 

@@ -4,10 +4,16 @@
 // laptop can prove that silence reads as silence and a full-scale tone reads as full -- neither of
 // which is obvious by looking at a 28 px bar on a desk.
 //
-// **Peak, not RMS.** RMS is the better measure of loudness and the worse one for a meter: it lags,
-// and a meter that lags does not look like a level, it looks like a bug. The person is using this
-// to confirm the device is hearing them *now*, so the number that matters is the loudest sample in
-// the frame rather than the average energy of it.
+// **Peak, not RMS -- for a meter.** RMS is the better measure of loudness and the worse one here:
+// it lags, and a meter that lags does not look like a level, it looks like a bug. The person is
+// using this to confirm the device is hearing them *now*, so the number that matters is the loudest
+// sample in the frame rather than the average energy of it.
+//
+// **That argument does not transfer to the mouth**, and from v2.3 it no longer pretends to. A mouth
+// is modelling how far a jaw is open, which is a question about energy over a window; a peak over a
+// 32 ms playback chunk sits near full scale through almost all of continuous speech, so the mouth
+// read from it barely moved. `pure/envelope.h` measures that one, with the argument in full. Two
+// consumers, two measures, and neither constant is allowed to drift into the other.
 
 #pragma once
 

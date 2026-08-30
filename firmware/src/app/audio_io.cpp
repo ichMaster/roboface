@@ -263,12 +263,17 @@ void AudioIo::tick(uint32_t now_ms) {
         if (got == 0) break;
 
         // The mouth's signal, taken here because this is the one place the audio is in hand as
-        // samples on its way out. Decayed rather than replaced, for the same reason the input meter
-        // is: speech has gaps between syllables, and a mouth driven by the raw peak would snap shut
-        // in every one of them.
-        const float peak = roboface::peakLevel(reinterpret_cast<const int16_t*>(buffer),
-                                               got / sizeof(int16_t));
-        output_level_ = roboface::decayToward(output_level_, peak);
+        // samples on its way out.
+        //
+        // **RMS, not peak** (v2.3, roadmap §v2.3). The peak over one of these 32 ms chunks sits
+        // near full scale for almost all of continuous speech -- measured on the board, and the
+        // reason the first viseme ladder changed shape four times in ten seconds. Energy over the
+        // window is what actually moves with speech, and it is what a jaw opening is a question
+        // about. `envelope.h` carries the argument in full; `peakLevel` stays exactly where it
+        // belongs, on the input meter a person watches for a response.
+        const float rms = roboface::rmsLevel(reinterpret_cast<const int16_t*>(buffer),
+                                             got / sizeof(int16_t));
+        output_level_ = roboface::followEnvelope(output_level_, rms);
 
         if (!M5.Speaker.playRaw(reinterpret_cast<const int16_t*>(buffer), got / sizeof(int16_t),
                                 kSampleRate, /*stereo=*/false, /*repeat=*/1, kChannel,
