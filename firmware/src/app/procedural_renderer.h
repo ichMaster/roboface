@@ -97,8 +97,18 @@ class ProceduralRenderer : public IFaceRenderer {
     roboface::Crossfade crossfade_{roboface::recipeFor(roboface::DeviceState::kBoot)};
     roboface::IdleLoop idle_;
     float audio_level_ = 0.0f;
-    //: Whether the mouth should follow the audio. Only while replying -- the level is zero
-    //: otherwise, but making it explicit keeps a stale value from ever animating a silent face.
+    //: Whether the mouth should follow the audio, as decided by the **device's own state machine**.
+    //:
+    //: **This looks like dead code from v2.2 onward, and is not** (v2.2 review #6, closed in v2.3).
+    //: `show(DeviceState)` is now called only for device-owned states, so nothing sets this to true
+    //: any more -- *unless the server never sends `emotion{}` at all*, in which case `server_face`
+    //: stays false, the device keeps choosing its own expression, and this is the path the mouth
+    //: takes.
+    //:
+    //: That is not hypothetical. RF-063 spent an afternoon on it: the board was talking to a
+    //: pre-v2.2 server on the same LAN, and this fallback is what kept the mouth working while the
+    //: emotion channel appeared to be broken. Deleting it as unreachable would remove the only
+    //: thing that makes an older server degrade gracefully rather than silently.
     bool speaking_mouth_ = false;
     //: The server's permission, and the device's own fact. The mouth runs on **both**: the server
     //: says a reply is being spoken, the speaker says it still is.

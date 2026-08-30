@@ -257,6 +257,16 @@ void AudioIo::tick(uint32_t now_ms) {
     if (!primed_ && (draining_ || backlog_.size() >= kPlaybackPrimeBytes)) primed_ = true;
     if (!primed_) return;
 
+    // **Fall because time passed, not only because a chunk arrived** (code review #1). When the
+    // backlog empties mid-reply -- the ordinary shape of a slow network, and the reason the device
+    // buffers at all -- the loop below does not run and the level would otherwise hold its last
+    // value rather than decaying. The mouth then freezes in whatever shape the stalled syllable
+    // left it in, which is this subsystem's most visible failure and its third distinct cause.
+    if (output_level_ > 0.0f && now_ms > level_updated_ms_) {
+        output_level_ = roboface::decayEnvelope(output_level_, now_ms - level_updated_ms_);
+        level_updated_ms_ = now_ms;
+    }
+
     while (!backlog_.empty() && M5.Speaker.isPlaying(kChannel) < 2) {
         uint8_t* buffer = pool_[slot_];
         const std::size_t got = backlog_.readSamples(buffer, kChunkBytes);
@@ -274,6 +284,7 @@ void AudioIo::tick(uint32_t now_ms) {
         const float rms = roboface::rmsLevel(reinterpret_cast<const int16_t*>(buffer),
                                              got / sizeof(int16_t));
         output_level_ = roboface::followEnvelope(output_level_, rms);
+        level_updated_ms_ = now_ms;
 
         if (!M5.Speaker.playRaw(reinterpret_cast<const int16_t*>(buffer), got / sizeof(int16_t),
                                 kSampleRate, /*stereo=*/false, /*repeat=*/1, kChannel,
@@ -325,6 +336,7 @@ void AudioIo::releaseBus() {
     // final syllable for as long as the device sat idle, which is a stranger thing to look at than
     // a face that never moved at all.
     output_level_ = 0.0f;
+    level_updated_ms_ = 0;
     backlog_.clear();
 
     // Hearing again is restored here because **every** route out of playback passes through this

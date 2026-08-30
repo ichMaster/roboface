@@ -29,20 +29,24 @@ namespace {
 constexpr std::size_t kChunk = 512;
 
 //: A sine at a given amplitude, in samples. `amplitude` is 0..1 of full scale.
-std::vector<int16_t> tone(std::size_t count, double amplitude, double cycles = 8.0) {
+std::vector<int16_t> tone(std::size_t count, double amplitude) {
     std::vector<int16_t> out(count);
-    // A hand-rolled sine so the fixture does not depend on <cmath>'s precision differing between
-    // the host and the target -- and because the shape matters, not the exact spectrum.
+    // **Speech's crest factor, not a sine's** (v2.3 code review #2). A sine peaks at 1.4x its RMS;
+    // speech peaks at three to four times, because most of a voiced block is far quieter than its
+    // glottal pulses. The first version of this fixture was a plain sine, so it carried roughly
+    // twice the energy of the thing it modelled -- and the viseme ladder calibrated against it put
+    // the widest mouth out of the device's reach while every test here passed.
+    //
+    // The file whose header argues that fixtures must model the signal had, for one afternoon, a
+    // fixture that did not.
     for (std::size_t i = 0; i < count; ++i) {
-        const double phase = 6.283185307179586 * cycles * static_cast<double>(i) /
-                             static_cast<double>(count);
-        // Taylor-free: iterate a rotation instead. Simpler here to approximate with a triangle
-        // folded into a smooth-enough curve -- what is being tested is energy, not harmonics.
-        double x = phase;
+        const std::size_t phase = i % (count / 8);
+        const double window = phase < (count / 32) ? 1.0 : 0.12;
+        double x = 6.283185307179586 * 24.0 * static_cast<double>(i) / static_cast<double>(count);
         while (x > 3.141592653589793) x -= 6.283185307179586;
-        const double s = x * (1.0 - (x * x) / 6.0 + (x * x * x * x) / 120.0);
-        const double clamped = s > 1.0 ? 1.0 : (s < -1.0 ? -1.0 : s);
-        out[i] = static_cast<int16_t>(clamped * amplitude * 32767.0);
+        double s = x * (1.0 - (x * x) / 6.0 + (x * x * x * x) / 120.0);
+        s = s > 1.0 ? 1.0 : (s < -1.0 ? -1.0 : s);
+        out[i] = static_cast<int16_t>(s * window * amplitude * 32767.0);
     }
     return out;
 }
@@ -103,7 +107,7 @@ static void test_rms_scales_with_amplitude() {
     TEST_ASSERT_TRUE(b > c);
     // Halving the amplitude halves the RMS -- the linearity a threshold ladder depends on. A
     // measure that compressed here would make the bands uneven for reasons no tuning could fix.
-    TEST_ASSERT_FLOAT_WITHIN(0.03f, a / 2.0f, b);
+    TEST_ASSERT_FLOAT_WITHIN(0.02f, a / 2.0f, b);
 }
 
 static void test_a_large_block_does_not_overflow_the_accumulator() {
@@ -136,10 +140,14 @@ static void test_the_envelope_moves_over_a_speech_like_signal() {
         }
     }
 
-    // The span is the assertion: a measure that saturates would give high ≈ low ≈ 1.
-    TEST_ASSERT_TRUE(high > 0.4f);
-    TEST_ASSERT_TRUE(low < 0.1f);
-    TEST_ASSERT_TRUE(high - low > 0.4f);
+    // The span is the assertion: a measure that saturates would give high ≈ low.
+    //
+    // **The bounds come from the board**, which reports `lvl=0..38%` over a real reply -- not from
+    // the fixture, which is how the sine version encoded the wrong range as correct.
+    TEST_ASSERT_TRUE(high > 0.20f);
+    TEST_ASSERT_TRUE(high < 0.50f);
+    TEST_ASSERT_TRUE(low < 0.05f);
+    TEST_ASSERT_TRUE(high - low > 0.15f);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -206,7 +214,46 @@ static void test_smoothing_preserves_the_span_of_a_burst_train() {
         }
     }
 
-    TEST_ASSERT_TRUE(high - low > 0.3f);
+    TEST_ASSERT_TRUE(high - low > 0.12f);
+}
+
+// ---------------------------------------------------------------------------------------
+// Decay by elapsed time (code review #1)
+// ---------------------------------------------------------------------------------------
+
+static void test_an_envelope_with_no_new_samples_falls() {
+    // **The regression.** The envelope used to advance only when a chunk was handed to the speaker,
+    // so a network stall mid-reply held it at its last value and the mouth froze in whatever shape
+    // a stalled syllable left it in.
+    const float after = roboface::decayEnvelope(0.35f, 200);
+    TEST_ASSERT_TRUE(after < 0.35f);
+    TEST_ASSERT_TRUE(after >= 0.0f);
+}
+
+static void test_no_elapsed_time_changes_nothing() {
+    TEST_ASSERT_EQUAL_FLOAT(0.35f, roboface::decayEnvelope(0.35f, 0));
+    TEST_ASSERT_EQUAL_FLOAT(0.35f, roboface::decayEnvelope(0.35f, 31));
+}
+
+static void test_a_stall_shuts_the_mouth_within_a_third_of_a_second() {
+    // The bottom rung closes at 0.040. Reaching it quickly is what makes a stalled reply look like
+    // a pause rather than like a fault.
+    const float after = roboface::decayEnvelope(0.35f, 300);
+    TEST_ASSERT_TRUE(after < 0.040f);
+}
+
+static void test_a_long_stall_reaches_exactly_zero() {
+    // Not "very small": a level that never quite arrives sits above no threshold and would have
+    // been invisible, which is the same shape as the 2.9e-11 the RMS seed produced.
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, roboface::decayEnvelope(1.0f, 60000));
+}
+
+static void test_decay_never_goes_negative() {
+    float level = 0.5f;
+    for (int i = 0; i < 50; ++i) {
+        level = roboface::decayEnvelope(level, 64);
+        TEST_ASSERT_TRUE(level >= 0.0f);
+    }
 }
 
 int main(int, char**) {
@@ -223,5 +270,10 @@ int main(int, char**) {
     RUN_TEST(test_the_fall_takes_longer_than_a_syllable_gap);
     RUN_TEST(test_smoothing_never_leaves_the_unit_range);
     RUN_TEST(test_smoothing_preserves_the_span_of_a_burst_train);
+    RUN_TEST(test_an_envelope_with_no_new_samples_falls);
+    RUN_TEST(test_no_elapsed_time_changes_nothing);
+    RUN_TEST(test_a_stall_shuts_the_mouth_within_a_third_of_a_second);
+    RUN_TEST(test_a_long_stall_reaches_exactly_zero);
+    RUN_TEST(test_decay_never_goes_negative);
     return UNITY_END();
 }

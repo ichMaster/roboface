@@ -89,4 +89,30 @@ inline float followEnvelope(float previous, float next, float fall = kEnvelopeFa
     return previous * fall + next * (1.0f - fall);
 }
 
+//: One playback chunk, in milliseconds: 512 samples at 16 kHz. The unit the envelope advances in.
+inline constexpr uint32_t kChunkMs = 32;
+
+// Let the envelope fall because **time passed**, not because a chunk arrived.
+//
+// **The distinction is a defect this subsystem has now had three times** (v2.3 code review #1). The
+// envelope was updated only when a chunk was handed to the speaker, which is a level *per chunk*
+// where what is modelled is a level *per unit of time*. Those coincide exactly as long as chunks
+// keep arriving — and stop coinciding the moment the network falls behind and the device plays out
+// what it already holds.
+//
+// The result was not a slow decay but **no decay**: the level held its last value, so the mouth
+// stayed in whatever shape a stalled syllable left it in for as long as the stall lasted. A mouth
+// frozen open is the most visible failure this subsystem has, and it had already been reported twice
+// from two other causes — a saturating peak detector, and a permission withdrawn early.
+//
+// `elapsed_ms` since the envelope last moved; returns the level after that much silence.
+inline float decayEnvelope(float previous, uint32_t elapsed_ms, float fall = kEnvelopeFall) {
+    float level = previous;
+    for (uint32_t remaining = elapsed_ms; remaining >= kChunkMs; remaining -= kChunkMs) {
+        level = followEnvelope(level, 0.0f, fall);
+        if (level <= 0.001f) return 0.0f;
+    }
+    return level;
+}
+
 }  // namespace roboface

@@ -214,6 +214,9 @@ class AudioIo {
     roboface::CaptureTally tally_;
     float level_ = 0.0f;
     float output_level_ = 0.0f;
+    //: When the envelope last moved. What makes its decay a function of elapsed time rather than
+    //: of chunks arriving -- see the note at the decay in `tick`.
+    uint32_t level_updated_ms_ = 0;
     float peak_seen_ = 0.0f;
     uint8_t pool_[kChunkSlots][kChunkBytes] = {};
     std::size_t slot_ = 0;
