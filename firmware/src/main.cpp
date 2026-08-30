@@ -150,6 +150,19 @@ uint32_t now_ms_for_log = 0;
 bool press_began_on_button = false;
 bool was_pressed = false;
 
+//: The last few press coordinates, for `/touch`. Small and lossy on purpose: the question it
+//: answers is "where does the panel think my finger landed", and eight samples answer it.
+struct TouchMark {
+    int x = 0;
+    int y = 0;
+    uint32_t at_ms = 0;
+    bool on_button = false;
+};
+inline constexpr int kTouchLogSize = 8;
+TouchMark touch_log[kTouchLogSize];
+int touch_log_next = 0;
+int touch_log_count = 0;
+
 //: Press-and-hold on the glass. The rules live in `pure/ptt.h`; this holds the instance and the
 //: panel is read once per loop.
 roboface::PushToTalk ptt;
@@ -1024,6 +1037,21 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
     // `on` / `off` as well as a bare toggle. **A script must be able to set a state, not flip
     // one** -- it cannot see the indicator, so a toggle leaves it guessing, and guessing wrong
     // means every scripted line afterwards is refused with `[busy] not idle`.
+    if (line.text == "/touch") {
+        Serial.printf("\n[touch] button zone x<%d y<%d · %d recorded\n",
+                      roboface::kMicButtonHitWidth, roboface::kMicButtonHitHeight,
+                      touch_log_count);
+        for (int i = 0; i < touch_log_count; ++i) {
+            const int index =
+                (touch_log_next - touch_log_count + i + 2 * kTouchLogSize) % kTouchLogSize;
+            const TouchMark& mark = touch_log[index];
+            Serial.printf("[touch]   x=%3d y=%3d  %s  at %lus\n", mark.x, mark.y,
+                          mark.on_button ? "BUTTON" : "  --  ",
+                          static_cast<unsigned long>(mark.at_ms / 1000));
+        }
+        return;
+    }
+
     if (line.text == "/mic on") {
         setActiveListening(true);
         return;
@@ -1159,9 +1187,97 @@ void setup() {
     });
 }
 
+//: Read the panel and act on it. **Called several times per loop iteration, not once.**
+//:
+//: One call per iteration was the bug behind "the button works one tap in five". A full sprite
+//: push plus the face draw puts the loop at roughly 140 ms, so the panel was sampled about seven
+//: times a second -- and a tap is 80-200 ms. Presses fell entirely between samples; two quick taps
+//: merged into one long press because the release between them was never seen; and a press whose
+//: down edge was missed had no recorded starting zone, so it went to push-to-talk instead of to
+//: the button it began on. The serial log said `closed by ptt` while the person was tapping mute.
+//:
+//: Sampling is cheap -- one I2C read and some integer arithmetic -- and the expensive things in
+//: the loop are the ones worth sampling *around*. So this runs before and after each of them, and
+//: the classifiers, which take a timestamp with every sample, simply see a finer-grained finger.
+void serviceTouch() {
+    const uint32_t now_ms = millis();
+
+    // `M5.update()` refreshes the panel once at the top of the loop; this refreshes it again, which
+    // is the entire point of being here.
+    M5.Touch.update(now_ms);
+
+    const auto detail = M5.Touch.getDetail();
+    const bool pressed = detail.isPressed();
+
+    // **A press that began on the microphone button is not push-to-talk.**
+    //
+    // `PushToTalk` is fed the raw panel level and has no idea *where* the finger is, so without
+    // this a press on the mute button opened a listening window after 120 ms -- the exact opposite
+    // of what the button says -- and the state change that caused then reached `gestures.reset()`,
+    // which used to wipe the press. The button therefore did nothing at all: no click, no toggle,
+    // and a microphone that turned itself on. Both halves are fixed; this is the half that keeps a
+    // control from driving the microphone it controls.
+    //
+    // Latched at the down edge, so sliding off the button cannot hand the rest of the press to PTT.
+    if (!pressed) {
+        press_began_on_button = false;
+    } else if (!was_pressed) {
+        press_began_on_button = roboface::inMicButton(detail.x, detail.y);
+        // **Recorded rather than printed**, and kept rather than removed after it did its job.
+        //
+        // A trace only helps if someone is watching serial at the instant of the tap, and the
+        // person tapping is not the one holding the terminal. `/touch` reads this back whenever it
+        // is convenient. That is what made "you have to hit the very corner" answerable: rotation,
+        // offset and a timing effect misread as a spatial one all look identical from a chair, and
+        // they need opposite fixes. Eight coordinates said it was neither -- the aim was fine and
+        // the band was one fingertip tall.
+        touch_log[touch_log_next] = {detail.x, detail.y, now_ms, press_began_on_button};
+        touch_log_next = (touch_log_next + 1) % kTouchLogSize;
+        if (touch_log_count < kTouchLogSize) ++touch_log_count;
+    }
+    was_pressed = pressed;
+
+    {
+        const roboface::TouchSample sample{pressed, detail.x, detail.y, now_ms,
+                                           M5.Touch.getCount()};
+        const roboface::TouchResult touched = gestures.feed(sample, audio.isListening());
+        if (touched.gesture != roboface::TouchGesture::kNone) {
+            onTouchGesture(touched, now_ms);
+        }
+    }
+
+    switch (ptt.update(pressed && !press_began_on_button, now_ms)) {
+        case roboface::PttEvent::kStarted:
+            // A timed `/listen` window and a finger must not both own the microphone.
+            listen_until_ms = 0;
+            beginListening();
+            break;
+        case roboface::PttEvent::kStopped:
+            endListening("ptt");
+            break;
+        case roboface::PttEvent::kTapped: {
+            // **The tap is affection again** (v2.4). DEVICE_UI §Input always said so and recorded
+            // the single-tap mute as temporary -- *"the single tap belongs to the affection reflex;
+            // mute moves to two fingers when the reflexes land"*. They landed here, so the
+            // stop-gap goes: `TouchGestures` above turns this same tap into a tickle.
+            //
+            // Mute is the **two-finger tap** now, and `/mic on|off` stays -- it is what makes the
+            // device scriptable, and every manual test since v2.3 depends on it.
+            break;
+        }
+            // Deliberately nothing on the wire. DEVICE_UI gives press-and-hold to PTT; a tap is
+            // reserved, and treating it as a very short utterance would send the server a window
+            // with nothing in it.
+
+        case roboface::PttEvent::kNone:
+            break;
+    }
+}
+
 void loop() {
     M5.update();
     const uint32_t now_ms = millis();
+    serviceTouch();
 
     if (net.loop(now_ms)) {
         if (net.isUp()) {
@@ -1179,6 +1295,7 @@ void loop() {
     // Throttle the socket rather than throw audio away. The speaker paces the backlog and the
     // backlog paces the socket; TCP holds the rest on the server, where it costs nothing.
     if (!audio.isBackpressured()) ws.loop(now_ms);
+    serviceTouch();
     renderer.tick(now_ms);
     stepSelfTest(now_ms);
 
@@ -1218,65 +1335,12 @@ void loop() {
     // **The affection half of the same finger** (v2.4). `PushToTalk` above decides what the touch
     // does to the microphone; `TouchGestures` decides what it meant to the character. Both are fed
     // the same panel state in the same loop, so they cannot disagree about whether a finger is down.
-    const auto detail = M5.Touch.getDetail();
-    const bool pressed = detail.isPressed();
-
-    // **A press that began on the microphone button is not push-to-talk.**
-    //
-    // `PushToTalk` is fed the raw panel level and has no idea *where* the finger is, so without
-    // this a press on the mute button opened a listening window after 120 ms -- the exact opposite
-    // of what the button says -- and the state change that caused then reached `gestures.reset()`,
-    // which used to wipe the press. The button therefore did nothing at all: no click, no toggle,
-    // and a microphone that turned itself on. Both halves are fixed; this is the half that keeps a
-    // control from driving the microphone it controls.
-    //
-    // Latched at the down edge, so sliding off the button cannot hand the rest of the press to PTT.
-    if (!pressed) {
-        press_began_on_button = false;
-    } else if (!was_pressed) {
-        press_began_on_button = roboface::inMicButton(detail.x, detail.y);
-    }
-    was_pressed = pressed;
-
-    {
-        const roboface::TouchSample sample{pressed, detail.x, detail.y, now_ms,
-                                           M5.Touch.getCount()};
-        const roboface::TouchResult touched = gestures.feed(sample, audio.isListening());
-        if (touched.gesture != roboface::TouchGesture::kNone) {
-            onTouchGesture(touched, now_ms);
-        }
-    }
-
-    switch (ptt.update(pressed && !press_began_on_button, now_ms)) {
-        case roboface::PttEvent::kStarted:
-            // A timed `/listen` window and a finger must not both own the microphone.
-            listen_until_ms = 0;
-            beginListening();
-            break;
-        case roboface::PttEvent::kStopped:
-            endListening("ptt");
-            break;
-        case roboface::PttEvent::kTapped: {
-            // **The tap is affection again** (v2.4). DEVICE_UI §Input always said so and recorded
-            // the single-tap mute as temporary -- *"the single tap belongs to the affection reflex;
-            // mute moves to two fingers when the reflexes land"*. They landed here, so the
-            // stop-gap goes: `TouchGestures` above turns this same tap into a tickle.
-            //
-            // Mute is the **two-finger tap** now, and `/mic on|off` stays -- it is what makes the
-            // device scriptable, and every manual test since v2.3 depends on it.
-            break;
-        }
-            // Deliberately nothing on the wire. DEVICE_UI gives press-and-hold to PTT; a tap is
-            // reserved, and treating it as a very short utterance would send the server a window
-            // with nothing in it.
-
-        case roboface::PttEvent::kNone:
-            break;
-    }
+    serviceTouch();
 
     // Before the screen: audio starving is audible and a late repaint is not.
     now_ms_for_log = now_ms;
     audio.tick(now_ms);
+    serviceTouch();
 
     // The mouth's signal, from the speaker rather than the microphone. Fed every loop and not only
     // while replying: the renderer decides whether to use it, and a level that stopped arriving
@@ -1385,7 +1449,11 @@ void loop() {
     if (needs_push && now_ms - last_push_ms >= push_interval) {
         if (console.isOn()) console_view.draw(renderer.canvas(), transcript);
         chrome_view.draw(renderer.canvas(), chrome, audio.inputLevel());
+        // Either side of the 153 KB push -- the single most expensive thing the loop does, and
+        // therefore the widest gap a finger can fall into.
+        serviceTouch();
         renderer.push();
+        serviceTouch();
         last_push_ms = now_ms;
         needs_push = false;
     }

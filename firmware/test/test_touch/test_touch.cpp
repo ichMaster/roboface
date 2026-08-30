@@ -102,17 +102,42 @@ static void test_the_microphone_button_owns_the_top_left_corner() {
                           static_cast<int>(roboface::zoneAt(5, roboface::kMicButtonHitHeight)));
 }
 
-static void test_the_button_never_takes_a_pixel_from_the_face() {
-    // **The property, not an example.** The whole target is checked against the face rectangle, so
-    // widening the button later cannot silently start stealing touches from the character.
-    TEST_ASSERT_TRUE(roboface::clearOfFace(0, 0, roboface::kMicButtonHitWidth,
-                                           roboface::kMicButtonHitHeight));
+static void test_the_button_never_draws_over_the_face() {
+    // The **glyph** is what DEVICE_UI's "never block the face" governs. The touch target is a
+    // separate rectangle and deliberately reaches past this one -- see the test below.
+    TEST_ASSERT_TRUE(roboface::clearOfFace(roboface::kMicButtonLeft, roboface::kMicButtonTop,
+                                           roboface::kMicButtonWidth, roboface::kMicButtonHeight));
+}
+
+static void test_the_whole_target_answers_as_the_button() {
     for (int x = 0; x < roboface::kMicButtonHitWidth; ++x) {
         for (int y = 0; y < roboface::kMicButtonHitHeight; ++y) {
             TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kMicButton),
                                   static_cast<int>(roboface::zoneAt(x, y)));
         }
     }
+}
+
+static void test_the_target_reaches_below_the_band_on_purpose() {
+    // **Measured, not guessed.** Eight presses aimed at the icon landed at y = 4, 7, 10, 10, 21,
+    // 22, 29, 38 -- two of them past a 28 px band. A target one fingertip high is a target that
+    // has to be aimed at, and this is a mute button.
+    TEST_ASSERT_TRUE(roboface::kMicButtonHitHeight > roboface::kBandHeight);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kMicButton), static_cast<int>(roboface::zoneAt(31, 38)));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kMicButton), static_cast<int>(roboface::zoneAt(42, 29)));
+
+    // And it still ends. The face keeps everything below it.
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kForehead),
+                          static_cast<int>(roboface::zoneAt(42, roboface::kMicButtonHitHeight)));
+}
+
+static void test_the_button_takes_only_a_sliver_of_the_face() {
+    // The cost, pinned so it cannot grow quietly. Anything beyond the button's width, or below its
+    // height, is still the character's.
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kForehead),
+                          static_cast<int>(roboface::zoneAt(roboface::kMicButtonHitWidth, 40)));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kForehead),
+                          static_cast<int>(roboface::zoneAt(160, 40)));
 }
 
 static void test_tapping_the_button_is_the_toggle_and_not_affection() {
@@ -508,7 +533,10 @@ int main(int, char**) {
     RUN_TEST(test_a_state_change_still_drops_the_tap_run);
     RUN_TEST(test_the_button_survives_it_too);
     RUN_TEST(test_the_microphone_button_owns_the_top_left_corner);
-    RUN_TEST(test_the_button_never_takes_a_pixel_from_the_face);
+    RUN_TEST(test_the_button_never_draws_over_the_face);
+    RUN_TEST(test_the_whole_target_answers_as_the_button);
+    RUN_TEST(test_the_target_reaches_below_the_band_on_purpose);
+    RUN_TEST(test_the_button_takes_only_a_sliver_of_the_face);
     RUN_TEST(test_tapping_the_button_is_the_toggle_and_not_affection);
     RUN_TEST(test_the_button_does_not_feed_the_affection_run);
     RUN_TEST(test_sliding_off_the_button_cancels_it);

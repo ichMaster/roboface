@@ -113,9 +113,11 @@ void ChromeView::drawMicButton(M5Canvas& canvas, bool muted) {
     const int h = roboface::kMicButtonHeight;
     const uint16_t colour = muted ? kAmber : kIndicatorColour;
 
-    static_assert(roboface::clearOfFace(0, 0, roboface::kMicButtonHitWidth,
-                                        roboface::kMicButtonHitHeight),
-                  "the microphone button must not overlap the face");
+    // The **glyph**, not the touch target: the target reaches into the face on purpose and this
+    // assert would be wrong to cover it. What DEVICE_UI forbids is drawing over the face.
+    static_assert(roboface::clearOfFace(roboface::kMicButtonLeft, roboface::kMicButtonTop,
+                                        roboface::kMicButtonWidth, roboface::kMicButtonHeight),
+                  "the microphone glyph must not overlap the face");
 
     // The capsule -- filled when live, outlined when muted, so the two differ in weight as well as
     // in hue. A person who cannot pick cyan from amber can still tell a solid shape from a hollow.

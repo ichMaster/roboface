@@ -40,10 +40,26 @@ inline constexpr int kMicButtonTop = 7;
 inline constexpr int kMicButtonWidth = 14;
 inline constexpr int kMicButtonHeight = 15;
 
-//: The touch target, which starts at the very corner: a finger aiming for a corner control lands
-//: short as often as long, and there is nothing to the left of it to hit by mistake.
-inline constexpr int kMicButtonHitWidth = 60;
-inline constexpr int kMicButtonHitHeight = kBandHeight;
+//: The touch target -- **a different rectangle from the glyph, and deliberately bigger than the
+//: band.**
+//:
+//: Where the icon is drawn and where a press counts are two questions, and this project answered
+//: them with one number for a while. Measured on the board, eight presses aimed at the icon landed
+//: at y = 4, 7, 10, 10, 21, 22, **29, 38** -- horizontally never further than x = 46, so width was
+//: never the constraint. The band is 28 px tall and a fingertip is roughly 24, so the two misses
+//: were a person aiming correctly at a target one finger high. "You have to hit the very corner"
+//: was an accurate description of a 28 px ceiling.
+//:
+//: So the target reaches 44 px, 16 of them **inside the face area**. That is not a violation of
+//: DEVICE_UI's "never block the face": nothing is *drawn* there. The glyph stays in the band, and
+//: `clearOfFace` still holds for every pixel this button paints. What overlaps is where a finger
+//: counts, and touch and pixels have no reason to share a rectangle.
+//:
+//: The cost is stated: a tap on the top-left sliver of the forehead toggles the microphone instead
+//: of tickling. It is 56x16 of a 264x184 face, at the edge furthest from where anyone strokes it,
+//: and the alternative is a mute button that needs to be aimed at.
+inline constexpr int kMicButtonHitWidth = 84;
+inline constexpr int kMicButtonHitHeight = 44;
 
 inline constexpr bool inMicButton(int x, int y) {
     return x >= 0 && x < kMicButtonHitWidth && y >= 0 && y < kMicButtonHitHeight;
