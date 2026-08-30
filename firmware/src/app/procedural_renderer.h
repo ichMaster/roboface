@@ -59,6 +59,21 @@ class ProceduralRenderer : public IFaceRenderer {
     //: manifest like the four spirits, which is what makes "adding a skin requires no renderer code
     //: change" a property rather than an intention.
     void setSkin(const roboface::Skin& skin);
+
+  private:
+    //: The silhouette and the element, which are the renderer's **vocabulary** rather than any
+    //: skin's content.
+    //:
+    //: This is the honest boundary of *"adding a skin requires no renderer code change"*, and it is
+    //: worth stating rather than discovering: a new skin that combines an existing body, an existing
+    //: element, its own anchors and its own palette costs **nothing** here. A skin that needs a
+    //: shape nobody has drawn before costs one `case`. `SkinBody` and `SkinElement` are closed enums
+    //: precisely so that this vocabulary is finite, known, and small -- and so that a skin needing a
+    //: sixth entry is announcing that the schema is too narrow, loudly, at the moment it is written.
+    void drawBody(const roboface::LayerBank& bank);
+    void drawElement(const roboface::LayerBank& bank);
+
+  public:
     const roboface::Skin& skin() const { return skin_; }
 
     //: Fire a reflex over the current expression. The renderer owns the layer because the layer's
@@ -153,6 +168,12 @@ class ProceduralRenderer : public IFaceRenderer {
     //: anything still draws something -- RF-083's fallback is the same idea, arrived at from the
     //: other direction.
     roboface::Skin skin_ = roboface::stackchan();
+
+    //: Which emotion the face is currently wearing. The crossfade holds the *recipe* -- eye
+    //: openness, brow angle, mouth curve -- which is what a face looks like, and deliberately not
+    //: which emotion produced it, because two emotions can share a recipe. The elements need the
+    //: emotion itself: a flame is blue when sad, and no amount of brow angle says so.
+    roboface::Emotion emotion_ = roboface::Emotion::kNeutral;
     //: A frame that arrived while the device was still speaking and ends the speaking. Applied
     //: when playback stops, which is the moment it was actually describing.
     roboface::EmotionFrame pending_;

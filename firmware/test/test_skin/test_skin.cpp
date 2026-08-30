@@ -197,6 +197,93 @@ static void test_the_mood_palette_lands_each_colour_on_its_own_emotion() {
     TEST_ASSERT_EQUAL_UINT16(0x0007, palette.at(Emotion::kError));
 }
 
+// ---------------------------------------------------------------------------------------
+// RF-080 — the four spirits
+// ---------------------------------------------------------------------------------------
+
+static void test_every_skin_validates() {
+    // **Iterated over the whole set, not spelled per skin.** A sixth face added to `skinAt` is
+    // covered by this test the moment it exists, which is the difference between a test of the set
+    // and five tests that happen to cover it today.
+    for (std::size_t i = 0; i < roboface::kSkinCount; ++i) {
+        const roboface::Skin skin = roboface::skinAt(i);
+        const SkinFault fault = validate(skin);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(static_cast<int>(SkinFault::kNone), static_cast<int>(fault),
+                                      roboface::toString(fault));
+    }
+}
+
+static void test_every_skin_answers_for_every_emotion() {
+    // The phase DoD, as a property: *"all five faces render the same EmotionFrame correctly"*.
+    // A skin whose palette has a hole is a face that vanishes for one mood.
+    for (std::size_t i = 0; i < roboface::kSkinCount; ++i) {
+        const roboface::Skin skin = roboface::skinAt(i);
+        for (std::size_t e = 0; e < static_cast<std::size_t>(Emotion::kCount); ++e) {
+            TEST_ASSERT_NOT_EQUAL(0, skin.element_palette.at(static_cast<Emotion>(e)));
+        }
+    }
+}
+
+static void test_every_skin_has_a_distinct_name() {
+    // The names are the `face_set` vocabulary. Two skins sharing one would make a switch land on
+    // whichever `skinIndexFor` happened to reach first.
+    for (std::size_t a = 0; a < roboface::kSkinCount; ++a) {
+        for (std::size_t b = a + 1; b < roboface::kSkinCount; ++b) {
+            TEST_ASSERT_NOT_EQUAL(roboface::skinIndexFor(roboface::skinAt(a).name),
+                                  roboface::skinIndexFor(roboface::skinAt(b).name));
+        }
+    }
+}
+
+static void test_a_name_round_trips_to_its_own_skin() {
+    for (std::size_t i = 0; i < roboface::kSkinCount; ++i) {
+        TEST_ASSERT_EQUAL_UINT32(i, roboface::skinIndexFor(roboface::skinAt(i).name));
+    }
+}
+
+static void test_an_unknown_name_is_refused_rather_than_defaulted() {
+    // **Not a default of zero.** Silently wearing stackchan would make a typo in a server config
+    // indistinguishable from a deliberate choice -- and the server would be told the switch worked.
+    TEST_ASSERT_EQUAL_UINT32(roboface::kSkinCount, roboface::skinIndexFor("dragon"));
+    TEST_ASSERT_EQUAL_UINT32(roboface::kSkinCount, roboface::skinIndexFor(""));
+    TEST_ASSERT_EQUAL_UINT32(roboface::kSkinCount, roboface::skinIndexFor(nullptr));
+
+    // And a prefix is not a match: "gho" is not the ghost.
+    TEST_ASSERT_EQUAL_UINT32(roboface::kSkinCount, roboface::skinIndexFor("gho"));
+    TEST_ASSERT_EQUAL_UINT32(roboface::kSkinCount, roboface::skinIndexFor("ghostly"));
+}
+
+static void test_the_spirits_kept_the_prototypes_anchors() {
+    // The coordinates are `face-prototype.html`'s, converted from SVG absolutes to offsets from the
+    // face centre (160, 120). Spelled here so a transcription error cannot pass: the prototype says
+    // the ghost's eyes are at x = 122 and 198, y = 118.
+    const roboface::Skin g = roboface::ghost();
+    TEST_ASSERT_EQUAL_INT(76, g.geometry.eye_spacing);   // 198 - 122
+    TEST_ASSERT_EQUAL_INT(-2, g.geometry.eye_offset_y);  // 118 - 120
+    TEST_ASSERT_EQUAL_INT(38, g.geometry.mouth_offset_y);  // 158 - 120
+
+    const roboface::Skin f = roboface::flame();
+    TEST_ASSERT_EQUAL_INT(64, f.geometry.eye_spacing);   // 192 - 128
+    TEST_ASSERT_EQUAL_INT(18, f.geometry.eye_offset_y);  // 138 - 120
+
+    const roboface::Skin c = roboface::cloud();
+    TEST_ASSERT_EQUAL_INT(60, c.geometry.eye_spacing);   // 190 - 130
+    TEST_ASSERT_EQUAL_INT(12, c.geometry.eye_offset_y);  // 132 - 120
+}
+
+static void test_each_element_is_used_by_exactly_one_skin() {
+    // The enum is closed on purpose, and each entry earns its place. An element nothing uses is an
+    // element that will drift; two skins sharing one would mean the schema is describing something
+    // other than what makes them different.
+    std::size_t seen[static_cast<std::size_t>(SkinElement::kCount)] = {};
+    for (std::size_t i = 0; i < roboface::kSkinCount; ++i) {
+        ++seen[static_cast<std::size_t>(roboface::skinAt(i).element)];
+    }
+    for (std::size_t i = 0; i < static_cast<std::size_t>(SkinElement::kCount); ++i) {
+        TEST_ASSERT_EQUAL_UINT32(1, seen[i]);
+    }
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_a_sound_manifest_validates);
@@ -213,5 +300,12 @@ int main(int, char**) {
     RUN_TEST(test_stackchan_validates_like_any_other_skin);
     RUN_TEST(test_a_uniform_palette_is_still_total);
     RUN_TEST(test_the_mood_palette_lands_each_colour_on_its_own_emotion);
+    RUN_TEST(test_every_skin_validates);
+    RUN_TEST(test_every_skin_answers_for_every_emotion);
+    RUN_TEST(test_every_skin_has_a_distinct_name);
+    RUN_TEST(test_a_name_round_trips_to_its_own_skin);
+    RUN_TEST(test_an_unknown_name_is_refused_rather_than_defaulted);
+    RUN_TEST(test_the_spirits_kept_the_prototypes_anchors);
+    RUN_TEST(test_each_element_is_used_by_exactly_one_skin);
     return UNITY_END();
 }

@@ -28,6 +28,7 @@
 #include "pure/proximity.h"
 #include "pure/ptt.h"
 #include "pure/reflex.h"
+#include "pure/skins.h"
 #include "pure/touch.h"
 #include "pure/transcript.h"
 #include "pure/vad.h"
@@ -1098,6 +1099,33 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
     // `on` / `off` as well as a bare toggle. **A script must be able to set a state, not flip
     // one** -- it cannot see the indicator, so a toggle leaves it guessing, and guessing wrong
     // means every scripted line afterwards is refused with `[busy] not idle`.
+    if (line.text == "/skins") {
+        Serial.println("\n[skins] доступні:");
+        for (std::size_t i = 0; i < roboface::kSkinCount; ++i) {
+            const roboface::Skin skin = roboface::skinAt(i);
+            Serial.printf("[skins]   %s%-10s  тіло=%d  елемент=%s\n",
+                          skin.name == renderer.skin().name ? "* " : "  ", skin.name,
+                          static_cast<int>(skin.body), roboface::toString(skin.element));
+        }
+        return;
+    }
+
+    if (line.text.rfind("/skin ", 0) == 0) {
+        const std::string name = line.text.substr(6);
+        const std::size_t index = roboface::skinIndexFor(name.c_str());
+        if (index >= roboface::kSkinCount) {
+            // **Refused and named, never silently ignored.** A typo that quietly kept the current
+            // face would be indistinguishable from a switch that worked.
+            Serial.printf("\n[skin] немає такого: %s (спробуйте /skins)\n", name.c_str());
+            return;
+        }
+        renderer.setSkin(roboface::skinAt(index));
+        render();
+        needs_push = true;
+        Serial.printf("\n[skin] %s\n", renderer.skin().name);
+        return;
+    }
+
     if (line.text == "/direction") {
         Serial.printf("\n[direction] %s x=%+.2f впевненість=%.2f\n",
                       reported_present ? "голос" : "нічого", reported_direction,

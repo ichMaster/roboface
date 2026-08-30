@@ -72,4 +72,128 @@ inline constexpr Skin stackchan() {
     return skin;
 }
 
+//: **Ghost.** Anchors from the prototype: `sEyes(e, 122, 198, 118, …)`, `sMouth(e, 160, 158, …)`,
+//: `gx = gaze.x * 8`. Expressed as offsets from the face centre (160, 120), which is what
+//: `FaceGeometry` speaks -- the same two numbers, in the renderer's units rather than the SVG's.
+inline constexpr Skin ghost() {
+    Skin skin;
+    skin.name = "ghost";
+    skin.body = SkinBody::kGhost;
+    skin.element = SkinElement::kBlushAndTear;
+    skin.ink = kGhostInk;         // #151528
+    skin.highlight = 0xFFFF;      // #fff
+    skin.body_colour = kGhostWhite;  // #f2f4ff
+    skin.background = 0x0863;     // #0a0d1c, the night sky
+    skin.gaze_travel_px = 8;
+    skin.geometry.eye_spacing = 76;    // 198 - 122
+    skin.geometry.eye_offset_y = -2;   // 118 - 120
+    skin.geometry.eye_half_width = 20;
+    skin.geometry.eye_open_height = 22;
+    skin.geometry.mouth_offset_y = 38;  // 158 - 120
+    skin.geometry.mouth_half_width = 30;
+    //: The blush, which is a fixed pink rather than a mood colour -- so the table is uniform and
+    //: still total. `validate()` does not require a palette for this element; filling it anyway is
+    //: what stops a later reader finding a half-empty array and wondering.
+    skin.element_palette = uniform(0xFD98);  // #ffb3c2
+    return skin;
+}
+
+//: **Flame.** `sEyes(e, 128, 192, 138, …)`, `sMouth(e, 160, 178, …)`. Its element is the fire's
+//: palette, which in the prototype is a four-stop gradient chosen per emotion; here it is the
+//: dominant stop, because a device that redraws eighteen times a second cannot afford four.
+inline constexpr Skin flame() {
+    Skin skin;
+    skin.name = "flame";
+    skin.body = SkinBody::kFlame;
+    skin.element = SkinElement::kPaletteFollowsEmotion;
+    skin.ink = 0x3880;            // #3a1206
+    skin.highlight = 0xFFDF;
+    skin.body_colour = 0xFAC3;    // the resting orange
+    skin.background = 0x0863;
+    skin.gaze_travel_px = 8;
+    skin.geometry.eye_spacing = 64;    // 192 - 128
+    skin.geometry.eye_offset_y = 18;   // 138 - 120
+    skin.geometry.eye_half_width = 20;
+    skin.geometry.eye_open_height = 20;
+    skin.geometry.mouth_offset_y = 58;  // 178 - 120
+    skin.geometry.mouth_half_width = 28;
+    //: Sad is blue and error is red — the prototype's own choices, and the reason this element
+    //: exists at all: the flame *is* the mood, so its colour is not decoration.
+    skin.element_palette = moodPalette(0xFAC3, 0xFAC3, 0xFC43, 0xFAC3, 0xFD83, 0x2AFF, 0xF9C6);
+    return skin;
+}
+
+//: **Jellyfish.** `sEyes(e, 128, 192, 120, …)`, `sMouth(e, 160, 142, …)`. The bell's glow is the
+//: mood; the tendrils take the same colour.
+inline constexpr Skin jelly() {
+    Skin skin;
+    skin.name = "jelly";
+    skin.body = SkinBody::kBell;
+    skin.element = SkinElement::kGlowFollowsEmotion;
+    skin.ink = 0x2867;            // #2a0f3a
+    skin.highlight = 0xFFFF;
+    skin.body_colour = 0xC47F;    // #c58fff at rest
+    skin.background = 0x0863;
+    skin.gaze_travel_px = 8;
+    skin.geometry.eye_spacing = 64;
+    skin.geometry.eye_offset_y = 0;    // 120 - 120
+    skin.geometry.eye_half_width = 20;
+    skin.geometry.eye_open_height = 22;
+    skin.geometry.mouth_offset_y = 22;  // 142 - 120
+    skin.geometry.mouth_half_width = 26;
+    skin.element_palette = moodPalette(0xC47F, 0xC47F, 0xFC7A, 0xC47F, 0xC47F, 0x6CFF, 0xFA6B);
+    return skin;
+}
+
+//: **Cloud.** `sEyes(e, 130, 190, 132, …)`, `sMouth(e, 160, 166, …)`. Its element is the weather:
+//: the body itself darkens for error, pales for sadness, and gains a sun for joy.
+inline constexpr Skin cloud() {
+    Skin skin;
+    skin.name = "cloud";
+    skin.body = SkinBody::kCloud;
+    skin.element = SkinElement::kWeatherFollowsEmotion;
+    skin.ink = 0x3A0B;            // #39405c
+    skin.highlight = 0xFFFF;
+    skin.body_colour = 0xEF9F;    // #eef2f8
+    skin.background = 0x2D7B;     // a daylight sky, not the night the others sit in
+    skin.gaze_travel_px = 8;
+    skin.geometry.eye_spacing = 60;    // 190 - 130
+    skin.geometry.eye_offset_y = 12;   // 132 - 120
+    skin.geometry.eye_half_width = 18;
+    skin.geometry.eye_open_height = 20;
+    skin.geometry.mouth_offset_y = 46;  // 166 - 120
+    skin.geometry.mouth_half_width = 26;
+    //: The **body's** colour per mood, which is what "weather" means for this skin -- overcast grey
+    //: for error, a washed pale for sadness, bright white otherwise.
+    skin.element_palette = moodPalette(0xEF9F, 0xEF9F, 0xEF9F, 0xEF9F, 0xEF9F, 0xC6BD, 0x5B2F);
+    return skin;
+}
+
+//: All five, in carousel order. **One array, and `kSkinCount` sizes it** -- the dot strip, the
+//: `face_set` vocabulary and the fallback all read this, so a sixth skin is one entry rather than
+//: four edits that can disagree.
+inline constexpr Skin skinAt(std::size_t index) {
+    switch (index) {
+        case 1: return ghost();
+        case 2: return flame();
+        case 3: return jelly();
+        case 4: return cloud();
+        default: return stackchan();
+    }
+}
+
+//: The index a name refers to, or `kSkinCount` when nothing does. **Not a default of zero** -- an
+//: unknown `face_set` must be refusable, and silently wearing stackchan would make a typo in a
+//: server config indistinguishable from a deliberate choice.
+inline std::size_t skinIndexFor(const char* name) {
+    if (name == nullptr) return kSkinCount;
+    for (std::size_t i = 0; i < kSkinCount; ++i) {
+        const char* candidate = skinAt(i).name;
+        std::size_t j = 0;
+        while (candidate[j] != '\0' && name[j] != '\0' && candidate[j] == name[j]) ++j;
+        if (candidate[j] == '\0' && name[j] == '\0') return i;
+    }
+    return kSkinCount;
+}
+
 }  // namespace roboface

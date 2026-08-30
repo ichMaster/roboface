@@ -148,6 +148,7 @@ void ProceduralRenderer::apply(const roboface::EmotionFrame& frame) {
     // the face should return to what the server last asked for rather than to centre.
     server_gaze_x_ = frame.has_gaze ? frame.gaze_x : 0.0f;
 
+    emotion_ = frame.emotion;
     crossfade_.target(roboface::withIntensity(roboface::recipeFor(frame.emotion), frame.intensity));
     animating_ = true;
 }
@@ -317,6 +318,129 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
     has_drawn_ = true;
 }
 
+
+void ProceduralRenderer::drawBody(const roboface::LayerBank& bank) {
+    // The element decides the body's colour for the skins whose element *is* the body -- the cloud's
+    // weather and the flame's fire are not decoration on a shape, they are the shape's colour.
+    const uint16_t base =
+        (skin_.element == roboface::SkinElement::kWeatherFollowsEmotion ||
+         skin_.element == roboface::SkinElement::kPaletteFollowsEmotion)
+            ? skin_.element_palette.at(emotion_)
+            : skin_.body_colour;
+    const uint16_t colour = dimmed(base, bank.brightness);
+
+    const int cx = skin_.geometry.centre_x;
+    const int cy = skin_.geometry.centre_y;
+
+    switch (skin_.body) {
+        case roboface::SkinBody::kNone:
+            // Stackchan: the wash behind the head, exactly as before v2.6.
+            sprite_.fillRoundRect(bank.glow.centre_x - bank.glow.half_width,
+                                  bank.glow.centre_y - bank.glow.half_height,
+                                  bank.glow.half_width * 2, bank.glow.half_height * 2,
+                                  bank.glow.corner_radius, colour);
+            return;
+
+        case roboface::SkinBody::kGhost: {
+            // A dome with a scalloped hem: a circle for the crown, a rectangle for the body, and
+            // four bumps along the bottom. Round shapes only -- the panel has no anti-aliasing and
+            // a polygon at this size reads as a staircase.
+            sprite_.fillCircle(cx, cy - 30, 66, colour);
+            sprite_.fillRect(cx - 66, cy - 30, 132, 82, colour);
+            for (int i = 0; i < 4; ++i) {
+                sprite_.fillCircle(cx - 50 + i * 33, cy + 52, 16, colour);
+            }
+            return;
+        }
+
+        case roboface::SkinBody::kFlame: {
+            // A teardrop: wide at the base, tapering upward. Three circles of falling radius, which
+            // at 320x240 is indistinguishable from the curve and costs a fraction of it.
+            sprite_.fillCircle(cx, cy + 26, 56, colour);
+            sprite_.fillCircle(cx, cy - 14, 42, colour);
+            sprite_.fillCircle(cx, cy - 48, 24, colour);
+            return;
+        }
+
+        case roboface::SkinBody::kBell: {
+            // The jellyfish: a bell, and tendrils below it in the same colour at a lighter weight.
+            sprite_.fillCircle(cx, cy - 8, 64, colour);
+            sprite_.fillRect(cx - 64, cy - 8, 128, 24, colour);
+            for (int i = 0; i < 5; ++i) {
+                const int x = cx - 48 + i * 24;
+                sprite_.drawFastVLine(x, cy + 16, 34, colour);
+                sprite_.drawFastVLine(x + 1, cy + 16, 34, colour);
+            }
+            return;
+        }
+
+        case roboface::SkinBody::kCloud: {
+            // Overlapping lobes, flat along the bottom.
+            sprite_.fillCircle(cx - 44, cy + 10, 34, colour);
+            sprite_.fillCircle(cx, cy - 14, 46, colour);
+            sprite_.fillCircle(cx + 44, cy + 10, 34, colour);
+            sprite_.fillRect(cx - 44, cy + 10, 88, 34, colour);
+            return;
+        }
+
+        case roboface::SkinBody::kCount:
+            return;
+    }
+}
+
+void ProceduralRenderer::drawElement(const roboface::LayerBank& bank) {
+    const int cx = skin_.geometry.centre_x;
+    const int cy = skin_.geometry.centre_y;
+
+    switch (skin_.element) {
+        case roboface::SkinElement::kBlushAndTear: {
+            // The ghost's, and the only element that is *additional* rather than a colour: pink
+            // cheeks when content, a tear when sad. The prototype's own rule -- blush on joy,
+            // neutral and surprised; a tear on sad -- rather than a new one.
+            const bool content = emotion_ == roboface::Emotion::kJoy ||
+                                 emotion_ == roboface::Emotion::kNeutral ||
+                                 emotion_ == roboface::Emotion::kSurprised;
+            if (content) {
+                const uint16_t pink = dimmed(skin_.element_palette.at(emotion_), bank.brightness);
+                sprite_.fillEllipse(cx - 68, cy + 26, 11, 6, pink);
+                sprite_.fillEllipse(cx + 68, cy + 26, 11, 6, pink);
+            }
+            if (emotion_ == roboface::Emotion::kSad) {
+                const uint16_t blue = dimmed(0x7DFF, bank.brightness);
+                sprite_.fillEllipse(cx - 56, cy + 24, 4, 9, blue);
+            }
+            return;
+        }
+
+        case roboface::SkinElement::kGlowFollowsEmotion: {
+            // The jelly's bell already carries `body_colour`; the glow is the dots on top of it.
+            const uint16_t glow = dimmed(skin_.element_palette.at(emotion_), bank.brightness);
+            const int dots[5][2] = {{-50, -40}, {0, -56}, {50, -40}, {-68, -4}, {68, -4}};
+            for (const auto& dot : dots) {
+                sprite_.fillCircle(cx + dot[0], cy + dot[1], 3, glow);
+            }
+            return;
+        }
+
+        case roboface::SkinElement::kWeatherFollowsEmotion: {
+            // The cloud's weather. The body colour already changed in `drawBody`; joy adds a sun.
+            if (emotion_ == roboface::Emotion::kJoy) {
+                const uint16_t sun = dimmed(0xFEBF, bank.brightness);
+                sprite_.fillCircle(cx + 92, cy - 58, 16, sun);
+            }
+            return;
+        }
+
+        case roboface::SkinElement::kPaletteFollowsEmotion:
+            // The flame's palette *is* the body, drawn already. Nothing on top.
+            return;
+
+        case roboface::SkinElement::kNone:
+        case roboface::SkinElement::kCount:
+            return;
+    }
+}
+
 void ProceduralRenderer::compose(const roboface::LayerBank& bank) {
     // **The face area only.** The outer 28 px bands belong to chrome (DEVICE_UI §Layout), and the
     // stub said so in its own docstring -- but the stub redrew only on an event, so clearing the
@@ -329,14 +453,10 @@ void ProceduralRenderer::compose(const roboface::LayerBank& bank) {
     sprite_.fillRect(roboface::kFaceLeft, roboface::kFaceTop, roboface::kFaceWidth,
                      roboface::kFaceHeight, skin_.background);
 
-    const uint16_t glow = dimmed(skin_.body_colour, bank.brightness);
     const uint16_t ink = dimmed(skin_.ink, bank.brightness);
 
-    // In the order `Layer` declares, which is the order ARCHITECTURE names. Iterating an enum would
-    // be tidier and would also mean a switch nobody reads; the order is visible here instead.
-    sprite_.fillRoundRect(bank.glow.centre_x - bank.glow.half_width,
-                          bank.glow.centre_y - bank.glow.half_height, bank.glow.half_width * 2,
-                          bank.glow.half_height * 2, bank.glow.corner_radius, glow);
+    // The silhouette first: everything else sits on it.
+    drawBody(bank);
 
     // Eyes. A closed eye is a line, not a zero-height rectangle -- `fillRoundRect` with no height
     // draws nothing, and a blink that made the eyes vanish would look like a fault.
@@ -389,6 +509,9 @@ void ProceduralRenderer::compose(const roboface::LayerBank& bank) {
             previous_y = static_cast<int>(y);
         }
     }
+
+    // Last, over the features: a blush sits on a cheek and a tear runs down one.
+    drawElement(bank);
 }
 
 uint16_t ProceduralRenderer::dimmed(uint16_t colour, uint8_t brightness) {
