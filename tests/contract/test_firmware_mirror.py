@@ -21,10 +21,13 @@ from pathlib import Path
 import pytest
 from roboface_server.protocol import (
     AUDIO_FMT,
+    DEFAULT_INTENSITY,
+    DEFAULT_TTL_MS,
     MAX_TEXT_FRAME_BYTES,
     PROTO_VERSION,
     Capability,
     DeviceMessage,
+    Emotion,
     ErrorCode,
     Hello,
     Ping,
@@ -186,3 +189,41 @@ def test_the_header_stays_free_of_the_arduino_world(header_source: str) -> None:
     # And what it *does* include is ArduinoJson plus the C++ standard library — ArduinoJson
     # despite the name is host-compilable, which is why parsing can live in the tested half.
     assert "<ArduinoJson.h>" in includes
+
+
+def test_the_emotion_enum_is_identical_on_both_sides() -> None:
+    """`EmotionFrame`'s vocabulary, checked across the two languages.
+
+    This is the drift that would be silent and expensive. The server's `Emotion` and the firmware's
+    are two hand-written lists of the same seven words; if one gains a value the other has never
+    heard of, nothing fails — `emotionFrom` coerces it to `neutral` and the device shows a resting
+    face for an emotion the server believes it sent. No error, no log line, and the only symptom is
+    a character that seems oddly flat.
+
+    So: same words, same order. The order matters because both sides index the enum by position in
+    their own tests, and because `neutral` being first is what everything relaxes to.
+    """
+    header = (Path(__file__).resolve().parents[2] / "firmware/src/pure/face.h").read_text()
+    block = re.search(r"enum class Emotion : uint8_t \{(.*?)\};", header, re.S)
+    assert block is not None, "the firmware's Emotion enum moved or was renamed"
+
+    firmware = [
+        name[0].lower() + name[1:]
+        for name in re.findall(r"\bk([A-Z]\w*)", block.group(1))
+        if name != "Count"
+    ]
+    assert firmware == [member.value for member in Emotion]
+
+
+def test_the_frame_defaults_are_identical_on_both_sides() -> None:
+    """Both halves apply these, which is what lets the server omit every optional field still at
+    its default. A disagreement is a face that differs from the one that was sent, and nothing
+    anywhere would report it."""
+    header = (Path(__file__).resolve().parents[2] / "firmware/src/pure/face.h").read_text()
+
+    ttl = re.search(r"kDefaultTtlMs = (\d+)", header)
+    intensity = re.search(r"kDefaultIntensity = ([\d.]+)f", header)
+    assert ttl is not None and intensity is not None
+
+    assert int(ttl.group(1)) == DEFAULT_TTL_MS
+    assert float(intensity.group(1)) == DEFAULT_INTENSITY

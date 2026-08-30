@@ -146,6 +146,11 @@ void Ws::handleText(const char* payload, std::size_t length) {
         case roboface::ParseResult::kReply:
         case roboface::ParseResult::kAsrPartial:
         case roboface::ParseResult::kAsr:
+        // **Added here as well as to the parser, and that is not bookkeeping.** A result the
+        // parser produces and this list omits falls through to `kUnsupported` and is logged as
+        // "not handled" -- one layer below `main.cpp`, where nobody looking at the face would
+        // think to check. v1.1 lost half a session to exactly that, with `tts_end`.
+        case roboface::ParseResult::kEmotion:
         case roboface::ParseResult::kTtsEnd:
         case roboface::ParseResult::kError:
         case roboface::ParseResult::kPong:

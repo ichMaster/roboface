@@ -47,6 +47,12 @@ roboface::DeviceState state = roboface::DeviceState::kBoot;
 //: the `frame.final` branch: the gap between those two moments is seconds, not milliseconds.
 bool reply_end_pending = false;
 
+//: Whether a server `emotion{}` frame is in force. While it is, the device stops choosing its own
+//: expression for the turn states -- which is the authority rule this whole phase exists to move.
+//: It is dropped when the link goes, because at that point the last thing the server said is no
+//: longer a description of anything.
+bool server_face = false;
+
 constexpr uint32_t kStatusIntervalMs = 10000;
 
 // Nothing on this screen changes faster than DEVICE_UI's 120 ms chrome fade -- about 8 Hz. 30 Hz is
@@ -215,12 +221,30 @@ constexpr roboface::DeviceState kSelfTestStates[] = {
     roboface::DeviceState::kOffline,  roboface::DeviceState::kError,
 };
 
+//: Which states the device still decides for itself.
+//:
+//: **The line is "can the server know this".** `boot` and `wifi_connecting` happen before there is
+//: a server; `offline` is by definition the server being unreachable; a local fault may be a fault
+//: in reaching it. For those four the device must have a face of its own or it would have none.
+//:
+//: `idle`, `listening`, `thinking` and `replying` are the turn, and from v2.2 the turn's face is
+//: the server's to choose. That is the authority move this whole phase is.
+bool isDeviceOwnedState(roboface::DeviceState state) {
+    return state == roboface::DeviceState::kBoot ||
+           state == roboface::DeviceState::kWifiConnecting ||
+           state == roboface::DeviceState::kOffline ||
+           state == roboface::DeviceState::kError;
+}
+
 void render() {
     // The console borrows the face area; chrome keeps its bands either way, because link and
     // battery are facts and hiding them would hide a dropped link exactly when it matters.
     if (console.isOn()) {
         console_view.draw(renderer.canvas(), transcript);
-    } else {
+    } else if (!server_face || isDeviceOwnedState(state)) {
+        // The device's own face, for the states that are the device's own. Everything inside a
+        // turn is targeted when the server's frame arrives, not here -- calling `show` every
+        // render would restart the frame's ttl on every repaint and it would never expire.
         renderer.show(state);
     }
     chrome_view.draw(renderer.canvas(), chrome, audio.inputLevel());
@@ -414,6 +438,10 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
             }
             ptt.cancel();
             if (audio.isListening()) audio.stopListening();
+            // The device takes its face back. Whatever the server last said described a turn that
+            // is now unreachable, and holding it would leave the device cheerful about a
+            // connection that had dropped.
+            server_face = false;
             apply(roboface::DeviceEvent::kSocketLost);
             return;
         case app::Ws::Event::kDropped:
@@ -500,6 +528,21 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
             // speaker cannot take the shared bus because the microphone still holds it
             // (`I2S: register I2S object to platform failed`). The person simply hears nothing.
             if (audio.isListening()) endListening("asr");
+            return;
+
+        case roboface::ParseResult::kEmotion:
+            // **The whole of v2.2 on the device, in three lines.** No rule here decides what the
+            // face means; the server decided, and this hands the decision to the renderer.
+            //
+            // The device's own states keep their own faces -- `boot`, `wifi_connecting`, `offline`
+            // and a local fault are facts about the link, and one of them is by definition a fact
+            // about the server being unreachable. Everything inside a turn is the server's.
+            server_face = true;
+            renderer.show(frame.emotion);
+            needs_push = true;
+            Serial.printf("\n[face] %s %d%%%s\n", roboface::toString(frame.emotion.emotion),
+                          static_cast<int>(frame.emotion.intensity * 100.0f),
+                          frame.emotion.speaking ? " speaking" : "");
             return;
 
         case roboface::ParseResult::kTtsEnd:
@@ -1009,6 +1052,10 @@ void loop() {
     // while replying: the renderer decides whether to use it, and a level that stopped arriving
     // would leave the mouth frozen at whatever it last heard.
     renderer.setAudioLevel(audio.outputLevel());
+    // The **fact**, next to the server's permission. `v2.1.2` is the reason both are needed: the
+    // server's idea of when a reply ends runs seconds ahead of the speaker, because the device is
+    // still draining audio the server finished sending.
+    renderer.setPlaying(audio.isSpeaking());
     if (audio.isSpeaking()) needs_push = true;
 
     // The reply is over now: the last sample has left the speaker.

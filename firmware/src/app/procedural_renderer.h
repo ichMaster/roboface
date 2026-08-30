@@ -6,10 +6,11 @@
 // shapes on a screen -- which is the only part a host cannot check, and so the only part that
 // should be here.
 //
-// **The seam does not change.** `IFaceRenderer` was fixed in v0.4 against a stub, with its own
-// comment explaining why: *"an interface agreed against a stub is one later versions extend; an
-// interface discovered while writing the real thing is one everything else has to be rewritten
-// around."* This is that later version, and it implements the four methods as written.
+// **The seam was extended, not rewritten**, which is the claim v0.4 made when it fixed
+// `IFaceRenderer` against a stub: *"an interface agreed against a stub is one later versions
+// extend; an interface discovered while writing the real thing is one everything else has to be
+// rewritten around."* v2.2 added one overload -- `show(const EmotionFrame&)` -- and changed
+// nothing else. The four methods agreed in v0.4 are still the four methods.
 //
 // **Everything composites into one full-screen sprite and is pushed in a single operation.** The
 // stub established this and it matters more now, not less: drawing primitives straight to the panel
@@ -24,6 +25,7 @@
 #include "app/face_renderer.h"
 #include "pure/crossfade.h"
 #include "pure/face.h"
+#include "pure/facehold.h"
 #include "pure/idle.h"
 #include "pure/layers.h"
 #include "pure/layout.h"
@@ -36,8 +38,15 @@ class ProceduralRenderer : public IFaceRenderer {
   public:
     bool begin() override;
     void show(roboface::DeviceState state) override;
+    void show(const roboface::EmotionFrame& frame) override;
     void setAudioLevel(float level) override;
     void tick(uint32_t now_ms) override;
+
+    //: Whether the device's own speaker is running. **This, not the frame's `speaking` flag, is
+    //: what keeps the mouth moving**: the server is seconds ahead of the speaker because the
+    //: device is still draining audio the server finished sending, and `v2.1.2` was exactly the
+    //: bug of believing the server about it. The flag is a permission; this is the fact.
+    void setPlaying(bool playing);
 
     //: The chrome draws into the same sprite, so face and chrome are pushed together and cannot
     //: tear relative to each other.
@@ -87,6 +96,14 @@ class ProceduralRenderer : public IFaceRenderer {
     //: Whether the mouth should follow the audio. Only while replying -- the level is zero
     //: otherwise, but making it explicit keeps a stale value from ever animating a silent face.
     bool speaking_mouth_ = false;
+    //: The server's permission, and the device's own fact. The mouth runs on **both**: the server
+    //: says a reply is being spoken, the speaker says it still is.
+    bool speaking_allowed_ = false;
+    bool playing_ = false;
+    //: How long the server's last frame stands. `pure/facehold.h` owns the rule; this holds the
+    //: state. Zero means no server frame is in force -- which is what a device-local face leaves
+    //: behind, because `boot` and `offline` are not things that expire.
+    roboface::FaceHold hold_;
     roboface::LipSync lips_;
     roboface::MouthFrame last_mouth_ = roboface::MouthFrame::kClosed;
     float last_mouth_open_ = 0.0f;

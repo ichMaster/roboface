@@ -28,6 +28,8 @@
 #include <cstring>
 #include <string>
 
+#include "pure/face.h"
+
 namespace roboface {
 
 // ---------------------------------------------------------------------------------------
@@ -262,6 +264,7 @@ inline std::string buildPing() {
 
 enum class ParseResult {
     kReply,        // reply{text, final}
+    kEmotion,      // emotion{...} -- the whole face channel (v2.2)
     kAsrPartial,   // asr_partial{text} -- a guess, revised constantly (v1.3)
     kAsr,          // asr{text} -- the resolved utterance (v1.3)
     kTtsEnd,       // tts_end -- the speaking window is closed (v1.1)
@@ -282,6 +285,9 @@ struct ServerFrame {
     // error
     ErrorCode code = ErrorCode::kUnknown;
     std::string msg;
+
+    // emotion (v2.2) -- the whole face channel, as one object rather than six loose fields.
+    EmotionFrame emotion;
 
     // For kUnsupported: what it was, so a log can say so.
     std::string type;
@@ -370,12 +376,53 @@ inline ServerFrame parseServerFrame(const char* raw, std::size_t length) {
         return frame;
     }
 
-    // Declared server->device types this phase does not handle: asr_partial, asr, emotion,
-    // config_updated, restart. (tts_audio is binary and never arrives here; tts_end is handled
-    // above from v1.1.) Answering these with "malformed" would make every later frame look like a
-    // broken server.
-    for (const auto declared : {ServerMessage::kEmotion, ServerMessage::kConfigUpdated,
-                                ServerMessage::kRestart}) {
+    // **The one frame that is never malformed.** Every other parser above refuses a bad field;
+    // this one coerces it, exactly as the server's own decoder does.
+    //
+    // Two reasons, and neither is leniency for its own sake. A face is not worth dropping a
+    // connection over -- the reply is still arriving on the same socket. And the two tiers are
+    // separately releasable, so the device may not assume the server sanitised what it sent, any
+    // more than the server assumes the device will. Both coerce; the rules are identical and are
+    // stated once in ARCHITECTURE §EmotionFrame.
+    if (std::strcmp(name, toString(ServerMessage::kEmotion)) == 0) {
+        frame.result = ParseResult::kEmotion;
+
+        JsonVariantConst emotion = doc["emotion"];
+        frame.emotion.emotion = emotion.is<const char*>()
+                                    ? emotionFrom(emotion.as<const char*>())
+                                    : Emotion::kNeutral;
+
+        JsonVariantConst intensity = doc["intensity"];
+        frame.emotion.intensity = intensity.is<float>()
+                                      ? clampUnit(intensity.as<float>(), 0.0f, 1.0f)
+                                      : kDefaultIntensity;
+
+        JsonVariantConst gaze = doc["gaze"];
+        if (gaze.is<JsonObjectConst>()) {
+            frame.emotion.has_gaze = true;
+            JsonVariantConst x = gaze["x"];
+            JsonVariantConst y = gaze["y"];
+            frame.emotion.gaze_x = x.is<float>() ? clampUnit(x.as<float>(), -1.0f, 1.0f) : 0.0f;
+            frame.emotion.gaze_y = y.is<float>() ? clampUnit(y.as<float>(), -1.0f, 1.0f) : 0.0f;
+        }
+
+        // `speaking` must be **literally** true. A truthy value is not the flag: it gates the
+        // mouth, and `1` arriving as `true` would be a decision made by a coincidence of parsing.
+        JsonVariantConst speaking = doc["speaking"];
+        frame.emotion.speaking = speaking.is<bool>() && speaking.as<bool>();
+
+        JsonVariantConst ttl = doc["ttl_ms"];
+        frame.emotion.ttl_ms = (ttl.is<uint32_t>() && ttl.as<uint32_t>() > 0)
+                                   ? ttl.as<uint32_t>()
+                                   : kDefaultTtlMs;
+        return frame;
+    }
+
+    // Declared server->device types this phase does not handle: config_updated, restart.
+    // (tts_audio is binary and never arrives here; tts_end is handled above from v1.1, and
+    // emotion from v2.2.) Answering these with "malformed" would make every later frame look
+    // like a broken server.
+    for (const auto declared : {ServerMessage::kConfigUpdated, ServerMessage::kRestart}) {
         if (std::strcmp(name, toString(declared)) == 0) {
             frame.result = ParseResult::kUnsupported;
             return frame;

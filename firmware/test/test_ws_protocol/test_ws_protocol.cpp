@@ -243,10 +243,9 @@ static void test_a_declared_but_unhandled_type_is_unsupported_not_malformed() {
     // The distinction the server draws too. Every not-yet-handled frame arriving at this build
     // lands here, and calling them malformed would make a working server look broken.
     //
-    // `tts_end` left this list in v1.1 and `asr_partial`/`asr` in v1.3. A type moving out of here
-    // is what "the phase landed" looks like from the parser's side.
-    for (const char* raw : {"{\"type\":\"emotion\"}", "{\"type\":\"restart\"}",
-                            "{\"type\":\"config_updated\"}"}) {
+    // `tts_end` left this list in v1.1, `asr_partial`/`asr` in v1.3 and `emotion` in v2.2. A type
+    // moving out of here is what "the phase landed" looks like from the parser's side.
+    for (const char* raw : {"{\"type\":\"restart\"}", "{\"type\":\"config_updated\"}"}) {
         const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
         TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kUnsupported),
                               static_cast<int>(frame.result));
@@ -328,6 +327,84 @@ static void test_a_realistic_reply_delta_is_nowhere_near_the_device_bound() {
                           static_cast<int>(parseServerFrame(delta).result));
 }
 
+
+// ---------------------------------------------------------------------------------------
+// emotion{} -- the face channel (v2.2)
+// ---------------------------------------------------------------------------------------
+
+static void test_the_documented_emotion_frame_parses_whole() {
+    // The exact object from ARCHITECTURE §EmotionFrame.
+    const char* raw =
+        "{\"type\":\"emotion\",\"emotion\":\"joy\",\"intensity\":0.8,"
+        "\"gaze\":{\"x\":-0.4,\"y\":0.0},\"accent_color\":\"#5FFFC4\","
+        "\"speaking\":true,\"ttl_ms\":6000}";
+    const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kEmotion), static_cast<int>(frame.result));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(roboface::Emotion::kJoy),
+                          static_cast<int>(frame.emotion.emotion));
+    TEST_ASSERT_EQUAL_FLOAT(0.8f, frame.emotion.intensity);
+    TEST_ASSERT_TRUE(frame.emotion.has_gaze);
+    TEST_ASSERT_EQUAL_FLOAT(-0.4f, frame.emotion.gaze_x);
+    TEST_ASSERT_TRUE(frame.emotion.speaking);
+    TEST_ASSERT_EQUAL_UINT32(6000, frame.emotion.ttl_ms);
+}
+
+static void test_a_minimal_emotion_frame_takes_the_documented_defaults() {
+    // The server omits every optional field still at its default, so this is the *common* frame
+    // on the wire rather than a degenerate one. Both halves applying the same defaults is what
+    // makes that omission safe.
+    const char* raw = "{\"type\":\"emotion\",\"emotion\":\"sad\",\"intensity\":0.4}";
+    const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(roboface::Emotion::kSad),
+                          static_cast<int>(frame.emotion.emotion));
+    TEST_ASSERT_FALSE(frame.emotion.has_gaze);
+    TEST_ASSERT_FALSE(frame.emotion.speaking);
+    TEST_ASSERT_EQUAL_UINT32(roboface::kDefaultTtlMs, frame.emotion.ttl_ms);
+}
+
+static void test_an_emotion_frame_is_never_malformed() {
+    // **The one frame that coerces rather than refusing**, and the asymmetry is deliberate: a face
+    // is not worth dropping a connection over, and the reply is still arriving on the same socket.
+    for (const char* raw : {"{\"type\":\"emotion\"}",
+                            "{\"type\":\"emotion\",\"emotion\":\"ecstatic\"}",
+                            "{\"type\":\"emotion\",\"emotion\":7,\"intensity\":\"loud\"}",
+                            "{\"type\":\"emotion\",\"gaze\":\"left\",\"ttl_ms\":-5}"}) {
+        const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kEmotion),
+                              static_cast<int>(frame.result));
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(roboface::Emotion::kNeutral),
+                              static_cast<int>(frame.emotion.emotion));
+        TEST_ASSERT_TRUE(frame.emotion.intensity >= 0.0f && frame.emotion.intensity <= 1.0f);
+        TEST_ASSERT_TRUE(frame.emotion.ttl_ms > 0);
+    }
+}
+
+static void test_intensity_and_gaze_are_clamped() {
+    const char* raw =
+        "{\"type\":\"emotion\",\"emotion\":\"joy\",\"intensity\":9,"
+        "\"gaze\":{\"x\":-9,\"y\":9}}";
+    const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
+
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, frame.emotion.intensity);
+    TEST_ASSERT_EQUAL_FLOAT(-1.0f, frame.emotion.gaze_x);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, frame.emotion.gaze_y);
+}
+
+static void test_speaking_must_be_literally_true() {
+    // A truthy value is not the flag. It gates the mouth, and `1` arriving as `true` would be a
+    // decision made by a coincidence of parsing rather than by the server.
+    for (const char* raw : {"{\"type\":\"emotion\",\"speaking\":1}",
+                            "{\"type\":\"emotion\",\"speaking\":\"yes\"}",
+                            "{\"type\":\"emotion\"}"}) {
+        const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
+        TEST_ASSERT_FALSE(frame.emotion.speaking);
+    }
+    const char* yes = "{\"type\":\"emotion\",\"speaking\":true}";
+    TEST_ASSERT_TRUE(parseServerFrame(yes, std::strlen(yes)).emotion.speaking);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_the_device_accepts_far_less_than_the_contract_permits);
@@ -355,6 +432,11 @@ int main(int, char**) {
     RUN_TEST(test_an_asr_frame_without_text_is_malformed);
     RUN_TEST(test_tts_end_parses_and_carries_nothing);
     RUN_TEST(test_a_declared_but_unhandled_type_is_unsupported_not_malformed);
+    RUN_TEST(test_the_documented_emotion_frame_parses_whole);
+    RUN_TEST(test_a_minimal_emotion_frame_takes_the_documented_defaults);
+    RUN_TEST(test_an_emotion_frame_is_never_malformed);
+    RUN_TEST(test_intensity_and_gaze_are_clamped);
+    RUN_TEST(test_speaking_must_be_literally_true);
     RUN_TEST(test_an_oversize_frame_is_refused_before_it_is_parsed);
     RUN_TEST(test_a_frame_at_the_limit_is_still_attempted);
     RUN_TEST(test_an_error_frame_carries_its_code_and_message);

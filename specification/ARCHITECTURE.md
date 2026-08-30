@@ -189,12 +189,29 @@ One `IFaceRenderer` interface across every tier, so improving the look is a rend
 
 ```cpp
 class IFaceRenderer {
-  virtual void begin();                       // load the skin pack into PSRAM
+  virtual bool begin();                       // load the skin pack into PSRAM; false if it could not
   virtual void show(const EmotionFrame&);     // set target expression (crossfade ~150–250 ms)
+  virtual void show(DeviceState);             // the states the server cannot know — see below
   virtual void setAudioLevel(float lvl);      // 0..1 while speaking — lip-sync
-  virtual void tick(uint32_t dt_ms);          // idle loop: blink, breathe, gaze drift, blend
+  virtual void tick(uint32_t now_ms);         // idle loop: blink, breathe, gaze drift, blend, ttl
 };
 ```
+
+**Two `show` overloads, and the split is the authority rule rather than a transitional convenience.**
+`boot`, `wifi_connecting`, `offline` and a local fault are facts about the link — in the `offline`
+case, by definition facts about the server being unreachable — so the device must have a face of its
+own for them or it would have none. The *turn* states are the server's: from v2.2 `listening`,
+`thinking` and `replying` arrive as `emotion{}` frames and the device no longer infers an expression
+from its own state machine.
+
+**A frame stands for its `ttl_ms`, then the renderer relaxes to `neutral` and the idle loop
+resumes.** Expiry is an edge, not a level: the relax is a one-off re-target, and a condition that
+stayed true would re-target on every frame afterwards so the crossfade would never finish.
+
+**`speaking` is a permission, and the device's own playback state is the fact.** The mouth runs on
+both. The server's idea of when a reply ends runs seconds ahead of the speaker — the device is still
+draining audio the server finished sending — and taking the flag literally froze the mouth
+mid-reply in v2.1. Believing only the speaker would lip-sync a loopback recording or a chime.
 
 1. **Stub (v0.4)** — the state expressed as a static face. Proves the channel end to end.
 2. **Procedural Stack-chan (v2.1)** — layered M5GFX sprites drawn from primitives; no assets.

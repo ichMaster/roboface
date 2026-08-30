@@ -91,6 +91,37 @@ void ProceduralRenderer::show(roboface::DeviceState state) {
     animating_ = true;
 }
 
+void ProceduralRenderer::show(const roboface::EmotionFrame& frame) {
+    // **The device renders what it is given.** This method is the whole of v2.2 on the device
+    // side: no rule here decides what the face means, only how long the instruction stands and
+    // whether the mouth is allowed to move.
+    //
+    // The idle loop runs unless the server says a reply is being spoken. `listening` is no longer
+    // special-cased by state, because there is no state to case on -- what arrives is `calm`, and a
+    // calm face that breathes is right. What must not breathe is a face that is talking, where the
+    // mouth is already the thing being watched.
+    idle_.setIntensity(frame.speaking ? 0.0f : 1.0f);
+    idle_.setBlinking(!frame.speaking);
+
+    speaking_allowed_ = frame.speaking;
+    if (!frame.speaking && !playing_) lips_.reset();
+
+    // The ttl is restarted by every frame, which is why it never expires in normal operation: the
+    // server sends one on each state change. What it bounds is the connection dying between two of
+    // them, leaving a `thinking` face standing over a turn that will never finish.
+    hold_.hold(frame.ttl_ms);
+
+    crossfade_.target(roboface::withIntensity(roboface::recipeFor(frame.emotion), frame.intensity));
+    animating_ = true;
+}
+
+void ProceduralRenderer::setPlaying(bool playing) {
+    playing_ = playing;
+    // The mouth shuts when the speaker actually stops -- not when the server said the reply was
+    // over, which it did seconds earlier.
+    if (!playing && !speaking_allowed_) lips_.reset();
+}
+
 void ProceduralRenderer::setAudioLevel(float level) {
     // The mouth's signal. This method was declared in v0.4 against a stub and did nothing until
     // now, which is exactly what the seam was fixed early for.
@@ -103,6 +134,19 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
     const uint32_t delta_ms = last_tick_ms_ == 0 ? 0 : now_ms - last_tick_ms_;
     last_tick_ms_ = now_ms;
     if (delta_ms == 0) return;
+
+    // Expiry before anything is drawn. A frame that has outlived its ttl is an instruction from a
+    // server that has stopped talking, and holding it would leave the device wearing an expression
+    // about a turn that ended -- or never ended, which is worse and is what the ttl is for.
+    if (hold_.advance(delta_ms)) {
+        crossfade_.target(roboface::recipeFor(roboface::Emotion::kNeutral));
+        // The idle loop comes back with it: a face that relaxed to neutral and then sat perfectly
+        // still would read as frozen rather than resting, which is a worse thing to look at than
+        // the stale expression this just replaced.
+        idle_.setIntensity(1.0f);
+        idle_.setBlinking(true);
+        speaking_allowed_ = false;
+    }
 
     const roboface::FaceRecipe expression = crossfade_.advance(delta_ms);
     const roboface::IdleOffsets idle = idle_.advance(delta_ms);
@@ -122,8 +166,14 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
     // device still smiles while it talks. Driving this through `mouth_curve` was a real mistake and
     // not a hypothetical one: a face already smiling at 0.70 hit the ceiling on the first shape and
     // moved two pixels, so the lip-sync ran perfectly and was invisible.
+    // **Both, and this is the v2.1.2 rule expressed in one line.** The server's permission says a
+    // reply is being spoken; the device's own speaker says it still is. Believing only the server
+    // froze the mouth mid-reply, because the server is seconds ahead of the audio it already sent.
+    // Believing only the speaker would move the mouth for a loopback test or a notification chime.
+    const bool mouth_runs = roboface::mouthRuns(speaking_allowed_ || speaking_mouth_, playing_);
+
     roboface::MouthPose mouth;
-    if (speaking_mouth_) {
+    if (mouth_runs) {
         const roboface::MouthFrame shape = lips_.feed(audio_level_);
         mouth = lips_.pose();
         if (shape != last_mouth_) {
