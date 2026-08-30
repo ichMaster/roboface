@@ -35,7 +35,7 @@ announce() {
     echo "  🔊 (на платі) $text"
     echo "[скрипт] інструкція вголос: $text" >> "$LOG"
     "$PY" "$ROOT/tools/board.py" --for 11 --log "$LOG" \
-        --send "Повтори дослівно, нічого не додаючи від себе: $text" --send-after 1 \
+        --send "Повтори дослівно, нічого не додаючи від себе: $text" --send-after 1 --send-when-idle \
         > /dev/null 2>&1
     sleep 1
 }
@@ -59,7 +59,7 @@ watch_board() {
     } >> "$LOG"
 
     local args=(--for "$seconds" --log "$LOG")
-    [[ -n "$command" ]] && args+=(--send "$command" --send-after 2)
+    [[ -n "$command" ]] && args+=(--send "$command" --send-after 2 --send-when-idle)
 
     local before
     before=$(wc -l < "$LOG")

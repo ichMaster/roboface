@@ -83,10 +83,17 @@ def split_lines(buffer: bytes) -> tuple[list[str], bytes]:
     return lines, buffer
 
 
+#: How long `--send-when-idle` waits for the board to settle before sending regardless. Long
+#: enough for a turn triggered by ambient noise to finish -- recognition, model, speech -- and
+#: short enough that a scripted test does not appear to hang.
+IDLE_WAIT_S = 25.0
+
+
 def watch(
     duration: float | None,
     to_send: list[str],
     send_after: float,
+    send_when_idle: bool,
     quiet: bool,
     log_path: str | None = None,
 ) -> int:
@@ -97,6 +104,8 @@ def watch(
     port: str | None = None
     buffer = b""
     sent = False
+    #: What the board last said it was doing. `--send-when-idle` waits on this.
+    board_state = "unknown"
     stdin_open = True
     read_failures = 0
 
@@ -165,6 +174,10 @@ def watch(
                 lines, buffer = split_lines(buffer)
                 for line in lines:
                     emit(line)
+                    # Track the board's own state so a scripted send can wait for it to be free.
+                    # Cheap and exact: the firmware prints this line on every transition.
+                    if "[state] " in line:
+                        board_state = line.split("[state] ", 1)[1].strip()
 
             # Forward anything typed at us. `select` with a zero timeout keeps this a poll rather
             # than a blocking read, so the board's output never stalls waiting for a keystroke --
@@ -191,7 +204,22 @@ def watch(
                             except Exception as exc:
                                 note(f"could not send: {exc}")
 
-            if to_send and not sent and time.time() - started >= send_after:
+            # **Wait for the board to be free, not merely for a clock.**
+            #
+            # A fixed delay sends into whatever the device happens to be doing, and with active
+            # listening on it is frequently mid-turn: the VAD opens a window on ambient noise, the
+            # firmware answers `[busy] not idle (thinking) -- line ignored`, and the scripted line
+            # is silently dropped. A manual test then produces an answer about something that never
+            # ran, which is worse than a failure -- it is a wrong measurement that looks like a
+            # right one. That happened on v2.3's test 2.
+            #
+            # `send_deadline` is the escape: if the board never settles, send anyway and let the
+            # test see the `[busy]` line rather than hanging.
+            ready = board_state == "idle" or not send_when_idle
+            overdue = time.time() - started >= send_after + IDLE_WAIT_S
+            if to_send and not sent and time.time() - started >= send_after and (ready or overdue):
+                if send_when_idle and not ready:
+                    note(f"board still {board_state} after {IDLE_WAIT_S:.0f}s — sending anyway")
                 for text in to_send:
                     note(f">>> {text}")
                     try:
@@ -221,6 +249,8 @@ def main() -> int:
                         help="a line to type at the board once attached; repeatable")
     parser.add_argument("--send-after", type=float, default=2.0,
                         help="seconds to wait before sending (default 2)")
+    parser.add_argument("--send-when-idle", action="store_true",
+                        help="wait for the board to be idle before sending, not just for a clock")
     parser.add_argument("--quiet", action="store_true", help="only the board's own output")
     parser.add_argument("--log", metavar="FILE", default=None,
                         help="append everything printed to FILE as well as the screen")
@@ -232,7 +262,8 @@ def main() -> int:
         if args.duration is None:
             return 1
 
-    return watch(args.duration, args.send, args.send_after, args.quiet, args.log)
+    return watch(args.duration, args.send, args.send_after, args.send_when_idle,
+                 args.quiet, args.log)
 
 
 if __name__ == "__main__":
