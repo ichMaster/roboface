@@ -30,6 +30,7 @@
 #include "pure/layers.h"
 #include "pure/layout.h"
 #include "pure/lipsync.h"
+#include "pure/reflex.h"
 #include "pure/state.h"
 
 namespace app {
@@ -46,6 +47,11 @@ class ProceduralRenderer : public IFaceRenderer {
     //: server's `gaze`** -- ARCHITECTURE §Gaze says so: the field arrives from the server and is
     //: "overridden locally by a reflex". The device can see a hand; the server cannot.
     void setGazeReflex(bool active, float x = 0.0f);
+
+    //: Fire a reflex over the current expression. The renderer owns the layer because the layer's
+    //: output is a recipe and the renderer is the only thing that draws one.
+    void fireReflex(roboface::Reflex reflex, uint32_t now_ms) { reflexes_.fire(reflex, now_ms); }
+    void recordTap(uint32_t now_ms) { reflexes_.tapped(now_ms); }
 
     //: Whether the device's own speaker is running. **This, not the frame's `speaking` flag, is
     //: what keeps the mouth moving**: the server is seconds ahead of the speaker because the
@@ -131,6 +137,7 @@ class ProceduralRenderer : public IFaceRenderer {
     //: when playback stops, which is the moment it was actually describing.
     roboface::EmotionFrame pending_;
     bool has_pending_ = false;
+    roboface::ReflexLayer reflexes_;
     roboface::LipSync lips_;
     roboface::MouthFrame last_mouth_ = roboface::MouthFrame::kClosed;
     float last_mouth_open_ = 0.0f;

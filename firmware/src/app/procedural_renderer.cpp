@@ -217,6 +217,13 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
     roboface::FaceRecipe frame = expression;
     frame.eye_openness *= idle.eye_scale;
 
+    // **The reflex composites over everything else and touches nothing underneath.** It is applied
+    // after the crossfade and the idle loop, so a poke during a smile is a poked smile; and it is
+    // told whether the device is speaking, because while it is the mouth belongs to the lip-sync
+    // and two animations on one feature is one too many.
+    frame = reflexes_.apply(frame, now_ms, speaking_allowed_ || playing_);
+    if (reflexes_.isActive(now_ms)) animating_ = true;
+
     // **A simplified lip-sync: four mouth shapes, not a continuous opening.** v2.3 does the real
     // thing -- visemes chosen from the spectrum rather than the amplitude. This is the animator's
     // version, and it is better than a smooth mouth on both counts that matter here: real speech

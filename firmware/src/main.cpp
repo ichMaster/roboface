@@ -18,11 +18,16 @@
 #include "app/console_view.h"
 #include "app/net.h"
 #include "app/procedural_renderer.h"
+#include "app/sensors.h"
 #include "app/ws.h"
 #include "config.h"
 #include "pure/chrome.h"
 #include "pure/console.h"
+#include "pure/motion.h"
+#include "pure/proximity.h"
 #include "pure/ptt.h"
+#include "pure/reflex.h"
+#include "pure/touch.h"
 #include "pure/transcript.h"
 #include "pure/vad.h"
 #include "pure/line_reader.h"
@@ -39,6 +44,8 @@ app::ProceduralRenderer renderer;
 app::ChromeView chrome_view;
 app::ConsoleView console_view;
 app::AudioIo audio;
+app::Imu imu;
+app::Proximity proximity;
 roboface::Chrome chrome;
 roboface::LineReader lines;
 roboface::DeviceState state = roboface::DeviceState::kBoot;
@@ -140,6 +147,14 @@ uint32_t now_ms_for_log = 0;
 //: Press-and-hold on the glass. The rules live in `pure/ptt.h`; this holds the instance and the
 //: panel is read once per loop.
 roboface::PushToTalk ptt;
+
+//: The affection half of the same finger (v2.4). See the note at the call site for why there are
+//: two classifiers over one panel.
+roboface::TouchGestures gestures;
+
+//: How many fingers were on the glass last loop. Mute is the two-finger tap from v2.4, and a count
+//: is the only way to tell it from the single tap that is now affection.
+uint8_t fingers_last = 0;
 
 //: When a `/loopback` recording should stop and play back. Zero means none is running.
 uint32_t loopback_until_ms = 0;
@@ -423,6 +438,95 @@ void setActiveListening(bool wanted) {
 //: The tap's form: no argument to give, so it flips. `/mic on` and `/mic off` exist for scripts,
 //: which cannot see the indicator and so cannot use a toggle.
 void toggleActiveListening() { setActiveListening(!active_listening); }
+
+//: Which reflex a gesture fires. The mapping is DEVICE_UI §Input's, one line each.
+roboface::Reflex reflexFor(roboface::TouchGesture gesture) {
+    switch (gesture) {
+        case roboface::TouchGesture::kTap:
+        case roboface::TouchGesture::kMultiTap: return roboface::Reflex::kTickle;
+        case roboface::TouchGesture::kStroke: return roboface::Reflex::kContented;
+        case roboface::TouchGesture::kPokeEye: return roboface::Reflex::kStartle;
+        default: return roboface::Reflex::kNone;
+    }
+}
+
+//: And which `kind` it is on the wire. `long_press` and `held_silent` are **control** gestures --
+//: DEVICE_UI is explicit that control is local UI and is deliberately not reported, because the
+//: character has no business knowing the person opened a menu.
+const char* eventKindFor(roboface::TouchGesture gesture) {
+    switch (gesture) {
+        case roboface::TouchGesture::kTap: return "tap";
+        case roboface::TouchGesture::kMultiTap: return "multi_tap";
+        case roboface::TouchGesture::kStroke: return "stroke";
+        case roboface::TouchGesture::kPokeEye: return "poke_eye";
+        default: return nullptr;
+    }
+}
+
+const char* zoneName(roboface::TouchZone zone) {
+    switch (zone) {
+        case roboface::TouchZone::kForehead: return "forehead";
+        case roboface::TouchZone::kEye: return "eye";
+        case roboface::TouchZone::kCheek: return "cheek";
+        default: return "outside";
+    }
+}
+
+//: **Both levels, in the order their deadlines demand.** The reflex fires first and unconditionally
+//: -- it is the whole point of the first level that it does not wait for a network -- and the
+//: report goes second and may fail without anyone noticing.
+void onTouchGesture(const roboface::TouchResult& touched, uint32_t now_ms) {
+    const roboface::Reflex reflex = reflexFor(touched.gesture);
+    if (reflex != roboface::Reflex::kNone) {
+        if (touched.gesture == roboface::TouchGesture::kTap ||
+            touched.gesture == roboface::TouchGesture::kMultiTap) {
+            renderer.recordTap(now_ms);
+        }
+        renderer.fireReflex(reflex, now_ms);
+        needs_push = true;
+    }
+
+    const char* kind = eventKindFor(touched.gesture);
+    if (kind == nullptr) return;  // a control gesture: local UI, deliberately not reported
+
+    Serial.printf("\n[touch] %s %s x%u\n", kind, zoneName(touched.zone),
+                  static_cast<unsigned>(touched.count));
+    ws.sendEvent(roboface::EventType::kTouch, kind, "zone", zoneName(touched.zone),
+                 "count", touched.count);
+}
+
+//: A motion, and the reflex it deserves. Free fall and being turned over are disorienting; a shake
+//: is a startle.
+//: A hand arrived or left. **This one is a reflex first and an event a distant second**: the face
+//: turning toward a hand is the reaction, and the remark the server might make about it is a bonus
+//: that arrives a second later. With the server gone the turn still happens, which is the DoD's
+//: last clause and the whole reason the levels are separate mechanisms.
+void onPresence(roboface::Presence presence, uint32_t now_ms) {
+    const bool near = presence == roboface::Presence::kApproach;
+    renderer.setGazeReflex(near, near ? roboface::kGazePull : 0.0f);
+    if (near) renderer.fireReflex(roboface::Reflex::kAlert, now_ms);
+    needs_push = true;
+
+    Serial.printf("\n[near] %s\n", roboface::toString(presence));
+    ws.sendEvent(roboface::EventType::kProximity, roboface::toString(presence));
+}
+
+void onMotion(roboface::Motion motion, uint32_t now_ms) {
+    switch (motion) {
+        case roboface::Motion::kShake:
+            renderer.fireReflex(roboface::Reflex::kStartle, now_ms);
+            break;
+        case roboface::Motion::kFreeFall:
+        case roboface::Motion::kUpsideDown:
+            renderer.fireReflex(roboface::Reflex::kDizzy, now_ms);
+            break;
+        default:
+            break;
+    }
+    needs_push = true;
+    Serial.printf("\n[motion] %s\n", roboface::toString(motion));
+    ws.sendEvent(roboface::EventType::kMotion, roboface::toString(motion));
+}
 
 
 roboface::LinkState linkStateNow() {
@@ -975,6 +1079,12 @@ void setup() {
         Serial.println("[face] FAILED to allocate the sprite — the screen will stay blank");
     }
 
+    // The two sensors v2.4 adds. **Neither is required to boot**: a board variant without one is a
+    // device that does not notice being shaken, not a device that refuses to start. The capability
+    // flags that make that explicit on the wire arrive in v6.1.
+    if (!imu.begin()) Serial.println("[imu] not present — no motion events");
+    if (!proximity.begin()) Serial.println("[near] not present — the face will not wake to a hand");
+
     const uint32_t now_ms = millis();
     pollPower(now_ms, /*force=*/true);
     updateChrome(now_ms, false, roboface::ErrorCode::kUnknown);
@@ -1067,6 +1177,28 @@ void loop() {
             break;
     }
 
+    // **The affection half of the same finger** (v2.4). `PushToTalk` above decides what the touch
+    // does to the microphone; `TouchGestures` decides what it meant to the character. Both are fed
+    // the same panel state in the same loop, so they cannot disagree about whether a finger is down.
+    // **Mute is the two-finger tap from v2.4**, which is what DEVICE_UI §Input always specified.
+    // Counted on the edge -- a second finger arriving while the first is down -- rather than on
+    // release, because the panel reports the count only while both are present and a release has
+    // already lost it.
+    {
+        const uint8_t fingers = M5.Touch.getCount();
+        if (fingers >= 2 && fingers_last < 2) toggleActiveListening();
+        fingers_last = fingers;
+    }
+
+    {
+        const auto detail = M5.Touch.getDetail();
+        const roboface::TouchSample sample{detail.isPressed(), detail.x, detail.y, now_ms};
+        const roboface::TouchResult touched = gestures.feed(sample, audio.isListening());
+        if (touched.gesture != roboface::TouchGesture::kNone) {
+            onTouchGesture(touched, now_ms);
+        }
+    }
+
     switch (ptt.update(M5.Touch.getDetail().isPressed(), now_ms)) {
         case roboface::PttEvent::kStarted:
             // A timed `/listen` window and a finger must not both own the microphone.
@@ -1077,11 +1209,13 @@ void loop() {
             endListening("ptt");
             break;
         case roboface::PttEvent::kTapped: {
-            // A tap toggles active listening. DEVICE_UI reserves the single tap for the affection
-            // reflex and puts mute on a two-finger tap -- but the reflexes are v2.5 and do not
-            // exist yet, and a mute nobody can reach is not a feature. Moves to two fingers when
-            // the reflexes land; recorded in DEVICE_UI so the two do not disagree quietly.
-            toggleActiveListening();
+            // **The tap is affection again** (v2.4). DEVICE_UI §Input always said so and recorded
+            // the single-tap mute as temporary -- *"the single tap belongs to the affection reflex;
+            // mute moves to two fingers when the reflexes land"*. They landed here, so the
+            // stop-gap goes: `TouchGestures` above turns this same tap into a tickle.
+            //
+            // Mute is the **two-finger tap** now, and `/mic on|off` stays -- it is what makes the
+            // device scriptable, and every manual test since v2.3 depends on it.
             break;
         }
             // Deliberately nothing on the wire. DEVICE_UI gives press-and-hold to PTT; a tap is
@@ -1099,6 +1233,15 @@ void loop() {
     // The mouth's signal, from the speaker rather than the microphone. Fed every loop and not only
     // while replying: the renderer decides whether to use it, and a level that stopped arriving
     // would leave the mouth frozen at whatever it last heard.
+    // The two sensors, each at its own rate and each deciding nothing here.
+    if (const roboface::Motion motion = imu.tick(now_ms); motion != roboface::Motion::kNone) {
+        onMotion(motion, now_ms);
+    }
+    if (const roboface::Presence presence = proximity.tick(now_ms);
+        presence != roboface::Presence::kNone) {
+        onPresence(presence, now_ms);
+    }
+
     renderer.setAudioLevel(audio.outputLevel());
     // The **fact**, next to the server's permission. `v2.1.2` is the reason both are needed: the
     // server's idea of when a reply ends runs seconds ahead of the speaker, because the device is

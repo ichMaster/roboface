@@ -48,6 +48,13 @@ class Ws {
     // than pretending the turn started.
     bool sendTextIn(const char* text);
 
+    //: The second level of the reaction model (v2.4). **Failure is fine and is not reported
+    //: upward**: the reflex has already fired locally by the time this is called, so a dropped
+    //: socket costs the character a remark rather than costing the person a reaction.
+    bool sendEvent(roboface::EventType type, const char* kind,
+                   const char* meta_key = nullptr, const char* meta_value = nullptr,
+                   const char* count_key = nullptr, int count = 0);
+
     // The listening window, and the audio inside it. `sendAudio` is a **binary** frame with no
     // envelope -- its meaning comes from the window being open, which is why these three belong
     // together rather than being three unrelated sends.

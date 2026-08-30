@@ -101,7 +101,7 @@ inline constexpr uint32_t kShakeWindowMs = 600;
 inline constexpr float kPickUpG = 0.30f;
 
 //: How long it must be quiet again before the lift is over rather than still happening.
-inline constexpr uint32_t kSettleMs = 250;
+inline constexpr uint32_t kMotionSettleMs = 250;
 
 //: Magnitude of a sample, in g. No `sqrt` from <cmath>: this header compiles for both the host and
 //: an ESP32-S3, and the same Newton iteration `envelope.h` uses is exact enough for a threshold
@@ -173,7 +173,7 @@ class MotionDetector {
             quiet_since_ms_ = 0;
         } else if (lifting_) {
             if (quiet_since_ms_ == 0) quiet_since_ms_ = sample.at_ms;
-            if (sample.at_ms - quiet_since_ms_ >= kSettleMs) {
+            if (sample.at_ms - quiet_since_ms_ >= kMotionSettleMs) {
                 lifting_ = false;
                 quiet_since_ms_ = 0;
                 // A lift ends where a tilt would be measured from, so the reference moves with it.

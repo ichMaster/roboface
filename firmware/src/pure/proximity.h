@@ -42,7 +42,7 @@ inline constexpr uint16_t kFarCount = 180;
 
 //: How long a reading must hold before it counts. The sensor is noisy and a sleeve passing over it
 //: is not an approach; 150 ms is shorter than a deliberate reach and longer than a wave.
-inline constexpr uint32_t kSettleMs = 150;
+inline constexpr uint32_t kProximitySettleMs = 150;
 
 // Approach and leave, debounced.
 class ProximityDetector {
@@ -61,7 +61,7 @@ class ProximityDetector {
             candidate_since_ms_ = at_ms;
             return Presence::kNone;
         }
-        if (at_ms - candidate_since_ms_ < kSettleMs) return Presence::kNone;
+        if (at_ms - candidate_since_ms_ < kProximitySettleMs) return Presence::kNone;
 
         near_ = near;
         candidate_since_ms_ = 0;

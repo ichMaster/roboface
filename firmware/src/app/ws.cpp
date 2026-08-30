@@ -225,6 +225,14 @@ bool Ws::sendTextIn(const char* text) {
     return noteSend(client.sendTXT(roboface::buildTextIn(text).c_str()));
 }
 
+bool Ws::sendEvent(roboface::EventType type, const char* kind,
+                   const char* meta_key, const char* meta_value,
+                   const char* count_key, int count) {
+    if (!connected_) return false;
+    return noteSend(client.sendTXT(
+        roboface::buildEvent(type, kind, meta_key, meta_value, count_key, count).c_str()));
+}
+
 bool Ws::sendListenStart() {
     if (!connected_) return false;
     return noteSend(client.sendTXT(roboface::buildListenStart().c_str()));
