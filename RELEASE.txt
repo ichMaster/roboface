@@ -1,3 +1,25 @@
+Version 2.1.1 (2026-08-30)
+---------------------------
+- The face was costing the microphone half its frames. A 15-second window
+  captured 260 where 750 were due, and the endpointer stopped closing windows on
+  its own -- it measures time in frames, so dropped frames slow its clock.
+- The sprite is 8-bit rather than 16. Each drawn frame cost about 2.4 microphone
+  frames -- 150 KB over SPI is ~48 ms of blocked loop -- so lowering the frame
+  rate only traded one for the other. Halving the bytes raised both: 7 FPS with
+  the microphone at 35 became 9-10 FPS with it at 46-48.
+- The status line reports `mic` -- the recorder's own rate -- next to `fps` and
+  `cap`. Without it, "the VAD never triggers" looks identical whether the room
+  was quiet or the recorder was starved, and those need opposite fixes.
+- Listening now stills the drift and keeps the blink: a gaze wandering off
+  mid-sentence reads as distraction exactly when the device should be paying
+  attention, and a face that stops blinking stops looking alive.
+- The blink is 200 ms rather than 120, so it cannot fall between two frames at
+  10 FPS and never be drawn at all.
+
+Measured against the numbers recorded before the face existed: recognition 212 ms
+(was 162-241), first word of the reply 626 ms (was 625-637), capture 107%.
+Identical to the millisecond, with the face animating.
+
 Version 2.1.0 (2026-08-29)
 ---------------------------
 - The face is alive. A layered procedural renderer replaces the stub: it blinks
