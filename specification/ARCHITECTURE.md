@@ -80,10 +80,19 @@ The entire face channel, server→device, one object:
 
 - `emotion` — the fixed enum: `neutral · calm · joy · thinking · surprised · sad · error`. Required.
 - `intensity` — 0..1, scales expressiveness: smile depth, eye opening, idle amplitude, halo brightness. Required.
-- `gaze` — continuous `{x, y}` in −1..1. Driven by the server (voice direction, the vision turn) and overridden locally by a reflex (a hand approaching, a touch). Optional, default centre.
-- `accent_color` — hex; the skin's element colour and, from v5, the halo. Optional; omitted means "use the recipe colour".
-- `speaking` — whether lip-sync is active. Optional, default false.
-- `ttl_ms` — with no new frame after this, the renderer relaxes to `neutral`. Optional, default 8000.
+- `gaze` — continuous `{x, y}` in −1..1. Driven by the server (voice direction, the vision turn) and overridden locally by a reflex (a hand approaching, a touch). Optional; **omitted means "no opinion"**, which is not the same instruction as centre once a device reflex can override one of them.
+- `accent_color` — `#rrggbb`, and nothing else — the device draws in RGB565 and would have to reject anything it could not convert. The skin's element colour and, from v5, the halo. Optional; omitted means "use the recipe colour".
+- `speaking` — whether lip-sync is permitted. Optional, default false. **A permission, not a duration:** the device is seconds ahead of the server's idea of when speech ends, because it is still draining audio the server finished sending, so what stops the mouth is the device's own playback state (v2.1.2).
+- `ttl_ms` — with no new frame after this, the renderer relaxes to `neutral`. Optional, default 8000. A liveness guarantee rather than a schedule: it is what stops a face holding `thinking` forever if the connection drops between the model call starting and its answer arriving.
+
+**Every field is coerced, on both sides, and never refused.** `emotion` outside the enum → `neutral`;
+`intensity` clamped, and a non-number → 0.5; a gaze axis clamped, a malformed gaze dropped; a
+malformed `accent_color` dropped; a non-positive `ttl_ms` → the default. This is the one frame whose
+decoder does not raise: a face is not worth dropping a connection over, and the two tiers are
+separately releasable, so neither may assume the other has already sanitised what it sends. Each
+coercion logs once at debug — a model that keeps reporting `"happy"` is a prompt bug, and that line
+is the only way to find it. The encoder omits any optional field still at its default, so a frame on
+every state change does not bury the field that actually moved.
 
 **The server decides `emotion`; the device never infers one.** Turn states are expressed through the face — `listening`, `thinking`, `replying` map to frames (`calm`, `thinking`, and the reply's own emotion), not to text labels on the screen. The **audio level is not part of this object**: lip-sync is a local `setAudioLevel(0..1)` derived from the playback buffer.
 

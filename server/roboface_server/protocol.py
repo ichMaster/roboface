@@ -32,6 +32,8 @@ rather than assumed in v0.1, because changing an enumerated contract is a decisi
 from __future__ import annotations
 
 import json
+import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -98,6 +100,26 @@ MAX_TEXT_FRAME_BYTES: Final = 64 * 1024
 # --------------------------------------------------------------------------------------
 
 
+#: How long an ``emotion`` frame stands before the device relaxes to ``neutral``, in milliseconds
+#: (ARCHITECTURE §EmotionFrame). The device applies this same number when the field is absent, so
+#: the two halves agree without the frame having to say so on every state change.
+#:
+#: It is a **liveness guarantee, not a schedule**: the server sends a frame on every state change,
+#: and this is what stops a face holding `thinking` forever when the connection drops between the
+#: model call starting and its answer arriving.
+DEFAULT_TTL_MS: Final = 8000
+
+#: What an unusable ``intensity`` becomes. The midpoint, because it is the only value that is wrong
+#: by the same amount in both directions -- a default of 0 would render as a face that has gone
+#: blank, and 1 as one permanently shouting, and both look like a decision rather than a fallback.
+DEFAULT_INTENSITY: Final = 0.5
+
+#: ``accent_color`` on the wire: ``#rrggbb``, nothing else. Not a general CSS colour parser -- the
+#: device draws with RGB565 and would have to reject anything it could not convert anyway, so the
+#: narrow spelling is the honest one.
+ACCENT_COLOR_RE: Final = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
 class DeviceMessage(StrEnum):
     """Everything a device may send. ``AUDIO`` and ``IMAGE`` are binary; the rest are JSON."""
 
@@ -135,6 +157,25 @@ BINARY_SERVER_MESSAGES: Final = frozenset({ServerMessage.TTS_AUDIO})
 
 TEXT_DEVICE_MESSAGES: Final = frozenset(DeviceMessage) - BINARY_DEVICE_MESSAGES
 TEXT_SERVER_MESSAGES: Final = frozenset(ServerMessage) - BINARY_SERVER_MESSAGES
+
+
+class Emotion(StrEnum):
+    """The fixed face vocabulary (ARCHITECTURE §EmotionFrame).
+
+    **Seven values, and adding an eighth is a contract change, not a feature.** The device's recipe
+    table must be total over this enum -- every value has a face, drawn from arithmetic in
+    `firmware/src/pure/face.h`. A value the firmware has no recipe for does not raise anywhere; it
+    renders as a blank face, which is the worst place to discover a missing case and the reason the
+    enum is closed rather than free-form.
+    """
+
+    NEUTRAL = "neutral"
+    CALM = "calm"
+    JOY = "joy"
+    THINKING = "thinking"
+    SURPRISED = "surprised"
+    SAD = "sad"
+    ERROR = "error"
 
 
 class ErrorCode(StrEnum):
@@ -323,6 +364,72 @@ class TtsEnd:
 
 
 @dataclass(frozen=True, slots=True)
+class Gaze:
+    """Where the face is looking: ``x`` and ``y`` in −1..1, centre at the origin.
+
+    Its own type rather than a pair of floats on the frame, because gaze acquires real sources
+    later -- inter-microphone direction in v2.5, the vision turn in v3 -- and a reflex on the device
+    overrides it. Naming it now is what keeps those three from each inventing a shape.
+    """
+
+    x: float = 0.0
+    y: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class EmotionFrame:
+    """``emotion{...}`` -- the entire face channel, server -> device, one object.
+
+    ``emotion`` and ``intensity`` are required; the rest carry the documented defaults, and
+    :func:`encode` omits any field still at its default. That is not compression -- a frame goes out
+    on every state change, and a wire full of ``"gaze":{"x":0,"y":0}`` makes the fields that *did*
+    change harder to see in a log.
+
+    **The audio level is deliberately not here.** Lip-sync is local, from the playback buffer the
+    device is already holding (ARCHITECTURE §EmotionFrame). Putting a level on this frame would put
+    a 30-per-second signal on a channel that otherwise carries a handful of frames per turn.
+    """
+
+    emotion: Emotion
+    intensity: float
+    gaze: Gaze | None = None
+    accent_color: str | None = None
+    speaking: bool = False
+    ttl_ms: int = DEFAULT_TTL_MS
+
+    @classmethod
+    def from_model(
+        cls,
+        emotion: object,
+        intensity: object,
+        *,
+        gaze: object = None,
+        accent_color: object = None,
+        speaking: bool = False,
+        ttl_ms: int = DEFAULT_TTL_MS,
+    ) -> EmotionFrame:
+        """Build a frame from **untrusted** model output, coercing rather than raising.
+
+        The model is asked for an emotion from the enum. It is not obliged to comply, and the one
+        thing that must never happen is a turn failing -- or a face going blank -- because a
+        language model spelled ``joy`` as ``happy``. So every field has a documented coercion and
+        this method is total over arbitrary input.
+
+        Each coercion logs once at debug with what it saw. A model that keeps reporting ``happy`` is
+        a **prompt** bug, not a protocol one, and the only way to find it is for the coercion to
+        leave a trace rather than quietly succeed.
+        """
+        return cls(
+            emotion=coerce_emotion(emotion),
+            intensity=coerce_intensity(intensity),
+            gaze=coerce_gaze(gaze),
+            accent_color=coerce_accent_color(accent_color),
+            speaking=speaking,
+            ttl_ms=ttl_ms,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ErrorFrame:
     """``error{code, msg}`` -- ``msg`` is for a human reading a log; ``code`` is the contract."""
 
@@ -333,7 +440,7 @@ class ErrorFrame:
 #: Everything :func:`decode` can return and :func:`encode` accepts.
 Frame = (
     Hello | TextIn | ListenStart | ListenStop | Ping | Pong
-    | AsrPartial | Asr | Reply | TtsEnd | ErrorFrame
+    | AsrPartial | Asr | Reply | EmotionFrame | TtsEnd | ErrorFrame
 )
 
 #: Which message type each typed frame is. One table, so encode and the tests agree.
@@ -347,6 +454,7 @@ FRAME_TYPES: Final[dict[type[Frame], DeviceMessage | ServerMessage]] = {
     AsrPartial: ServerMessage.ASR_PARTIAL,
     Asr: ServerMessage.ASR,
     Reply: ServerMessage.REPLY,
+    EmotionFrame: ServerMessage.EMOTION,
     TtsEnd: ServerMessage.TTS_END,
     ErrorFrame: ServerMessage.ERROR,
 }
@@ -376,6 +484,18 @@ def encode(frame: Frame) -> str:
             payload["text"] = frame.text
         case Reply():
             payload |= {"text": frame.text, "final": frame.final}
+        case EmotionFrame():
+            # Required always; optional only when it says something. A frame goes out on every
+            # state change, so a wire full of defaults would bury the field that actually moved.
+            payload |= {"emotion": str(frame.emotion), "intensity": frame.intensity}
+            if frame.gaze is not None:
+                payload["gaze"] = {"x": frame.gaze.x, "y": frame.gaze.y}
+            if frame.accent_color is not None:
+                payload["accent_color"] = frame.accent_color
+            if frame.speaking:
+                payload["speaking"] = True
+            if frame.ttl_ms != DEFAULT_TTL_MS:
+                payload["ttl_ms"] = frame.ttl_ms
         case ErrorFrame():
             payload |= {"code": str(frame.code), "msg": frame.msg}
         case Ping() | Pong() | TtsEnd() | ListenStart() | ListenStop():
@@ -453,6 +573,91 @@ def decode(raw: str | bytes) -> Frame:
     return decoder(payload)
 
 
+# --------------------------------------------------------------------------------------
+# Coercions -- what makes untrusted model output safe to render
+# --------------------------------------------------------------------------------------
+
+#: The one logger the server emits through (``logging.LOGGER_NAME``). Named literally rather than
+#: imported, because ``roboface_server.logging`` shadows the stdlib module inside this package and
+#: `protocol` is the module both tiers read as the definition of the contract -- it must not acquire
+#: an import that could fail differently depending on who imports it first.
+_LOG: Final = logging.getLogger("roboface")
+
+
+def coerce_emotion(value: object) -> Emotion:
+    """Anything at all -> a renderable emotion. Unknown or absent becomes ``neutral``."""
+    if isinstance(value, Emotion):
+        return value
+    if isinstance(value, str):
+        try:
+            return Emotion(value)
+        except ValueError:
+            _LOG.debug("model reported an emotion outside the enum: %r -> neutral", value)
+            return Emotion.NEUTRAL
+    _LOG.debug("model reported a non-string emotion: %r -> neutral", value)
+    return Emotion.NEUTRAL
+
+
+def coerce_intensity(value: object) -> float:
+    """Anything at all -> 0..1.
+
+    ``bool`` is excluded explicitly: it is an ``int`` subclass, so ``True`` would otherwise arrive
+    as full intensity rather than as the malformed value it is.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        _LOG.debug("model reported a non-numeric intensity: %r -> %s", value, DEFAULT_INTENSITY)
+        return DEFAULT_INTENSITY
+    number = float(value)
+    # NaN fails every comparison, so it must be caught by asking rather than by clamping.
+    if number != number:
+        _LOG.debug("model reported NaN intensity -> %s", DEFAULT_INTENSITY)
+        return DEFAULT_INTENSITY
+    if number < 0.0 or number > 1.0:
+        _LOG.debug("model reported intensity %r, clamped", number)
+    return min(1.0, max(0.0, number))
+
+
+def _coerce_axis(value: object, axis: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    number = float(value)
+    if number != number:
+        return 0.0
+    if number < -1.0 or number > 1.0:
+        _LOG.debug("gaze %s was %r, clamped", axis, number)
+    return min(1.0, max(-1.0, number))
+
+
+def coerce_gaze(value: object) -> Gaze | None:
+    """A mapping with ``x``/``y`` -> a clamped :class:`Gaze`; anything else -> ``None``.
+
+    ``None`` rather than a centred gaze: "no opinion" and "look straight ahead" are different
+    instructions once a reflex on the device can override one of them, and this phase's server has
+    no opinion at all.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        _LOG.debug("gaze was not an object: %r -> omitted", value)
+        return None
+    return Gaze(x=_coerce_axis(value.get("x"), "x"), y=_coerce_axis(value.get("y"), "y"))
+
+
+def coerce_accent_color(value: object) -> str | None:
+    """``#rrggbb`` -> itself; anything else -> ``None``.
+
+    Dropped rather than defaulted. An accent colour that is absent means "use the recipe's own
+    colour", which is a working face; a colour invented here would be a decision the skin never
+    agreed to.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or ACCENT_COLOR_RE.match(value) is None:
+        _LOG.debug("accent_color %r is not #rrggbb -> omitted", value)
+        return None
+    return value
+
+
 def _require_str(payload: dict[str, Any], key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str):
@@ -514,6 +719,33 @@ def _decode_reply(payload: dict[str, Any]) -> Reply:
     return Reply(text=_require_str(payload, "text"), final=_require_bool(payload, "final"))
 
 
+def _decode_emotion(payload: dict[str, Any]) -> EmotionFrame:
+    """Decode ``emotion{}`` -- **coercing, not validating**.
+
+    Unlike every other decoder here, this one never raises on a bad field. It is the same rule the
+    firmware's parser applies to the same frame, and it is deliberate on both sides: a face is not
+    worth dropping a connection over, and the two halves are separately releasable, so neither may
+    assume the other has already sanitised what it sends.
+
+    The frame's *envelope* is still the contract -- a payload that is not an object never reaches
+    here at all.
+    """
+    return EmotionFrame.from_model(
+        payload.get("emotion"),
+        payload.get("intensity"),
+        gaze=payload.get("gaze"),
+        accent_color=payload.get("accent_color"),
+        speaking=payload.get("speaking") is True,
+        ttl_ms=_optional_ttl(payload.get("ttl_ms")),
+    )
+
+
+def _optional_ttl(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return DEFAULT_TTL_MS
+    return value
+
+
 def _decode_error(payload: dict[str, Any]) -> ErrorFrame:
     raw_code = _require_str(payload, "code")
     try:
@@ -537,6 +769,7 @@ _DECODERS: Final[dict[DeviceMessage | ServerMessage, _Decoder]] = {
     ServerMessage.ASR_PARTIAL: lambda payload: AsrPartial(text=_require_str(payload, "text")),
     ServerMessage.ASR: lambda payload: Asr(text=_require_str(payload, "text")),
     ServerMessage.REPLY: _decode_reply,
+    ServerMessage.EMOTION: _decode_emotion,
     ServerMessage.TTS_END: lambda _payload: TtsEnd(),
     ServerMessage.ERROR: _decode_error,
 }

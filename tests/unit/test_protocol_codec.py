@@ -21,6 +21,8 @@ from roboface_server.protocol import (
     AsrPartial,
     Capability,
     DeviceMessage,
+    Emotion,
+    EmotionFrame,
     ErrorCode,
     ErrorFrame,
     Frame,
@@ -159,9 +161,9 @@ def test_an_unknown_type_is_rejected_as_unknown_not_malformed() -> None:
         decode(json.dumps({"type": "sing_a_song"}))
 
 
-# `listen_start` and `listen_stop` left this list in v1.2, and `tts_end` in v1.1. A type
-# moving out is what a phase landing looks like from the codec's side.
-@pytest.mark.parametrize("message_type", ["event", "image_in", "emotion"])
+# `listen_start` and `listen_stop` left this list in v1.2, `tts_end` in v1.1 and `emotion` in
+# v2.2. A type moving out is what a phase landing looks like from the codec's side.
+@pytest.mark.parametrize("message_type", ["event", "image_in", "config_updated"])
 def test_a_declared_but_unimplemented_type_is_unsupported(message_type: str) -> None:
     """Distinct from unknown: the router answers this with a clean error, not with disdain."""
     with pytest.raises(UnsupportedMessage) as raised:
@@ -255,9 +257,22 @@ def test_protocol_errors_carry_an_enumerated_code() -> None:
 
 def test_an_unimplemented_type_is_also_the_device_s_frame_not_the_server_s_fault() -> None:
     with pytest.raises(UnsupportedMessage) as raised:
-        decode(json.dumps({"type": "emotion"}))
+        decode(json.dumps({"type": "event"}))
 
     assert raised.value.code is ErrorCode.BAD_FRAME
+
+
+def test_emotion_is_the_one_frame_that_is_coerced_rather_than_refused() -> None:
+    """Every other decoder raises on a bad field; this one cannot.
+
+    Stated here, next to the tests that show what refusal looks like, because the asymmetry is
+    deliberate and would otherwise read as an oversight. A face is not worth dropping a connection
+    over, and the server and the firmware are separately releasable -- so both coerce rather than
+    either trusting that the other already did. The full rule set is in
+    `tests/contract/test_emotion_frame.py`."""
+    frame = decode(json.dumps({"type": "emotion"}))
+    assert isinstance(frame, EmotionFrame)
+    assert frame.emotion is Emotion.NEUTRAL
 
 
 # ---------------------------------------------------------------------------------------
