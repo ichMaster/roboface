@@ -415,7 +415,15 @@ void onCapturedFrame(const int16_t* samples, std::size_t count, uint32_t frame_m
         peak_recent = peak;
         if (cal_until_ms != 0) crossings_recent = roboface::zeroCrossings(samples, count);
     }
-    switch (endpointer.feed(samples, count, frame_ms)) {
+    // **The second microphone's opinion, as a bias.** `last_confidence` is how much the frame
+    // looked like one source rather than a room; a coherent frame is listened to a little harder
+    // and a diffuse one has to be a little louder. Never a gate -- a person sitting in front of the
+    // device is the least directional source there is, and refusing incoherent frames would make
+    // the companion deaf to its owner while passing every test written from the side.
+    //
+    // The observer runs after `onStereoFrame` for the same frame, so the confidence is this frame's
+    // rather than the previous one's.
+    switch (endpointer.feed(samples, count, frame_ms, last_confidence)) {
         case roboface::VadEvent::kSpeechStarted:
             ++vad_starts;
             pending_vad = roboface::VadEvent::kSpeechStarted;

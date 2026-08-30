@@ -135,6 +135,38 @@ inline bool frameIsVoiced(const int16_t* samples, std::size_t count, const VadSe
     return zeroCrossings(samples, count) >= settings.min_crossings;
 }
 
+//: How far coherence may move the sensitivity, as a fraction of it. v2.5, RF-077.
+//:
+//: **A bias, not a gate, and the distinction is the whole design.** The tempting version of this
+//: feature refuses any frame whose channels are not coherent -- and a person sitting directly in
+//: front of the device is the *least* directional source there is, so that version makes the
+//: companion deaf to its owner while working beautifully in every test written from the side.
+//:
+//: 25% each way: enough to matter at the margin, far too little to overrule loudness. A shout from
+//: an incoherent direction is still speech; a whisper from a coherent one is still probably not.
+inline constexpr float kCoherenceBias = 0.25f;
+
+//: The sensitivity to use for a frame, given how much like a single source it looked.
+//:
+//: Coherent -> listen a little harder. Diffuse -> require a little more. `confidence` outside
+//: [0, 1] is clamped, and a caller with no opinion passes the neutral 0.5 and gets the setting back
+//: unchanged -- which is what keeps every single-channel test in this file valid.
+inline constexpr float biasedSensitivity(float sensitivity, float confidence) {
+    const float clamped = confidence < 0.0f ? 0.0f : (confidence > 1.0f ? 1.0f : confidence);
+    // -1 at fully diffuse, 0 at neutral, +1 at fully coherent.
+    const float lean = (clamped - 0.5f) * 2.0f;
+    return sensitivity * (1.0f - lean * kCoherenceBias);
+}
+
+//: `frameIsVoiced`, with the second microphone's opinion folded in.
+inline bool frameIsVoiced(const int16_t* samples, std::size_t count, const VadSettings& settings,
+                          float confidence) {
+    if (peakLevel(samples, count) < biasedSensitivity(settings.sensitivity, confidence)) {
+        return false;
+    }
+    return zeroCrossings(samples, count) >= settings.min_crossings;
+}
+
 //: The bounds a person may tune within. Wider than anyone should need, narrow enough that a
 //: mistyped value is refused rather than accepted into nonsense -- a sensitivity of 0 hears the
 //: room's noise floor as continuous speech, and an end-pause of 10 seconds looks like a device
@@ -193,6 +225,13 @@ class Endpointer {
     // a host test can run an hour of audio in a millisecond.
     VadEvent feed(const int16_t* samples, std::size_t count, uint32_t frame_ms) {
         return feedVoiced(frameIsVoiced(samples, count, settings_), frame_ms);
+    }
+
+    //: The same, with what the two microphones made of the frame. `confidence` is
+    //: `DirectionEstimate::confidence`; 0.5 is "no opinion" and behaves exactly as the
+    //: single-channel call does.
+    VadEvent feed(const int16_t* samples, std::size_t count, uint32_t frame_ms, float confidence) {
+        return feedVoiced(frameIsVoiced(samples, count, settings_, confidence), frame_ms);
     }
 
     // The same decision from an already-classified frame. Separated so a test can drive the timing

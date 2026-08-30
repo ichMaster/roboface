@@ -271,13 +271,18 @@ void AudioIo::tick(uint32_t now_ms) {
             if (peak > peak_seen_) peak_seen_ = peak;
             level_ = roboface::decayToward(level_, peak);
 
+            // **The stereo observer runs first, and the order is load-bearing.** It computes the
+            // direction confidence that the VAD then biases itself with; the other way round, the
+            // endpointer would judge every frame using the *previous* frame's confidence. One frame
+            // is 20 ms, which is small enough that nothing would look wrong and large enough to
+            // matter at the start of a word -- exactly the shape of bug this project keeps meeting.
+            if (stereo_observer_ != nullptr) {
+                stereo_observer_(left_, right_, roboface::kCaptureFrameSamples, now_ms);
+            }
             if (observer_ != nullptr) {
                 // The VAD hears what the server hears. Feeding it one channel while sending the
                 // mix would mean the endpointer deciding about a signal nobody else has.
                 observer_(mono_, roboface::kCaptureFrameSamples, roboface::kCaptureFrameMs);
-            }
-            if (stereo_observer_ != nullptr) {
-                stereo_observer_(left_, right_, roboface::kCaptureFrameSamples, now_ms);
             }
 
             if (listening_) {

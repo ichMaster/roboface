@@ -257,10 +257,63 @@ void an_utterance_can_always_be_finished() {
     TEST_ASSERT_FALSE(vad.inUtterance());
 }
 
+// ---------------------------------------------------------------------------------------
+// RF-077 — the second microphone's opinion, as a bias and never as a gate
+// ---------------------------------------------------------------------------------------
+
+void test_no_opinion_changes_nothing() {
+    // **The property every other test in this file depends on.** A caller with one channel passes
+    // the neutral 0.5 and must get exactly the old behaviour -- otherwise adding the second
+    // microphone silently re-tuned an endpointer that four phases were built on.
+    TEST_ASSERT_EQUAL_FLOAT(roboface::kVadSensitivity,
+                            roboface::biasedSensitivity(roboface::kVadSensitivity, 0.5f));
+}
+
+void test_a_coherent_frame_is_listened_to_a_little_harder() {
+    const float coherent = roboface::biasedSensitivity(roboface::kVadSensitivity, 1.0f);
+    TEST_ASSERT_TRUE(coherent < roboface::kVadSensitivity);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, roboface::kVadSensitivity * 0.75f, coherent);
+}
+
+void test_a_diffuse_frame_has_to_be_louder() {
+    const float diffuse = roboface::biasedSensitivity(roboface::kVadSensitivity, 0.0f);
+    TEST_ASSERT_TRUE(diffuse > roboface::kVadSensitivity);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, roboface::kVadSensitivity * 1.25f, diffuse);
+}
+
+void test_the_bias_never_becomes_a_gate() {
+    // **The regression that would make the device deaf to whoever is sitting in front of it.** A
+    // speaker dead centre is the least directional source there is; a version of this feature that
+    // refused incoherent frames would work beautifully from the side and fail the common case.
+    //
+    // At worst the requirement rises by a quarter -- so a frame comfortably above the threshold is
+    // still speech no matter how diffuse it looked.
+    for (float confidence = 0.0f; confidence <= 1.0f; confidence += 0.1f) {
+        const float bias = roboface::biasedSensitivity(roboface::kVadSensitivity, confidence);
+        TEST_ASSERT_TRUE(bias > 0.0f);
+        TEST_ASSERT_TRUE(bias <= roboface::kVadSensitivity * 1.26f);
+        TEST_ASSERT_TRUE(bias >= roboface::kVadSensitivity * 0.74f);
+    }
+}
+
+void test_a_confidence_outside_the_range_is_clamped_not_believed() {
+    // `confidence` is a normalised correlation and can legitimately go negative for anti-phase
+    // channels. An unclamped -1 would double the sensitivity requirement on a real signal.
+    TEST_ASSERT_EQUAL_FLOAT(roboface::biasedSensitivity(roboface::kVadSensitivity, 0.0f),
+                            roboface::biasedSensitivity(roboface::kVadSensitivity, -1.0f));
+    TEST_ASSERT_EQUAL_FLOAT(roboface::biasedSensitivity(roboface::kVadSensitivity, 1.0f),
+                            roboface::biasedSensitivity(roboface::kVadSensitivity, 9.0f));
+}
+
 }  // namespace
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_no_opinion_changes_nothing);
+    RUN_TEST(test_a_coherent_frame_is_listened_to_a_little_harder);
+    RUN_TEST(test_a_diffuse_frame_has_to_be_louder);
+    RUN_TEST(test_the_bias_never_becomes_a_gate);
+    RUN_TEST(test_a_confidence_outside_the_range_is_clamped_not_believed);
     RUN_TEST(continuous_speech_starts_one_utterance);
     RUN_TEST(speech_does_not_start_before_the_minimum);
     RUN_TEST(silence_never_starts_an_utterance);
