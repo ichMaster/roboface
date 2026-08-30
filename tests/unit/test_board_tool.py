@@ -111,3 +111,23 @@ def test_a_window_too_short_to_wait_in_sends_immediately() -> None:
     # Better to send at once and let the test see `[busy] not idle` than to spend the whole
     # window waiting and send nothing.
     assert board.idle_deadline(3.0, 2.0) == 0.0
+
+
+def test_an_unseen_state_does_not_block_the_send() -> None:
+    """An idle board is silent — it prints `[state] X` on a transition and nothing between.
+
+    Treating "we have not seen a state line" as "the board is busy" makes a watch that starts
+    during a quiet moment wait out its entire deadline and send nothing, which is indistinguishable
+    from a device that has stopped working. What `--send-when-idle` exists to avoid is sending into
+    a turn we have evidence is running; absence of evidence is not evidence of a turn.
+    """
+    assert board.send_is_ready("unknown", send_when_idle=True)
+    assert board.send_is_ready("idle", send_when_idle=True)
+    assert not board.send_is_ready("listening", send_when_idle=True)
+    assert not board.send_is_ready("thinking", send_when_idle=True)
+    assert not board.send_is_ready("replying", send_when_idle=True)
+
+
+def test_without_the_flag_every_state_is_ready() -> None:
+    for state in ("unknown", "idle", "listening", "thinking", "replying"):
+        assert board.send_is_ready(state, send_when_idle=False)

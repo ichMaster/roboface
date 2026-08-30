@@ -97,6 +97,17 @@ IDLE_WAIT_S = 25.0
 IDLE_WAIT_MARGIN_S = 4.0
 
 
+def send_is_ready(board_state: str, *, send_when_idle: bool) -> bool:
+    """Whether a scripted line may go now.
+
+    `unknown` counts as ready: an idle board is silent, so never having seen a `[state]` line is
+    not evidence of a turn. See the note at the call site.
+    """
+    if not send_when_idle:
+        return True
+    return board_state in ("idle", "unknown")
+
+
 def idle_deadline(duration: float | None, send_after: float) -> float:
     """How long to wait for `[state] idle` before sending regardless."""
     if duration is None:
@@ -232,7 +243,17 @@ def watch(
             #
             # `send_deadline` is the escape: if the board never settles, send anyway and let the
             # test see the `[busy]` line rather than hanging.
-            ready = board_state == "idle" or not send_when_idle
+            # **"Unknown" counts as ready, and that is the point rather than a shortcut.**
+            #
+            # An idle board is *silent*: it prints `[state] X` on a transition and nothing at all
+            # in between. So a watch that starts while nothing is happening never sees a state line
+            # and, with `unknown` treated as busy, waits out its whole deadline before sending --
+            # which looks exactly like a device that has stopped working. It cost two runs of a
+            # manual test to see that the harness, not the board, was the silent one.
+            #
+            # What this flag exists to avoid is sending into a turn we have *evidence* is running.
+            # Absence of evidence is not evidence of a turn.
+            ready = send_is_ready(board_state, send_when_idle=send_when_idle)
             overdue = time.time() - started >= send_after + wait_limit
             if to_send and not sent and time.time() - started >= send_after and (ready or overdue):
                 if send_when_idle and not ready:
