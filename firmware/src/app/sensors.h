@@ -97,10 +97,16 @@ class Proximity {
         uint8_t part_id = 0;
         ready_ = M5.In_I2C.readRegister(kAddress, kPartIdRegister, &part_id, 1, kI2cHz) &&
                  part_id == kExpectedPartId;
+        part_id_ = part_id;
         return ready_;
     }
 
     bool isReady() const { return ready_; }
+
+    //: What the part-ID register actually answered. `0x92` is an LTR-553; `0x00` is nothing on the
+    //: bus, which is a different problem from the wrong chip answering and deserves a different
+    //: word in the log.
+    uint8_t partId() const { return part_id_; }
 
     roboface::Presence tick(uint32_t now_ms) {
         if (!ready_) return roboface::Presence::kNone;
@@ -129,6 +135,7 @@ class Proximity {
 
     roboface::ProximityDetector detector_;
     bool ready_ = false;
+    uint8_t part_id_ = 0;
     uint32_t last_read_ms_ = 0;
 };
 

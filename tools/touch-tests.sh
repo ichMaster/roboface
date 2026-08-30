@@ -36,6 +36,34 @@ countdown() {
     printf "\r  ▶ %s: готово          \n" "$label"
 }
 
+# What the board reported since this test's marker. **The script reads its own log rather than
+# asking the person to read it back.** A question whose answer is already in a file is not a test,
+# it is a transcription task -- and the person is here to report what a machine cannot see: what the
+# face did, and whether a click was audible.
+said() {
+    local test_number="$1" pattern="$2"
+    awk -v marker="=== ТЕСТ ${test_number}" '$0 ~ marker {found=1; out=""} found {out = out $0 "\n"} END {printf "%s", out}' \
+        "$LOG" | grep -oE "$pattern" | sort -u | tr '\n' ' '
+}
+
+# Report what the board said, and judge it -- naming what is missing rather than asking.
+verdict() {
+    local test_number="$1" label="$2" seen="$3"; shift 3
+    local missing=()
+    for want in "$@"; do [[ "$seen" == *"$want"* ]] || missing+=("$want"); done
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        bold "  ✅ плата повідомила все, що мала: ${seen}"
+        echo "[скрипт] $label · ok · $seen" >> "$LOG"
+    elif [[ -z "$seen" ]]; then
+        bold "  ❌ плата не повідомила нічого (очікувалось: $*)"
+        echo "[скрипт] $label · ПРОВАЛ · нічого" >> "$LOG"
+    else
+        bold "  ⚠️  плата повідомила: ${seen}— бракує: ${missing[*]}"
+        echo "[скрипт] $label · частково · є[$seen] нема[${missing[*]}]" >> "$LOG"
+    fi
+    echo
+}
+
 mic() {
     "$PY" "$ROOT/tools/board.py" --for 5 --log "$LOG" --send "/mic $1" --send-after 1 \
         > /dev/null 2>&1
@@ -103,28 +131,36 @@ test_0() {
     [[ "$serving" == "$expected" ]] && bold "  ✅ сервер збігається" \
         || bold "  ❌ сервер НЕ збігається — tools/remote.sh deploy && restart"
     echo
-    echo "  Тепер завантаження плати. **Рев'ю знайшло, що проксимність читала не ту шину I2C**"
+    echo "  Тепер сенсори. **Рев'ю знайшло, що проксимність читала не ту шину I2C**"
     echo "  і не могла спрацювати ніколи — при цьому рапортувала успіх. Тепер вона питає"
-    echo "  сенсор про його ідентифікатор, тож рядок нижче або є, або сенсора справді нема."
+    echo "  сенсор про його ідентифікатор, і плата каже, що з нього вийшло."
     echo
-    echo "  ▸ перезавантажую плату, щоб побачити її рядки старту"
-    { echo; echo "=== ТЕСТ 0 — старт плати — $(date '+%H:%M:%S') ==="; } >> "$LOG"
-    "$PY" "$ROOT/tools/board.py" --for 22 --log "$LOG" --send "/probe" --send-after 2 > /dev/null 2>&1 &
-    local watcher=$!
-    countdown 20 "чекаю на рядки старту"
-    wait "$watcher" 2>/dev/null
+    { echo; echo "=== ТЕСТ 0 — сенсори — $(date '+%H:%M:%S') ==="; } >> "$LOG"
+    local sensors
+    sensors=$("$PY" "$ROOT/tools/board.py" --for 8 --log "$LOG" --send "/sensors" --send-after 1 \
+                    2>/dev/null | grep -m1 '\[sensors\]')
 
-    echo
-    bold "  що сказала плата про сенсори:"
-    grep -oE '\[imu\] .*|\[near\] .*' "$LOG" | tail -4 | sed 's/^/    /'
-    echo "    (жодного рядка «not present» = обидва сенсори відповіли)"
+    if [[ -z "$sensors" ]]; then
+        bold "  ❌ плата не відповіла — інше вікно board.py тримає порт?"
+        echo "[скрипт] тест 0 · сенсори: плата не відповіла" >> "$LOG"
+        return 1
+    fi
+
+    echo "    ${sensors}"
     echo
 
-    ask_choice 0 "Чи були в рядках старту повідомлення «not present»?" \
-        "НІ — жодного, обидва сенсори відповіли" \
-        "було про [imu]" \
-        "було про [near] — проксимність" \
-        "були обидва"
+    # **Вирішує скрипт, не людина.** Він щойно це прочитав; питати про це було б
+    # проханням переказати те, що вже є в змінній.
+    if [[ "$sensors" == *"NOT PRESENT"* ]]; then
+        bold "  ❌ сенсор не відповів — рухи або наближення працювати не будуть"
+        echo "[скрипт] тест 0 · ПРОВАЛ · $sensors" >> "$LOG"
+        return 1
+    fi
+
+    bold "  ✅ обидва сенсори відповіли; 0x92 — це справді LTR-553"
+    echo "     виправлення шини I2C з рев'ю v2.4 підтверджене залізом"
+    echo "[скрипт] тест 0 · ok · $sensors" >> "$LOG"
+    echo
 }
 
 test_1() {
@@ -186,11 +222,8 @@ test_3() {
     announce "Понахиляйте мене, потім струсіть, потім переверніть."
     watch_hands 3 "три рухи" 40 "нахил, струс, перевертання"
 
-    ask_choice 3 "Які рухи плата ПОВІДОМИЛА в рядках вище?" \
-        "усі три — tilt, shake, upside_down" \
-        "два з трьох" \
-        "один" \
-        "жодного"
+    verdict 3 "тест 3 · рухи" "$(said 3 'tilt|shake|upside_down|picked_up|free_fall')" \
+        tilt shake upside_down
 
     ask_choice 3 "Чи реагувало обличчя на струс і перевертання?" \
         "ТАК — обидва разів помітно" \
@@ -211,11 +244,7 @@ test_4() {
     announce "Піднесіть до мене руку і приберіть. Подивіться, чи я поверну погляд."
     watch_hands 4 "рука біля екрана" 35 "підносьте й прибирайте долоню"
 
-    ask_choice 4 "Чи повідомила плата approach/leave у рядках вище?" \
-        "ТАК — обидва, і по разу на кожен рух руки" \
-        "повідомила, але надто часто — блимало" \
-        "лише approach, без leave" \
-        "нічого не повідомила"
+    verdict 4 "тест 4 · наближення" "$(said 4 'approach|leave')" approach leave
 
     ask_choice 4 "Чи змінилось ОБЛИЧЧЯ, коли рука наблизилась?" \
         "ТАК — погляд повернувся до руки" \
@@ -238,10 +267,20 @@ test_5() {
     announce "Тапніть по іконці мікрофона в лівому кутку."
     watch_hands 5 "кнопка мікрофона" 30 "тапніть по іконці двічі"
 
-    ask_choice 5 "Чи перемкнувся мікрофон (рядок [mic] вище)?" \
-        "ТАК — двічі, вимкнувся й увімкнувся" \
-        "перемкнувся один раз" \
-        "не перемикався"
+    verdict 5 "тест 5 · перемикання" "$(said 5 'увімкнено|вимкнено')" увімкнено вимкнено
+
+    # Керування не є прив'язаністю: натиск на кнопку не має ні відкривати вікно
+    # прослуховування, ні надсилати серверу подію дотику.
+    local leaked
+    leaked=$(said 5 'closed by ptt|"kind":"tap"|"kind":"multi_tap"')
+    if [[ -n "$leaked" ]]; then
+        bold "  ❌ натиск на кнопку протік у щось інше: ${leaked}"
+        echo "[скрипт] тест 5 · ПРОВАЛ · протік: $leaked" >> "$LOG"
+    else
+        bold "  ✅ кнопка не відкрила вікно прослуховування і нічого не надіслала"
+        echo "[скрипт] тест 5 · ok · без протікання" >> "$LOG"
+    fi
+    echo
 
     ask_choice 5 "Чи було чутно клац, і чи змінилась іконка?" \
         "ТАК — і звук, і колір" \

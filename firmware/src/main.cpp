@@ -1037,6 +1037,16 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
     // `on` / `off` as well as a bare toggle. **A script must be able to set a state, not flip
     // one** -- it cannot see the indicator, so a toggle leaves it guessing, and guessing wrong
     // means every scripted line afterwards is refused with `[busy] not idle`.
+    if (line.text == "/sensors") {
+        // Asked on demand rather than only at boot. A test that has to catch a reboot is a test
+        // that races the person running it -- and `/probe`, which the v2.4 script reached for, is
+        // a *network* probe and never mentioned a sensor.
+        Serial.printf("\n[sensors] imu %s · near %s (part id 0x%02X)\n",
+                      imu.isReady() ? "ok" : "NOT PRESENT",
+                      proximity.isReady() ? "ok" : "NOT PRESENT", proximity.partId());
+        return;
+    }
+
     if (line.text == "/touch") {
         Serial.printf("\n[touch] button zone x<%d y<%d · %d recorded\n",
                       roboface::kMicButtonHitWidth, roboface::kMicButtonHitHeight,
@@ -1148,8 +1158,19 @@ void setup() {
     // The two sensors v2.4 adds. **Neither is required to boot**: a board variant without one is a
     // device that does not notice being shaken, not a device that refuses to start. The capability
     // flags that make that explicit on the wire arrive in v6.1.
-    if (!imu.begin()) Serial.println("[imu] not present — no motion events");
-    if (!proximity.begin()) Serial.println("[near] not present — the face will not wake to a hand");
+    // **Both outcomes are printed, not just the failure.** Until v2.4 the proximity sensor was
+    // read from the wrong I2C bus, could never fire, and said nothing about it -- the review called
+    // a silent nothing on a board that reports itself healthy the worst shape a hardware defect can
+    // take. Proving the sensor answered by the *absence* of a complaint repeats that shape one
+    // level up: a boot log that scrolled past, or a line that was never reached, reads exactly like
+    // success. So each sensor states what happened.
+    Serial.printf("[imu] %s\n", imu.begin() ? "ok" : "not present — no motion events");
+    if (proximity.begin()) {
+        Serial.printf("[near] ok — LTR-553 answered 0x%02X\n", proximity.partId());
+    } else {
+        Serial.printf("[near] not present (part id 0x%02X) — the face will not wake to a hand\n",
+                      proximity.partId());
+    }
 
     const uint32_t now_ms = millis();
     pollPower(now_ms, /*force=*/true);
