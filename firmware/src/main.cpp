@@ -1041,9 +1041,17 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
         // Asked on demand rather than only at boot. A test that has to catch a reboot is a test
         // that races the person running it -- and `/probe`, which the v2.4 script reached for, is
         // a *network* probe and never mentioned a sensor.
-        Serial.printf("\n[sensors] imu %s · near %s (part id 0x%02X)\n",
+        // The **raw count** is the number that matters and the one no host test can produce:
+        // `pure/proximity.h` states its thresholds in counts, and what a hand 10 cm away measures
+        // is a fact about this panel's emitter that only a hand can establish.
+        Serial.printf("\n[sensors] imu %s · near %s (part 0x%02X ctrl 0x%02X) · count=%u\n",
                       imu.isReady() ? "ok" : "NOT PRESENT",
-                      proximity.isReady() ? "ok" : "NOT PRESENT", proximity.partId());
+                      proximity.isReady() ? "ok" : "NOT PRESENT", proximity.partId(),
+                      proximity.control(), static_cast<unsigned>(proximity.rawCount()));
+        Serial.printf("[sensors] near peak since boot: %u (поріг наближення %u)\n",
+                      static_cast<unsigned>(proximity.peakCount()),
+                      static_cast<unsigned>(roboface::kNearCount));
+        proximity.resetPeak();
         return;
     }
 
@@ -1166,7 +1174,8 @@ void setup() {
     // success. So each sensor states what happened.
     Serial.printf("[imu] %s\n", imu.begin() ? "ok" : "not present — no motion events");
     if (proximity.begin()) {
-        Serial.printf("[near] ok — LTR-553 answered 0x%02X\n", proximity.partId());
+        Serial.printf("[near] ok — LTR-553 0x%02X, active (ctrl 0x%02X)\n", proximity.partId(),
+                      proximity.control());
     } else {
         Serial.printf("[near] not present (part id 0x%02X) — the face will not wake to a hand\n",
                       proximity.partId());

@@ -36,6 +36,15 @@ countdown() {
     printf "\r  ▶ %s: готово          \n" "$label"
 }
 
+# Одна команда платі, один рядок назад. Тести, які міряють число, а не враження,
+# питають плату прямо замість того, щоб просити людину переказати серіал.
+board_line() {
+    local test_number="$1" command="$2" pattern="$3"
+    { echo; echo "=== ТЕСТ ${test_number} — ${command} — $(date '+%H:%M:%S') ==="; } >> "$LOG"
+    "$PY" "$ROOT/tools/board.py" --for 6 --log "$LOG" --send "$command" --send-after 1 2>/dev/null \
+        | grep -oE "$pattern" | tail -1
+}
+
 # What the board reported since this test's marker. **The script reads its own log rather than
 # asking the person to read it back.** A question whose answer is already in a file is not a test,
 # it is a transcription task -- and the person is here to report what a machine cannot see: what the
@@ -233,18 +242,51 @@ test_3() {
 
 test_4() {
     header 4 "наближення: обличчя прокидається до руки"
-    echo "  **Це та знахідка, яку може підтвердити лише рука.** Проксимність читала не ту"
-    echo "  шину I2C і не могла спрацювати ніколи; тестів на це не могло існувати."
+    echo "  **Це та знахідка, яку може підтвердити лише рука.** Проксимність спершу читала"
+    echo "  не ту шину I2C, а потім, уже на правильній шині, лишалась у standby — сенсор"
+    echo "  чесно називав себе і не міряв нічого. Двічі поспіль перевірка питала легше"
+    echo "  питання, ніж те, яке мало значення."
     echo
-    echo "  Піднесіть долоню до екрана сантиметрів на десять, потримайте, приберіть."
-    echo "  Повторіть двічі. Дивіться, куди дивиться обличчя."
+    echo "  Тому цей тест **міряє число**, а не питає про враження: пороги в"
+    echo "  pure/proximity.h задані в відліках сенсора, і скільки дає долоня на цій"
+    echo "  панелі — факт, який не здобути ніде, крім як рукою перед нею."
     echo
 
     mic off
+
+    # Фон: скільки сенсор дає, коли перед ним нічого. Читання скидає пік, тож далі
+    # максимум рахується від цієї миті.
+    local baseline
+    baseline=$(board_line 4 "/sensors" 'count=[0-9]+' | grep -oE '[0-9]+')
+    echo "    фон (нічого перед екраном): ${baseline:-?}"
+    echo
+
     announce "Піднесіть до мене руку і приберіть. Подивіться, чи я поверну погляд."
+    echo "  Під час відліку: піднесіть долоню на 5–10 см, потримайте, приберіть."
+    echo "  Повторіть двічі, а наприкінці один раз накрийте екран впритул."
     watch_hands 4 "рука біля екрана" 35 "підносьте й прибирайте долоню"
 
-    verdict 4 "тест 4 · наближення" "$(said 4 'approach|leave')" approach leave
+    # Пік за час тесту — число, яке вирішує, чи поріг узагалі досяжний.
+    local peak threshold
+    peak=$(board_line 4 "/sensors" 'peak since boot: [0-9]+' | grep -oE '[0-9]+$')
+    threshold=$(grep -oE 'kNearCount = [0-9]+' "$ROOT/firmware/src/pure/proximity.h" | grep -oE '[0-9]+')
+    echo "    максимум за час тесту: ${peak:-?}   ·   поріг наближення: ${threshold:-?}"
+    echo "[скрипт] тест 4 · фон=${baseline:-?} пік=${peak:-?} поріг=${threshold:-?}" >> "$LOG"
+    echo
+
+    if [[ -z "$peak" || -z "$threshold" ]]; then
+        bold "  ❌ не вдалось прочитати число з плати"
+    elif (( peak == 0 )); then
+        bold "  ❌ сенсор не зреагував на руку взагалі — це не поріг, це сенсор"
+    elif (( peak >= threshold )); then
+        bold "  ✅ долоня переходить поріг із запасом ×$(( peak / threshold ))"
+    else
+        bold "  ⚠️  долоня дає $peak, а поріг $threshold — поріг недосяжний і має опуститись"
+        echo "     (фон $baseline, тож місця для зниження вистачає)"
+    fi
+    echo
+
+    verdict 4 "тест 4 · події" "$(said 4 'approach|leave')" approach leave
 
     ask_choice 4 "Чи змінилось ОБЛИЧЧЯ, коли рука наблизилась?" \
         "ТАК — погляд повернувся до руки" \
