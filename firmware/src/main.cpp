@@ -84,13 +84,22 @@ constexpr uint32_t kMinPushIntervalMs = 100;
 //: There is a second, less obvious reason this matters. The endpointer measures time in *frames*,
 //: so dropped frames slow its clock: at a third of the capture rate its 1200 ms end-pause becomes
 //: nearly four real seconds, and the window stops closing on its own.
-//: While speaking. The mouth follows the reply's loudness now, so this is the rate the lip-sync
-//: gets -- and a mouth updated three times a second reads as a jaw dropping open rather than as
-//: speech. 120 ms is eight a second, which at syllable pace is enough to look like talking.
+//: While speaking. The mouth follows the reply's loudness, so this is the rate the lip-sync gets.
 //:
-//: Affordable because nothing is being captured while the device speaks: half-duplex has the
-//: microphone suspended, so these frames are not competing with anything.
-constexpr uint32_t kBusyPushIntervalMs = 120;
+//: **40 ms, measured at 20 FPS on the board** -- the top of the 15-20 roadmap §v2.3 asks for. Two
+//: intermediate values were tried and the numbers are in `v2.3-execution-report.md`: 120 ms gave 8
+//: FPS and 7-16 mouth changes per ten seconds, 60 ms gave 11 and 23-35, and 40 ms gives 20 and 88.
+//: The interval was the binding constraint throughout, which was worth establishing rather than
+//: assuming -- the push cost could as easily have been the ceiling.
+//:
+//: Affordable for a reason that is specific rather than optimistic: **half-duplex suspends the
+//: microphone during playback**, so these frames compete with nothing. Measured rather than
+//: predicted: `drop=0 ref=0` through a thirty-second reply, and `mic` in the surrounding listening
+//: windows is 45-47, exactly where it was before.
+//:
+//: The rule underneath has not moved: **the face may drop frames, the microphone may not.** What
+//: changed is that this is the one state where the microphone is not running.
+constexpr uint32_t kBusyPushIntervalMs = 40;
 
 //: While listening. Faster than `kBusyPushIntervalMs` for one reason and one only: the level meter
 //: is in this band, and it is the only thing on the screen that moves with the person's own voice.

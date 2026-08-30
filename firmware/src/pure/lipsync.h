@@ -78,21 +78,27 @@ struct MouthStep {
 //: that peak's observed range (0.06/0.20/0.40/0.65), which worked -- it was compensating for a
 //: signal whose shape was wrong.
 //:
-//: With `envelope.h` measuring energy instead, the signal over speech-like audio spans 0.067..0.675
-//: with quintiles at 0.187 / 0.275 / 0.412 / 0.525. The old top step at 0.65 sits above the 80th
-//: percentile, so the widest mouth would have been all but unreachable -- four shapes doing the work
-//: of three.
+//: **And a third time, corrected by the board rather than by the fixture.** The first calibration
+//: against the RMS envelope used a sine fixture, which spans 0.067..0.675 -- and the device reported
+//: `lvl=0..38%` for the same material. A sine's peak is 1.4x its RMS; speech's is three to four
+//: times, because most of a voiced block is far quieter than its glottal pulses. So the fixture read
+//: twice the energy of the thing it was modelling, and thresholds derived from it put the widest
+//: mouth out of reach on the actual device: `mouth=7` and `mouth=16` per ten seconds, worse than the
+//: peak signal it replaced.
 //:
-//: These sit near those quintiles, so each shape takes a comparable share of a spoken reply. That
-//: is the property `test_lipsync` asserts, rather than the numbers themselves: a ladder is right
-//: when every rung is used, and any change to the envelope makes these wrong again.
+//: With the fixture given speech's crest factor it spans 0.034..0.341 -- which matches the board --
+//: with quintiles at 0.095 / 0.139 / 0.209 / 0.266. These sit on those.
+//:
+//: The lesson is in the record because it is the same one twice: **a fixture that does not match the
+//: signal produces numbers that pass every test and fail on the desk.** The tests assert that every
+//: rung is used, and they passed against a ladder whose top two rungs the device could never reach.
 inline constexpr MouthStep kMouthSteps[static_cast<std::size_t>(MouthFrame::kCount)] = {
     //  opens  closes  open  spread  round
     {0.00f, 0.00f, 0.00f, 1.00f, 1.00f},  // kClosed -- the floor; never "opens at" anything
-    {0.10f, 0.07f, 0.30f, 0.95f, 0.60f},  // kAjar   -- shuts only in a real pause between words
-    {0.22f, 0.17f, 0.55f, 1.10f, 0.55f},  // kHalf
-    {0.36f, 0.30f, 0.80f, 1.25f, 0.62f},  // kWide
-    {0.52f, 0.44f, 1.00f, 1.15f, 0.72f},  // kOpen  -- emphasis, and now actually reachable
+    {0.055f, 0.040f, 0.30f, 0.95f, 0.60f},  // kAjar -- shuts only in a real pause between words
+    {0.120f, 0.095f, 0.55f, 1.10f, 0.55f},  // kHalf
+    {0.195f, 0.160f, 0.80f, 1.25f, 0.62f},  // kWide
+    {0.265f, 0.220f, 1.00f, 1.15f, 0.72f},  // kOpen -- emphasis, and now actually reachable
 };
 
 class LipSync {

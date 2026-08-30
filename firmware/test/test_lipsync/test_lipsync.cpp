@@ -19,11 +19,12 @@ void silence_keeps_the_mouth_closed() {
 //: A louder moment opens it further. This is the whole feature in one assertion.
 void louder_opens_further() {
     LipSync lips;
-    // Levels from the RMS envelope's measured range (v2.3), not the old peak signal's.
-    TEST_ASSERT_TRUE(lips.feed(0.12f) == MouthFrame::kAjar);
-    TEST_ASSERT_TRUE(lips.feed(0.25f) == MouthFrame::kHalf);
-    TEST_ASSERT_TRUE(lips.feed(0.40f) == MouthFrame::kWide);
-    TEST_ASSERT_TRUE(lips.feed(0.60f) == MouthFrame::kOpen);
+    // Levels from the RMS envelope's range **as the board reports it** -- 0..0.38, not the sine
+    // fixture's 0..0.67 and not the old peak signal's 0..0.95.
+    TEST_ASSERT_TRUE(lips.feed(0.08f) == MouthFrame::kAjar);
+    TEST_ASSERT_TRUE(lips.feed(0.15f) == MouthFrame::kHalf);
+    TEST_ASSERT_TRUE(lips.feed(0.22f) == MouthFrame::kWide);
+    TEST_ASSERT_TRUE(lips.feed(0.32f) == MouthFrame::kOpen);
 }
 
 //: And it closes on the way back down, all the way.
@@ -38,11 +39,11 @@ void quieter_closes_again() {
 //: changes -- it costs more than the smooth mouth this replaced.
 void a_level_between_thresholds_does_not_flutter() {
     LipSync lips;
-    lips.feed(0.22f);
+    lips.feed(0.20f);
     const auto settled = lips.frame();
     // Wobble around that level the way a real playback envelope does.
     for (int i = 0; i < 40; ++i) {
-        TEST_ASSERT_TRUE(lips.feed(i % 2 == 0 ? 0.195f : 0.205f) == settled);
+        TEST_ASSERT_TRUE(lips.feed(i % 2 == 0 ? 0.192f : 0.198f) == settled);
     }
 }
 
@@ -141,12 +142,20 @@ namespace {
 //: than shared: a fixture two tests both depend on is a fixture neither can change.
 std::vector<int16_t> block(std::size_t count, double amplitude) {
     std::vector<int16_t> out(count);
+    // **Speech's crest factor, not a sine's.** A sine peaks at 1.4x its RMS; speech peaks at three
+    // to four times, because most of a voiced block is far quieter than its glottal pulses. Feeding
+    // a plain tone made the fixture read 0.67 RMS where the board reads 0.38 for the same
+    // perceived loudness -- and thresholds calibrated on it put the widest mouth out of reach.
+    //
+    // Modelled as a pulse train: a short loud segment every eighth of the block, quiet between.
     for (std::size_t i = 0; i < count; ++i) {
-        double x = 6.283185307179586 * 8.0 * static_cast<double>(i) / static_cast<double>(count);
+        const std::size_t phase = i % (count / 8);
+        const double window = phase < (count / 32) ? 1.0 : 0.12;
+        double x = 6.283185307179586 * 24.0 * static_cast<double>(i) / static_cast<double>(count);
         while (x > 3.141592653589793) x -= 6.283185307179586;
         double s = x * (1.0 - (x * x) / 6.0 + (x * x * x * x) / 120.0);
         s = s > 1.0 ? 1.0 : (s < -1.0 ? -1.0 : s);
-        out[i] = static_cast<int16_t>(s * amplitude * 32767.0);
+        out[i] = static_cast<int16_t>(s * window * amplitude * 32767.0);
     }
     return out;
 }
