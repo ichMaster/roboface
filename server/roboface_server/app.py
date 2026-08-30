@@ -164,7 +164,7 @@ def create_app(
     if responder is None:
         responder = build_responder(settings) if settings is not None else EchoResponder()
 
-    application = FastAPI(title="RoboFace", version="2.4.0")
+    application = FastAPI(title="RoboFace", version="2.4.1")
     router = Router(
         registry=registry if registry is not None else ConnectionRegistry(),
         responder=responder,

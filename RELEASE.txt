@@ -1,3 +1,26 @@
+Version 2.4.1 (2026-08-30)
+---------------------------
+- Mute is a button, not a gesture: a microphone glyph in the top-left corner,
+  drawn in both states and never fading. The two-finger tap it replaced cannot
+  work -- the CoreS3 panel reports a single touch point -- and every other
+  gesture-shaped version of mute collided with the affection vocabulary.
+- The panel is read six times per loop instead of once. A full sprite push puts
+  the loop near 130 ms while a tap lasts 80-200 ms, so presses fell between
+  samples, two quick taps merged into one long press, and a press whose down
+  edge was missed went to push-to-talk instead of the button it began on.
+- The button's touch target is 84x44, sized from measured misses rather than
+  taste: presses aimed at the icon landed as low as y=38 against a 28 px band.
+- The proximity sensor is switched on. v2.4 moved it to the right I2C bus and
+  had begin() verify its part ID; it answered 0x92 and stayed in standby, where
+  the data register reads 0 forever -- the same silent nothing, one layer
+  deeper, with begin() reporting success again. It now writes PS_CONTR and
+  reads it back. Measured: baseline 0, a palm at 5-10 cm saturates at 2047
+  against a threshold of 300.
+- The server may start a turn. v2.4 gave it a reason to -- it answers an
+  event{} -- and the device discarded exactly those replies as "outside a turn".
+- The v2.4 manual tests no longer ask the tester to read back a log the script
+  itself captured, and a marker collision that failed a passing test is fixed.
+
 Version 2.4.0 (2026-08-30)
 ---------------------------
 v2.4 -- touch, motion and proximity: the two-level reaction model. The device
