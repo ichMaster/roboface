@@ -208,7 +208,10 @@ void AudioIo::click() {
     M5.Speaker.end();
     delay(20);
     if (M5.Speaker.begin()) {
-        M5.Speaker.setVolume(volume_);
+        // **Half the speaking volume.** A confirmation is not an utterance: it lands while the
+        // person is looking at the thing they just pressed, so it only has to be heard, not heard
+        // across the room. At full volume it read as the device interrupting rather than agreeing.
+        M5.Speaker.setVolume(static_cast<uint8_t>(volume_ / 2));
         // Two short notes rather than one: a single beep at this length is easy to mistake for a
         // system sound, and a rising pair reads as "acknowledged" the way a click does.
         M5.Speaker.tone(2200, 40);
