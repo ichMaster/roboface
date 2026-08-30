@@ -210,6 +210,10 @@ class Connection:
 
     session_id: str
     phase: ConnectionPhase = ConnectionPhase.AWAITING_HELLO
+    #: How to reach this device. **Held so something outside a turn can push a frame** -- v2.6's
+    #: `config_updated{face_set}` is the first, and the roadmap's "switchable both ways" cannot be
+    #: true without it. `None` only between construction and the first line of `serve`.
+    transport: Transport | None = None
     #: Where the device last heard a voice, or `None` when it has no opinion (v2.5).
     #:
     #: **Per connection, not global**, and that is not pedantry: two devices in one room hear the
@@ -321,6 +325,26 @@ class ConnectionRegistry:
     def active(self) -> tuple[Connection, ...]:
         return tuple(self._connections.values())
 
+    async def broadcast(self, frame: Frame) -> int:
+        """Push one frame to every ready device, returning how many took it.
+
+        **A count rather than success or failure**, because "nothing is connected" and "one of two
+        devices went away mid-send" are different facts and the caller needs to tell them apart.
+        A device that vanished between `active()` and the send is skipped rather than raising: it
+        is already gone, and its connection is being torn down by its own `serve` loop.
+        """
+        payload = encode(frame)
+        sent = 0
+        for connection in self.active():
+            if connection.phase is not ConnectionPhase.READY or connection.transport is None:
+                continue
+            try:
+                await connection.transport.send(payload)
+            except Disconnected:
+                continue
+            sent += 1
+        return sent
+
     def __len__(self) -> int:
         return len(self._connections)
 
@@ -348,7 +372,7 @@ class Router:
         vanished client, an exception from a handler -- the connection leaves the registry.
         A server that leaks connection state survives its own tests and dies in a week.
         """
-        connection = Connection(session_id=self.session_id_factory())
+        connection = Connection(session_id=self.session_id_factory(), transport=transport)
         with connection_context(connection.session_id):
             self.registry.add(connection)
             reason = "closed"

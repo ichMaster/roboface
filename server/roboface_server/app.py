@@ -13,11 +13,12 @@ from contextlib import suppress
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from roboface_server.config import Settings, load_settings
 from roboface_server.logging import configure, log
+from roboface_server.protocol import FACE_SETS, ConfigUpdated
 from roboface_server.router import (
     WS_CLOSE_NORMAL,
     ConnectionRegistry,
@@ -179,6 +180,28 @@ def create_app(
             await router.serve(transport)
         finally:
             await transport.close()
+
+    @application.post("/face/{face_set}")
+    async def set_face(face_set: str) -> dict[str, object]:
+        """Change the face of every connected device (v2.6).
+
+        **The frame existed before anything sent it**, which is the third time this project has
+        shipped that shape -- `TouchGestures::reset()` in v2.4, `frame_for(gaze=…)` in v2.5, and
+        `config_updated` here. Each time the contract test passed, the codec round-tripped, and the
+        feature did not exist. The roadmap's DoD for v2.6 is that the face is *"switchable both
+        ways"*; without this endpoint only one of those ways was real.
+
+        HTTP rather than a serial command because the server is on another machine (DEPLOYMENT.md)
+        and the device is not reachable from the workstation at all -- an endpoint is the only way
+        to exercise this seam from where the code is written.
+        """
+        if face_set not in FACE_SETS:
+            raise HTTPException(
+                status_code=404,
+                detail=f"{face_set!r} is not a known face_set; try one of {sorted(FACE_SETS)}",
+            )
+        sent = await router.registry.broadcast(ConfigUpdated(face_set=face_set))
+        return {"face_set": face_set, "devices": sent}
 
     return application
 
