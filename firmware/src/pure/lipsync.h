@@ -70,18 +70,29 @@ struct MouthStep {
 //: recipe's `mouth_curve` meant a face already smiling at 0.70 hit the 1.0 ceiling on the first
 //: shape and moved two pixels: the lip-sync ran perfectly and was invisible. A talking mouth
 //: **opens**; it does not smile harder.
-//: The thresholds are spread across the range the signal **actually uses**, which was measured
-//: rather than assumed: a reply drives the playback level over 0..95%, and the first version of this
-//: table put its top step at 0.30. The mouth therefore sat on the top shape for almost the entire
-//: reply and changed four times in ten seconds. Spread over the real range it changes twenty to
-//: forty times, which is speech.
+//: **Calibrated against the RMS envelope, from its measured distribution** (v2.3, RF-065).
+//:
+//: The history matters, because these numbers have now been wrong twice for opposite reasons. The
+//: first version put its top step at 0.30 against a *peak* signal that sat near full scale, so the
+//: mouth held one shape and changed four times in ten seconds. The second spread the steps across
+//: that peak's observed range (0.06/0.20/0.40/0.65), which worked -- it was compensating for a
+//: signal whose shape was wrong.
+//:
+//: With `envelope.h` measuring energy instead, the signal over speech-like audio spans 0.067..0.675
+//: with quintiles at 0.187 / 0.275 / 0.412 / 0.525. The old top step at 0.65 sits above the 80th
+//: percentile, so the widest mouth would have been all but unreachable -- four shapes doing the work
+//: of three.
+//:
+//: These sit near those quintiles, so each shape takes a comparable share of a spoken reply. That
+//: is the property `test_lipsync` asserts, rather than the numbers themselves: a ladder is right
+//: when every rung is used, and any change to the envelope makes these wrong again.
 inline constexpr MouthStep kMouthSteps[static_cast<std::size_t>(MouthFrame::kCount)] = {
     //  opens  closes  open  spread  round
     {0.00f, 0.00f, 0.00f, 1.00f, 1.00f},  // kClosed -- the floor; never "opens at" anything
-    {0.06f, 0.04f, 0.30f, 0.95f, 0.60f},  // kAjar
-    {0.20f, 0.15f, 0.55f, 1.10f, 0.55f},  // kHalf
-    {0.40f, 0.32f, 0.80f, 1.25f, 0.62f},  // kWide
-    {0.65f, 0.55f, 1.00f, 1.15f, 0.72f},  // kOpen  -- emphasis
+    {0.10f, 0.07f, 0.30f, 0.95f, 0.60f},  // kAjar   -- shuts only in a real pause between words
+    {0.22f, 0.17f, 0.55f, 1.10f, 0.55f},  // kHalf
+    {0.36f, 0.30f, 0.80f, 1.25f, 0.62f},  // kWide
+    {0.52f, 0.44f, 1.00f, 1.15f, 0.72f},  // kOpen  -- emphasis, and now actually reachable
 };
 
 class LipSync {

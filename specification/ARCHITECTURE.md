@@ -217,6 +217,32 @@ mid-reply in v2.1. Believing only the speaker would lip-sync a loopback recordin
 2. **Procedural Stack-chan (v2.1)** — layered M5GFX sprites drawn from primitives; no assets.
 3. **Spirit sprite skins (v2.6)** — `ghost`, `flame`, `jelly`, `cloud`: the same layer scheme filled with authored art plus one "element" behaviour each (flame colour, cloud weather, jellyfish glow, ghost blush/tear).
 
+### The viseme ladder
+
+The mouth's opening while the device speaks is chosen from a **table**, not computed continuously —
+`firmware/src/pure/lipsync.h` is the whole definition, and adding or removing a shape is adding or
+removing a row.
+
+Two shapes, not one, per rung: how far the mouth **opens** and how **wide** it is. A mouth that only
+changes height reads as a jaw hinging; each rung therefore carries a spread and a pursed width, and
+which one is used alternates each time the mouth shuts. No phonetics and no timer — the gaps between
+syllables are already in the signal.
+
+The signal is a **windowed RMS envelope** of the audio being played (`pure/envelope.h`), with an
+immediate rise and an eased fall. Not a peak: a peak over one 32 ms playback chunk sits near full
+scale through almost all of continuous speech, and a ladder fed from it holds one shape. The input
+level *meter* keeps its peak, because a meter answers a different question — see the note in
+`pure/level.h`. **Two consumers, two measures.**
+
+The thresholds are calibrated against that envelope's measured distribution, and the property the
+tests assert is not the numbers but what they produce: **every rung is reached by real speech and
+none dominates.** A ladder is right when every shape is used; the numbers are how, and they become
+wrong the moment the envelope changes.
+
+Roadmap §v2.3 says four bands. The table has five, and it is the table that is authoritative — the
+count is data, arrived at by measuring, and the roadmap's number was an estimate made before there
+was anything to measure.
+
 ### Layer model and recipes
 
 The face is composed from a small layer bank at render time, never stored as one image per emotion: background/glow → base → eyes → brows → mouth → element/overlay FX. An **emotion is a recipe** over that bank (which eye shape, which mouth, tilt, colour, idle amplitude), scaled by `intensity`. N emotions cost a small bank, not N faces.

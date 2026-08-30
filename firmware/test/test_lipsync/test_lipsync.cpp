@@ -1,5 +1,8 @@
 #include <unity.h>
 
+#include <vector>
+
+#include "pure/envelope.h"
 #include "pure/lipsync.h"
 
 namespace {
@@ -16,10 +19,11 @@ void silence_keeps_the_mouth_closed() {
 //: A louder moment opens it further. This is the whole feature in one assertion.
 void louder_opens_further() {
     LipSync lips;
-    TEST_ASSERT_TRUE(lips.feed(0.07f) == MouthFrame::kAjar);
-    TEST_ASSERT_TRUE(lips.feed(0.22f) == MouthFrame::kHalf);
-    TEST_ASSERT_TRUE(lips.feed(0.50f) == MouthFrame::kWide);
-    TEST_ASSERT_TRUE(lips.feed(0.90f) == MouthFrame::kOpen);
+    // Levels from the RMS envelope's measured range (v2.3), not the old peak signal's.
+    TEST_ASSERT_TRUE(lips.feed(0.12f) == MouthFrame::kAjar);
+    TEST_ASSERT_TRUE(lips.feed(0.25f) == MouthFrame::kHalf);
+    TEST_ASSERT_TRUE(lips.feed(0.40f) == MouthFrame::kWide);
+    TEST_ASSERT_TRUE(lips.feed(0.60f) == MouthFrame::kOpen);
 }
 
 //: And it closes on the way back down, all the way.
@@ -126,6 +130,109 @@ void a_closed_mouth_changes_nothing() {
 
 }  // namespace
 
+
+// ---------------------------------------------------------------------------------------
+// The ladder against the envelope it is calibrated for (v2.3, RF-065)
+// ---------------------------------------------------------------------------------------
+
+namespace {
+
+//: A block of samples at a stated amplitude. Same generator as `test_envelope`, kept local rather
+//: than shared: a fixture two tests both depend on is a fixture neither can change.
+std::vector<int16_t> block(std::size_t count, double amplitude) {
+    std::vector<int16_t> out(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        double x = 6.283185307179586 * 8.0 * static_cast<double>(i) / static_cast<double>(count);
+        while (x > 3.141592653589793) x -= 6.283185307179586;
+        double s = x * (1.0 - (x * x) / 6.0 + (x * x * x * x) / 120.0);
+        s = s > 1.0 ? 1.0 : (s < -1.0 ? -1.0 : s);
+        out[i] = static_cast<int16_t>(s * amplitude * 32767.0);
+    }
+    return out;
+}
+
+//: Run a speech-like signal through envelope + ladder and count how often each shape is shown.
+//: Syllables of five 32 ms chunks at varied loudness, gaps of two -- four to seven syllables a
+//: second, which is speech. `counts` is indexed by `MouthFrame`.
+void speak(std::size_t counts[static_cast<std::size_t>(MouthFrame::kCount)]) {
+    const double amplitudes[] = {0.85, 0.45, 0.65, 0.30, 0.90, 0.55, 0.25, 0.70};
+    LipSync lips;
+    float envelope = 0.0f;
+
+    for (int syllable = 0; syllable < 40; ++syllable) {
+        const auto loud = block(512, amplitudes[syllable % 8]);
+        const auto gap = block(512, 0.02);
+        for (int chunk = 0; chunk < 5; ++chunk) {
+            envelope = roboface::followEnvelope(envelope, roboface::rmsLevel(loud.data(), 512));
+            ++counts[static_cast<std::size_t>(lips.feed(envelope))];
+        }
+        for (int chunk = 0; chunk < 2; ++chunk) {
+            envelope = roboface::followEnvelope(envelope, roboface::rmsLevel(gap.data(), 512));
+            ++counts[static_cast<std::size_t>(lips.feed(envelope))];
+        }
+    }
+}
+
+}  // namespace
+
+//: **Every rung is used.** A band no signal ever reaches is dead code that looks like tuning, and
+//: this is exactly how the first two versions of the table were wrong: against a peak signal the
+//: mouth held one shape, and against the RMS envelope the old top step at 0.65 sat above the 80th
+//: percentile so the widest mouth was unreachable.
+//:
+//: The numbers in the table are not asserted here, deliberately. What is asserted is the property
+//: they exist to produce -- so re-tuning is free and *breaking* the ladder is not.
+static void every_shape_is_reached_by_real_speech() {
+    std::size_t counts[static_cast<std::size_t>(MouthFrame::kCount)] = {};
+    speak(counts);
+
+    for (std::size_t i = 0; i < static_cast<std::size_t>(MouthFrame::kCount); ++i) {
+        TEST_ASSERT_TRUE_MESSAGE(counts[i] > 0, "a mouth shape no speech ever reaches");
+    }
+}
+
+//: And no rung takes the whole ladder's work. Four shapes shown 2% of the time and one shown 92%
+//: passes the test above and is the same defect.
+static void no_single_shape_dominates() {
+    std::size_t counts[static_cast<std::size_t>(MouthFrame::kCount)] = {};
+    speak(counts);
+
+    std::size_t total = 0;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(MouthFrame::kCount); ++i) total += counts[i];
+
+    for (std::size_t i = 0; i < static_cast<std::size_t>(MouthFrame::kCount); ++i) {
+        TEST_ASSERT_TRUE_MESSAGE(counts[i] * 100 < total * 60, "one shape holds most of the reply");
+    }
+}
+
+//: The mouth moves often enough to read as talking. Forty syllables at ~224 ms each is about nine
+//: seconds; a handful of changes over that is the failure the board reported as `mouth=4`.
+static void the_mouth_changes_at_speech_rate() {
+    const double amplitudes[] = {0.85, 0.45, 0.65, 0.30, 0.90, 0.55, 0.25, 0.70};
+    LipSync lips;
+    float envelope = 0.0f;
+    MouthFrame previous = MouthFrame::kClosed;
+    int changes = 0;
+
+    for (int syllable = 0; syllable < 40; ++syllable) {
+        const auto loud = block(512, amplitudes[syllable % 8]);
+        const auto gap = block(512, 0.02);
+        for (int chunk = 0; chunk < 5; ++chunk) {
+            envelope = roboface::followEnvelope(envelope, roboface::rmsLevel(loud.data(), 512));
+            const MouthFrame shape = lips.feed(envelope);
+            if (shape != previous) { ++changes; previous = shape; }
+        }
+        for (int chunk = 0; chunk < 2; ++chunk) {
+            envelope = roboface::followEnvelope(envelope, roboface::rmsLevel(gap.data(), 512));
+            const MouthFrame shape = lips.feed(envelope);
+            if (shape != previous) { ++changes; previous = shape; }
+        }
+    }
+
+    // Two per syllable is the floor: open and shut. Below that the mouth is holding through speech.
+    TEST_ASSERT_TRUE(changes > 40);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(silence_keeps_the_mouth_closed);
@@ -135,6 +242,9 @@ int main(int, char**) {
     RUN_TEST(consecutive_syllables_take_different_widths);
     RUN_TEST(a_held_vowel_does_not_change_width);
     RUN_TEST(every_width_is_positive);
+    RUN_TEST(every_shape_is_reached_by_real_speech);
+    RUN_TEST(no_single_shape_dominates);
+    RUN_TEST(the_mouth_changes_at_speech_rate);
     RUN_TEST(every_shape_has_hysteresis);
     RUN_TEST(the_table_is_ordered);
     RUN_TEST(a_sudden_loud_moment_opens_fully_at_once);
