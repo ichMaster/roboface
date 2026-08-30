@@ -36,6 +36,46 @@ std::vector<roboface::TouchResult> replay(TouchGestures& gestures,
     return out;
 }
 
+
+// ---------------------------------------------------------------------------------------
+// Code review #1 — another consumer takes the finger
+// ---------------------------------------------------------------------------------------
+
+void test_forgetting_a_press_leaves_the_next_one_clean() {
+    // **The defect this method exists for.** The carousel opens while the finger is still down and
+    // then swallows the release. Without `forget()`, `held_` stays true, so the *next* touch is
+    // never re-captured: it is measured from where the previous hold began, in the previous hold's
+    // zone -- and a distance past `kStrokeTravelPx` caresses the face on behalf of nobody.
+    roboface::TouchGestures gestures;
+    gestures.feed({true, 40, 40, 1000});   // a hold begins near one corner of the face
+    gestures.feed({true, 40, 40, 2300});   // ... long enough to be the carousel's
+    gestures.forget();                     // the carousel takes the finger
+
+    // The person lifts (never seen by the classifier), then taps somewhere else entirely.
+    gestures.feed({true, kCheekX, kCheekY, 5000});
+    const auto tap = gestures.feed({false, kCheekX, kCheekY, 5060});
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kTap), static_cast<int>(tap.gesture));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kCheek), static_cast<int>(tap.zone));
+    TEST_ASSERT_EQUAL_UINT8(1, tap.count);
+}
+
+void test_forget_is_not_reset() {
+    // Two methods because they answer two questions, and v2.4 narrowed `reset()` on purpose. A
+    // press that spans a state change must survive; a press another consumer has taken must not.
+    roboface::TouchGestures gestures;
+
+    gestures.feed({true, kCheekX, kCheekY, 1000});
+    gestures.reset();
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kTap),
+                          static_cast<int>(gestures.feed({false, kCheekX, kCheekY, 1080}).gesture));
+
+    gestures.feed({true, kCheekX, kCheekY, 3000});
+    gestures.forget();
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kNone),
+                          static_cast<int>(gestures.feed({false, kCheekX, kCheekY, 3080}).gesture));
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------------------
@@ -530,6 +570,8 @@ int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_outside_the_face_is_not_affection);
     RUN_TEST(test_a_press_survives_a_state_change_under_the_finger);
+    RUN_TEST(test_forgetting_a_press_leaves_the_next_one_clean);
+    RUN_TEST(test_forget_is_not_reset);
     RUN_TEST(test_a_state_change_still_drops_the_tap_run);
     RUN_TEST(test_the_button_survives_it_too);
     RUN_TEST(test_the_microphone_button_owns_the_top_left_corner);

@@ -313,6 +313,23 @@ class TouchGestures {
         reported_at_ms_ = 0;
     }
 
+    //: **Someone else has the finger.** Ends the press as well as the run.
+    //:
+    //: Deliberately a second method rather than a flag on `reset()`, because the two answer
+    //: different questions and v2.4 narrowed `reset()` on purpose: *"the state changed, so the
+    //: count is no longer meaningful"* is not *"a different consumer took over mid-press"*.
+    //:
+    //: The carousel is the first caller (v2.6, code review #1) and the reason this exists. Without
+    //: it, `held_` stayed true after the strip swallowed the release, so the **next** touch was
+    //: measured from the coordinates where the previous hold began -- and if that distance passed
+    //: `kStrokeTravelPx`, the face was caressed by nobody and the server was told so.
+    void forget() {
+        held_ = false;
+        reported_hold_ = true;  // whatever this press was becoming, it is not becoming it here
+        taps_ = 0;
+        reported_at_ms_ = 0;
+    }
+
     bool isHeld() const { return held_; }
 
   private:

@@ -159,6 +159,11 @@ uint32_t now_ms_for_log = 0;
 bool press_began_on_button = false;
 bool was_pressed = false;
 
+//: Declared here because `apply()` needs it and is defined above it. One function changes a skin,
+//: and every caller goes through it -- the carousel, `/skin`, `config_updated` and the abandon
+//: path -- so none of them can grow its own idea of what changing a skin involves.
+void wearSkin(std::size_t index, uint32_t now_ms, bool announce);
+
 //: The last few press coordinates, for `/touch`. Small and lossy on purpose: the question it
 //: answers is "where does the panel think my finger landed", and eight samples answer it.
 struct TouchMark {
@@ -325,10 +330,18 @@ void apply(roboface::DeviceEvent event) {
     // just after would merge into a multi-tap the person never performed, and the server would be
     // told so.
     gestures.reset();
-    // And the carousel, for the same reason one layer up: a face chosen by a gesture the device
-    // interrupted is a face nobody chose. `abandon` restores rather than keeping the preview.
-    if (carousel.abandon() == roboface::CarouselOutcome::kCancelled) {
-        renderer.setSkin(roboface::skinAt(carousel.selected()));
+    // And the carousel -- **but only once the finger has gone** (code review #2).
+    //
+    // A face chosen by an interrupted gesture is a face nobody chose, which is why this is here at
+    // all. What it must not do is take the strip away from someone still using it: opening the
+    // carousel closes a listening window, the server runs an ordinary turn on the fragment it was
+    // given, and the reply arrives a second later as a state change. Unguarded, the strip vanished
+    // from under the finger and the device started talking about a breath.
+    //
+    // While the finger is down the person is still choosing, and the device changing state behind
+    // them is not a reason to stop them.
+    if (!was_pressed && carousel.abandon() == roboface::CarouselOutcome::kCancelled) {
+        wearSkin(carousel.selected(), millis(), false);
     }
     Serial.printf("\n[state] %s\n", roboface::toString(state));
     render();
@@ -621,6 +634,12 @@ void onTouchGesture(const roboface::TouchResult& touched, uint32_t now_ms) {
             // Give it back before drawing anything: a microphone left open by a gesture that was
             // reinterpreted is a microphone nobody knows is on.
             if (audio.isListening()) endListening("carousel");
+            // **Tell the gesture classifier it has lost the finger** (code review #1). It is still
+            // mid-press -- `kHeldSilent` fires while the finger is down -- and the strip is about
+            // to swallow the release. Without this the next touch is measured from where *this*
+            // hold began, and a distance past the stroke threshold caresses the face on behalf of
+            // nobody.
+            gestures.forget();
             audio.click();
             needs_push = true;
         }
