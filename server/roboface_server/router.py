@@ -35,7 +35,14 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
-from roboface_server.emotion import TurnState, frame_for
+from roboface_server.emotion import (
+    ACCENTS,
+    BASE_INTENSITY,
+    TTL_MS,
+    TurnState,
+    frame_for,
+    reaction_to,
+)
 from roboface_server.logging import bind_device, chars, connection_context, log
 from roboface_server.orchestrator import TurnAborted
 from roboface_server.protocol import (
@@ -797,11 +804,39 @@ class Router:
     ) -> None:
         """What the character makes of being touched.
 
-        A placeholder in RF-068 -- the frame has to arrive and be logged before anything can decide
-        what to do with it, and a handler written before the wire exists would be a handler nobody
-        had ever fed. RF-072 gives it the reaction path.
+        **Three outcomes, and the commonest is nothing.** A device picked up and put down again
+        does not need a line, and a character that remarks on every touch is one nobody wants on a
+        desk -- so the table in `emotion.py` maps the few events worth a word, and everything
+        absent from it is deliberately silent.
+
+        A spoken reaction goes through the **same turn machinery** as any other reply: the same
+        orchestrator, the same emotion frame, the same TTS. A second path to speech would be a
+        second place for every latency, cancellation and history rule to be got wrong.
         """
-        del event, conn, transport
+        face, prompt = reaction_to(str(event.type), event.kind)
+
+        if face is not None:
+            await self._send_emotion(
+                transport,
+                EmotionFrame(
+                    emotion=face,
+                    intensity=BASE_INTENSITY[TurnState.IDLE] + 0.35,
+                    accent_color=ACCENTS[face],
+                    ttl_ms=TTL_MS[TurnState.IDLE],
+                ),
+            )
+
+        if prompt is None:
+            return
+
+        # **A touch mid-reply does not start a second turn.** Half-duplex means there is nowhere to
+        # put a second answer, and the device is being stroked *because* it is talking as often as
+        # not. The face still changed above, which is the reaction that fits in the gap.
+        if conn.binary_phase is BinaryPhase.SPEAKING or conn.listening is not None:
+            log("event.not_answered", kind=event.kind, reason="turn in progress")
+            return
+
+        await self._stream_reply(prompt, conn, transport)
 
     async def _send_emotion(self, transport: Transport, frame: EmotionFrame) -> None:
         """Send one ``emotion{}``.

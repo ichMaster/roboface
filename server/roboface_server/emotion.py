@@ -121,6 +121,48 @@ STATE_EMOTION: Final[dict[TurnState, Emotion]] = {
 }
 
 
+#: What the character says when it is touched — or, far more often, nothing.
+#:
+#: **"Nothing" is the first-class outcome and most of the table is it.** A device that is picked up
+#: and put down again does not need a line, and a character that remarks on every touch is one
+#: nobody wants on a desk. So this maps the *few* events worth a word, and everything absent from it
+#: is deliberately silent.
+#:
+#: The lines are prompts, not scripts: they go to the model as the person's turn would, so the
+#: character answers in its own voice rather than reciting. A canned string would be a second
+#: personality living in a dictionary.
+EVENT_PROMPTS: Final[dict[tuple[str, str], str]] = {
+    ("touch", "stroke"): "Тебе щойно погладили по щоці. Скажи щось коротке у відповідь.",
+    ("touch", "poke_eye"): "Тебе щойно тицьнули в око. Відреагуй коротко.",
+    ("motion", "shake"): "Тебе щойно струснули. Скажи щось коротке.",
+    ("motion", "upside_down"): "Тебе перевернули догори дриґом. Скажи щось коротке.",
+    ("motion", "free_fall"): "Тебе щойно впустили. Скажи щось дуже коротке.",
+}
+
+#: What the face does, which is a **wider** set than what the character says. A tap deserves an
+#: expression and not a remark; the device already produced the reflex locally, and this is the
+#: server agreeing with it a moment later rather than repeating it.
+EVENT_EMOTIONS: Final[dict[tuple[str, str], Emotion]] = {
+    ("touch", "tap"): Emotion.JOY,
+    ("touch", "multi_tap"): Emotion.JOY,
+    ("touch", "stroke"): Emotion.CALM,
+    ("touch", "poke_eye"): Emotion.SURPRISED,
+    ("motion", "shake"): Emotion.SURPRISED,
+    ("motion", "upside_down"): Emotion.SURPRISED,
+    ("motion", "free_fall"): Emotion.SAD,
+    ("proximity", "approach"): Emotion.CALM,
+}
+
+
+def reaction_to(event_type: str, kind: str) -> tuple[Emotion | None, str | None]:
+    """What the character makes of an event: an expression, a line, or neither.
+
+    Returning a pair rather than an object because the two are genuinely independent -- a tap gets a
+    face and no words, a stroke gets both, and being put down gets neither.
+    """
+    return EVENT_EMOTIONS.get((event_type, kind)), EVENT_PROMPTS.get((event_type, kind))
+
+
 def frame_for(
     state: TurnState,
     *,
