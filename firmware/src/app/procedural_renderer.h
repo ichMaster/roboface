@@ -27,6 +27,7 @@
 #include "pure/idle.h"
 #include "pure/layers.h"
 #include "pure/layout.h"
+#include "pure/lipsync.h"
 #include "pure/state.h"
 
 namespace app {
@@ -63,6 +64,10 @@ class ProceduralRenderer : public IFaceRenderer {
     roboface::Crossfade crossfade_{roboface::recipeFor(roboface::DeviceState::kBoot)};
     roboface::IdleLoop idle_;
     float audio_level_ = 0.0f;
+    //: Whether the mouth should follow the audio. Only while replying -- the level is zero
+    //: otherwise, but making it explicit keeps a stale value from ever animating a silent face.
+    bool speaking_mouth_ = false;
+    roboface::LipSync lips_;
 
     uint32_t last_tick_ms_ = 0;
     bool animating_ = true;

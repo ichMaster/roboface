@@ -145,6 +145,18 @@ class AudioIo {
     //: buffer it might outlive.
     float inputLevel() const { return level_; }
 
+    //: 0..1, the loudness of what the speaker is playing **right now** -- the signal the mouth
+    //: moves on.
+    //:
+    //: A different measurement from `inputLevel`, and the distinction is the whole reason lip-sync
+    //: is not simply the level meter: that one is the microphone, this one is the speaker. Wiring
+    //: the mouth to the microphone would make the face mime the person talking to it.
+    //:
+    //: Taken from the chunk being handed to the speaker, so it leads the sound by however much the
+    //: speaker has buffered -- about two chunks, ~60 ms. Close enough that mouth and voice read as
+    //: one thing; v2.3's real lip-sync accounts for it properly.
+    float outputLevel() const { return output_level_; }
+
     //: The loudest frame of the current capture. A capture that reports zero here recorded
     //: silence, which is a different fault from a playback that fails to make a sound -- and the
     //: two are indistinguishable by ear.
@@ -200,6 +212,7 @@ class AudioIo {
     FrameSink sink_ = nullptr;
     roboface::CaptureTally tally_;
     float level_ = 0.0f;
+    float output_level_ = 0.0f;
     float peak_seen_ = 0.0f;
     uint8_t pool_[kChunkSlots][kChunkBytes] = {};
     std::size_t slot_ = 0;

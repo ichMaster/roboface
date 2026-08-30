@@ -262,6 +262,14 @@ void AudioIo::tick(uint32_t now_ms) {
         const std::size_t got = backlog_.readSamples(buffer, kChunkBytes);
         if (got == 0) break;
 
+        // The mouth's signal, taken here because this is the one place the audio is in hand as
+        // samples on its way out. Decayed rather than replaced, for the same reason the input meter
+        // is: speech has gaps between syllables, and a mouth driven by the raw peak would snap shut
+        // in every one of them.
+        const float peak = roboface::peakLevel(reinterpret_cast<const int16_t*>(buffer),
+                                               got / sizeof(int16_t));
+        output_level_ = roboface::decayToward(output_level_, peak);
+
         if (!M5.Speaker.playRaw(reinterpret_cast<const int16_t*>(buffer), got / sizeof(int16_t),
                                 kSampleRate, /*stereo=*/false, /*repeat=*/1, kChannel,
                                 /*stop_current_sound=*/false)) {
@@ -308,6 +316,10 @@ void AudioIo::releaseBus() {
     speaking_ = false;
     draining_ = false;
     primed_ = false;
+    // The mouth closes when the voice stops. Left at its last value it would hold the shape of the
+    // final syllable for as long as the device sat idle, which is a stranger thing to look at than
+    // a face that never moved at all.
+    output_level_ = 0.0f;
     backlog_.clear();
 
     // Hearing again is restored here because **every** route out of playback passes through this

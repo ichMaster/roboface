@@ -74,7 +74,21 @@ constexpr uint32_t kMinPushIntervalMs = 100;
 //: There is a second, less obvious reason this matters. The endpointer measures time in *frames*,
 //: so dropped frames slow its clock: at a third of the capture rate its 1200 ms end-pause becomes
 //: nearly four real seconds, and the window stops closing on its own.
-constexpr uint32_t kBusyPushIntervalMs = 300;
+//: While speaking. The mouth follows the reply's loudness now, so this is the rate the lip-sync
+//: gets -- and a mouth updated three times a second reads as a jaw dropping open rather than as
+//: speech. 120 ms is eight a second, which at syllable pace is enough to look like talking.
+//:
+//: Affordable because nothing is being captured while the device speaks: half-duplex has the
+//: microphone suspended, so these frames are not competing with anything.
+constexpr uint32_t kBusyPushIntervalMs = 120;
+
+//: While listening. Faster than `kBusyPushIntervalMs` for one reason and one only: the level meter
+//: is in this band, and it is the only thing on the screen that moves with the person's own voice.
+//: At three frames a second it lags visibly behind what they are saying, which makes it a worse
+//: signal of attention than no meter at all.
+//:
+//: The face itself is frozen in this state, so these frames buy the meter and nothing else.
+constexpr uint32_t kListeningPushIntervalMs = 150;
 uint32_t last_push_ms = 0;
 bool needs_push = true;
 
@@ -966,6 +980,12 @@ void loop() {
     now_ms_for_log = now_ms;
     audio.tick(now_ms);
 
+    // The mouth's signal, from the speaker rather than the microphone. Fed every loop and not only
+    // while replying: the renderer decides whether to use it, and a level that stopped arriving
+    // would leave the mouth frozen at whatever it last heard.
+    renderer.setAudioLevel(audio.outputLevel());
+    if (audio.isSpeaking()) needs_push = true;
+
     // Hearing came back after the device finished speaking. Clear the endpointer rather than
     // letting it carry the reply across: the silence during playback is not part of anyone's
     // pause, and the tail of the last sentence is not the start of the next one.
@@ -1039,8 +1059,12 @@ void loop() {
 
     pollPower(now_ms, /*force=*/false);
     updateChrome(now_ms, fault_active, fault_code);
-    const uint32_t push_interval =
-        (audio.isListening() || audio.isSpeaking()) ? kBusyPushIntervalMs : kMinPushIntervalMs;
+    // Three rates, because the three states have different things moving on the screen: the idle
+    // loop when nothing is happening, the level meter while listening, and -- until v2.3 adds
+    // lip-sync -- nothing at all while speaking.
+    const uint32_t push_interval = audio.isListening()  ? kListeningPushIntervalMs
+                                   : audio.isSpeaking() ? kBusyPushIntervalMs
+                                                        : kMinPushIntervalMs;
     if (needs_push && now_ms - last_push_ms >= push_interval) {
         if (console.isOn()) console_view.draw(renderer.canvas(), transcript);
         chrome_view.draw(renderer.canvas(), chrome, audio.inputLevel());

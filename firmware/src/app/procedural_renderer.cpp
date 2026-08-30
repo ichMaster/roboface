@@ -17,6 +17,22 @@ constexpr uint16_t kInk = 0x5DFF;         // the features: a soft cyan-white
 //: a real quadratic per pixel would be the frame budget spent on something nobody can see.
 constexpr int kMouthSegments = 12;
 
+//: Below this, a change in a recipe field cannot move a feature by a whole pixel, so redrawing
+//: would produce identical bytes at the cost of a push. Chosen from the geometry rather than by
+//: feel: the mouth travels 22 px over a range of 1.0, so 1/44 is half a pixel.
+constexpr float kVisibleChange = 0.02f;
+
+//: Did anything actually change enough to see? Field by field, because a *distance* over five
+//: dimensions lets a large move in one be cancelled by a small one in another.
+bool changedVisibly(const roboface::FaceRecipe& a, const roboface::FaceRecipe& b) {
+    const auto differs = [](float x, float y) {
+        const float delta = x > y ? x - y : y - x;
+        return delta >= kVisibleChange;
+    };
+    return differs(a.eye_openness, b.eye_openness) || differs(a.mouth_curve, b.mouth_curve) ||
+           differs(a.brow_angle, b.brow_angle) || differs(a.tilt, b.tilt) || differs(a.dim, b.dim);
+}
+
 }  // namespace
 
 bool ProceduralRenderer::begin() {
@@ -48,15 +64,27 @@ bool ProceduralRenderer::begin() {
 }
 
 void ProceduralRenderer::show(roboface::DeviceState state) {
-    // **Listening has one settled face.** The drift is stilled while the device is paying
-    // attention: a gaze wandering off while someone is mid-sentence reads as distraction, which is
-    // the opposite of what the state means. Blinking stays -- a face that stops blinking stops
-    // looking alive and starts looking frozen.
+    // **The idle loop exists for silence.** Breathing, drifting and blinking are how a face says
+    // "someone is here" when nothing else is happening. During a turn something else already says
+    // it, and the idle then costs frames without adding anything a person notices.
     //
-    // It also buys back frames exactly when they are needed: with the drift stopped, the
-    // unchanged-frame skip in `tick` finally fires, and the loop it frees is the loop the
-    // microphone wants.
-    idle_.setIntensity(state == roboface::DeviceState::kListening ? 0.0f : 1.0f);
+    // Listening: **completely still.** The level meter in the bottom band is already moving with
+    // the person's own voice, and it is a truer signal of attention than a breath -- it responds to
+    // *them*. A face that also drifts and blinks over it is two animations competing to say the
+    // same thing, and the one that costs the microphone frames is the one that says it worse.
+    //
+    // Replying: the drift stops too, but for a different reason. What moves while the device speaks
+    // is the **mouth**, following the reply's own loudness. A breath underneath that is noise on
+    // the signal -- and the mouth is the thing a person is actually watching.
+    //
+    // Everything else -- idle, connecting, offline -- keeps the full loop, which is exactly where
+    // it belongs: those are the states where nothing else is moving.
+    const bool in_a_turn = state == roboface::DeviceState::kListening ||
+                           state == roboface::DeviceState::kReplying;
+    idle_.setIntensity(in_a_turn ? 0.0f : 1.0f);
+    idle_.setBlinking(state != roboface::DeviceState::kListening);
+    speaking_mouth_ = state == roboface::DeviceState::kReplying;
+    if (!speaking_mouth_) lips_.reset();  // the mouth shuts when the reply ends
     // Sets a target; the drawing happens in `tick`. A `show` that drew would make a state change
     // cost a frame at the moment the device is busiest -- which is exactly when states change.
     crossfade_.target(roboface::recipeFor(state));
@@ -64,9 +92,9 @@ void ProceduralRenderer::show(roboface::DeviceState state) {
 }
 
 void ProceduralRenderer::setAudioLevel(float level) {
-    // Held for v2.3's lip-sync. Recorded now rather than ignored, so the wiring is already right
-    // when the mouth starts using it.
-    audio_level_ = level;
+    // The mouth's signal. This method was declared in v0.4 against a stub and did nothing until
+    // now, which is exactly what the seam was fixed early for.
+    audio_level_ = level < 0.0f ? 0.0f : (level > 1.0f ? 1.0f : level);
 }
 
 void ProceduralRenderer::tick(uint32_t now_ms) {
@@ -84,6 +112,19 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
     roboface::FaceRecipe frame = expression;
     frame.eye_openness *= idle.eye_scale;
 
+    // **A simplified lip-sync: four mouth shapes, not a continuous opening.** v2.3 does the real
+    // thing -- visemes chosen from the spectrum rather than the amplitude. This is the animator's
+    // version, and it is better than a smooth mouth on both counts that matter here: real speech
+    // moves between a few positions rather than sliding, and a shape only redraws when it *changes*,
+    // where a continuous mouth redraws on every frame.
+    //
+    // Added to `mouth_curve` because that is the only mouth control the recipe has, so the shape
+    // rides on top of whatever expression is showing -- the device still smiles while it talks.
+    if (speaking_mouth_) {
+        frame.mouth_curve += roboface::travelFor(lips_.feed(audio_level_));
+        if (frame.mouth_curve > 1.0f) frame.mouth_curve = 1.0f;
+    }
+
     roboface::FaceGeometry geometry;
     geometry.centre_y += static_cast<int>(idle.bob_y);
     geometry.eye_offset_y += static_cast<int>(idle.gaze_y);
@@ -94,8 +135,12 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
     // v2.2 does during a turn -- and no fade is running. Said plainly because the tempting version
     // of this comment ("a settled face costs nothing") would send the next person chasing a frame
     // budget straight past the renderer.
+    // `areDistinct` is deliberately *not* used here. It answers "is this change worth animating",
+    // with a threshold coarse enough for that -- and the mouth moving to a syllable is far below it,
+    // so a face that talked would have sat perfectly still. This is the finer question: did any
+    // number change at all.
     const bool moved = !has_drawn_ || crossfade_.isFading() || idle_.isBlinking() ||
-                       roboface::areDistinct(frame, last_drawn_) ||
+                       changedVisibly(frame, last_drawn_) ||
                        idle.bob_y != 0.0f || idle.gaze_x != 0.0f;
     animating_ = moved;
     if (!moved) return;
