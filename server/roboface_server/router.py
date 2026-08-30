@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
+from roboface_server.emotion import TurnState, frame_for
 from roboface_server.logging import bind_device, chars, connection_context, log
 from roboface_server.orchestrator import TurnAborted
 from roboface_server.protocol import (
@@ -46,6 +47,7 @@ from roboface_server.protocol import (
     BinaryPhase,
     Capability,
     DeviceMessage,
+    EmotionFrame,
     ErrorCode,
     ErrorFrame,
     Frame,
@@ -64,7 +66,7 @@ from roboface_server.protocol import (
     negotiate,
 )
 from roboface_server.providers.base import ProviderError
-from roboface_server.turn import AudioChunk, ReplyDelta, TurnEvent
+from roboface_server.turn import AudioChunk, EmotionEvent, ReplyDelta, TurnEvent
 
 #: Normal closure. A rejected ``hello`` still closes normally: the device is not broken, it
 #: is simply speaking a version this server does not, and it should back off rather than
@@ -587,6 +589,9 @@ class Router:
                 # Recognition begins with the window, not at its end: that is the whole of v1.3.
                 opener = getattr(self.responder, "open_listening", None)
                 conn.listening = opener() if opener is not None else None
+                # The one state change the orchestrator cannot see: no turn exists yet. From v2.2
+                # attention is a face rather than a word on the screen, so it is sent from here.
+                await self._send_emotion(transport, frame_for(TurnState.LISTENING))
                 log("listen.start", device_id=conn.device_id, session_id=conn.session_id)
             case ListenStop():
                 if conn.utterance_settled:
@@ -688,6 +693,8 @@ class Router:
         try:
             async for event in self.responder.respond(conn.session_id, text):
                 match event:
+                    case EmotionEvent():
+                        await self._send_emotion(transport, event.frame)
                     case ReplyDelta():
                         if deltas == 0 and since is not None:
                             # The second of the three legs the DoD compares. Logged separately
@@ -723,6 +730,10 @@ class Router:
                         chunks += 1
         except TurnAborted as exc:
             await self._close_speaking(conn, transport)
+            # The error face **before** the error frame, and both before returning. DEVICE_UI
+            # renders a fault as its enumerated code; the face is what a person across the room
+            # sees, and it must not be left showing `thinking` for the ttl while a fault stands.
+            await self._send_emotion(transport, frame_for(TurnState.FAILED))
             await self._send_error(transport, exc.code, str(exc))
             return
         except Exception as exc:
@@ -744,6 +755,7 @@ class Router:
                 level="error",
             )
             await self._close_speaking(conn, transport)
+            await self._send_emotion(transport, frame_for(TurnState.FAILED))
             await self._send_error(
                 transport, ErrorCode.INTERNAL, f"the turn failed: {type(exc).__name__}"
             )
@@ -752,8 +764,30 @@ class Router:
         # The speaking window closes before the turn does: the device drains and gives the bus
         # back, then sees the turn end.
         await self._close_speaking(conn, transport)
+        # **Before** the terminal reply, not after. `reply{final: true}` is the turn's end marker
+        # on the wire, and a device is entitled to stop reading the turn there -- a frame sent
+        # after it is a frame that may never be looked at.
+        #
+        # And it is an instruction to relax, not a description of now: the device is still playing
+        # seconds of audio this server finished sending, so *when* to apply it is the device's
+        # decision. Same division as v2.1.2, where taking the server's word for "the reply is over"
+        # put the face back to idle mid-sentence.
+        await self._send_emotion(transport, frame_for(TurnState.IDLE))
         await transport.send(encode(Reply(text="", final=True)))
         log("turn.streamed", deltas=deltas, chunks=chunks)
+
+    async def _send_emotion(self, transport: Transport, frame: EmotionFrame) -> None:
+        """Send one ``emotion{}``.
+
+        A method rather than a call site repeated six times, because every one of them is a state
+        change and the set of them is the phase's DoD: *"for every turn and state change"*. One
+        place to send from is one place to find them all.
+
+        **Not sent for `boot`, `wifi_connecting` or `offline`.** Those are device facts -- in the
+        offline case, by definition facts about this server being unreachable -- and a server
+        opinion about them would create two authorities for one screen.
+        """
+        await transport.send(encode(frame))
 
     async def _close_speaking(self, conn: Connection, transport: Transport) -> bool:
         """End the speaking window, if one is open. Returns whether it did.

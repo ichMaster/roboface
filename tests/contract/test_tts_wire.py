@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator
 from fake_device import connect
 from roboface_server.app import create_app
 from roboface_server.orchestrator import TurnAborted
-from roboface_server.protocol import ErrorCode, ErrorFrame, Reply, TextIn, TtsEnd
+from roboface_server.protocol import EmotionFrame, ErrorCode, ErrorFrame, Reply, TextIn, TtsEnd
 from roboface_server.turn import AudioChunk, ReplyDelta, TurnEvent
 
 CHUNK_A = b"\x01\x02" * 8
@@ -70,7 +70,13 @@ def test_audio_and_text_interleave_rather_than_arriving_as_two_bursts() -> None:
             return "final" if event.final else "reply"
         return type(event).__name__
 
-    assert [label(event) for event in turn.events] == [
+    # The face is filtered out here on purpose: v2.2 drives it through the same turn, and this
+    # test is about audio interleaving with text. `tests/contract/test_turn_lifecycle.py` pins
+    # where the emotion frames sit; asserting both orderings in one list would make each failure
+    # ambiguous about which contract broke.
+    assert [
+        label(event) for event in turn.events if not isinstance(event, EmotionFrame)
+    ] == [
         "reply",
         "audio",
         "reply",
@@ -94,7 +100,12 @@ def test_the_speaking_window_is_closed_before_the_turn_ends() -> None:
     turn = _turn(SpeakingResponder())
     frames = turn.frames
     assert isinstance(frames[-1], Reply) and frames[-1].final
-    assert isinstance(frames[-2], TtsEnd), "tts_end closes the window before the turn closes"
+    # Ordering rather than adjacency: v2.2 sends the relax instruction between the two, because
+    # `reply{final}` is the turn's end marker and a frame after it may never be read.
+    kinds = [type(frame).__name__ for frame in frames]
+    assert kinds.index("TtsEnd") < len(kinds) - 1, (
+        "tts_end closes the window before the turn closes"
+    )
 
 
 def test_an_aborted_turn_still_closes_the_speaking_window() -> None:
@@ -105,7 +116,11 @@ def test_an_aborted_turn_still_closes_the_speaking_window() -> None:
     assert isinstance(frames[-1], ErrorFrame)
     assert frames[-1].code is ErrorCode.TTS_FAILED
     assert any(isinstance(frame, TtsEnd) for frame in frames), "tts_end must precede the error"
-    assert isinstance(frames[-2], TtsEnd)
+    # Ordering, not adjacency. From v2.2 the error face is sent between the two -- the device must
+    # release the bus before it is told the turn failed, and it should show the fault before the
+    # code arrives, not after. Asserting `frames[-2]` would pin the *gap* rather than the rule.
+    kinds = [type(frame).__name__ for frame in frames]
+    assert kinds.index("TtsEnd") < kinds.index("ErrorFrame")
 
 
 def test_a_turn_with_no_audio_sends_no_tts_end() -> None:

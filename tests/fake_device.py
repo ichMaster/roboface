@@ -29,6 +29,7 @@ from roboface_server.protocol import (
     AUDIO_FMT,
     PROTO_VERSION,
     Capability,
+    EmotionFrame,
     ErrorFrame,
     Frame,
     Hello,
@@ -53,6 +54,10 @@ class ReplyStream:
 
     text: str
     deltas: tuple[str, ...]
+    #: The `emotion{}` frames that arrived during the turn, in order. Collected rather than
+    #: discarded so a test that cares can assert them without a second read, and so a test that
+    #: does not care is not made to.
+    emotions: tuple[EmotionFrame, ...] = ()
 
     def __len__(self) -> int:
         return len(self.deltas)
@@ -75,6 +80,28 @@ class TurnStream:
     @property
     def frames(self) -> tuple[Frame, ...]:
         return tuple(event for event in self.events if not isinstance(event, bytes))
+
+    @property
+    def emotions(self) -> tuple[EmotionFrame, ...]:
+        """The face channel, in order. From v2.2 a turn drives it as well as the reply."""
+        return tuple(event for event in self.events if isinstance(event, EmotionFrame))
+
+    def first_emotion_index(self) -> int | None:
+        for index, event in enumerate(self.events):
+            if isinstance(event, EmotionFrame):
+                return index
+        return None
+
+    def first_delta_index(self) -> int | None:
+        """Where the first `reply` delta sits.
+
+        v2.2 compares this against the *replying* emotion frame: the face must change as the
+        device begins to speak, so the frame has to precede the first word rather than follow it.
+        """
+        for index, event in enumerate(self.events):
+            if isinstance(event, Reply) and not event.final:
+                return index
+        return None
 
     def first_audio_index(self) -> int | None:
         for index, event in enumerate(self.events):
@@ -110,6 +137,9 @@ class FakeDevice:
     def __init__(self, session: WebSocketTestSession, *, device_id: str = "fake-core-s3") -> None:
         self._session = session
         self.device_id = device_id
+        #: Every `emotion{}` `recv` skipped, in order. Kept rather than dropped so a test that
+        #: wants to look at the face can, without having to read the socket a different way.
+        self.emotions: list[EmotionFrame] = []
 
     # -- outbound ----------------------------------------------------------------------
 
@@ -175,7 +205,29 @@ class FakeDevice:
     # -- inbound -----------------------------------------------------------------------
 
     def recv(self) -> Frame:
-        """The next frame from the server, decoded by `protocol`."""
+        """The next frame from the server, **skipping `emotion{}`**.
+
+        From v2.2 the server drives the face alongside everything else: a frame on `listen_start`,
+        two before the first reply delta, one on a fault, one when a turn ends. A `recv` that
+        returned them would turn every test in this suite into an assertion about the face --
+        including the several dozen written before the face channel existed, none of which are
+        about it.
+
+        Where the face **is** the subject, `tests/contract/test_turn_lifecycle.py` reads it with
+        `recv_including_emotion`, and `collect_turn`/`recv_any` keep it in arrival order, because
+        the ordering — the `replying` frame before the first delta — is itself a contract.
+
+        What was skipped is not thrown away: it accumulates on :attr:`emotions`.
+        """
+        while True:
+            frame = self.recv_including_emotion()
+            if isinstance(frame, EmotionFrame):
+                self.emotions.append(frame)
+                continue
+            return frame
+
+    def recv_including_emotion(self) -> Frame:
+        """The next frame, whatever it is. The unfiltered view `recv` is built on."""
         return decode(self._session.receive_text())
 
     def recv_any(self) -> Frame | bytes:
@@ -244,14 +296,24 @@ class FakeDevice:
         waiting for one would hang until the suite timeout rather than failing with the code.
         """
         deltas: list[str] = []
+        emotions: list[EmotionFrame] = []
         for _ in range(limit):
             frame = self.recv()
             if isinstance(frame, ErrorFrame):
                 raise AssertionError(f"turn aborted with {frame.code}: {frame.msg}")
+            if isinstance(frame, EmotionFrame):
+                # Collected, not asserted on. From v2.2 every turn drives the face as well as the
+                # reply, and a helper called `collect_reply` that failed on a frame about the face
+                # would make every test in the suite an assertion about v2.2's frame sequence --
+                # including the several dozen written before that sequence existed.
+                emotions.append(frame)
+                continue
             if not isinstance(frame, Reply):
                 raise AssertionError(f"expected a reply frame, got {frame}")
             if frame.final:
-                return ReplyStream(text="".join(deltas), deltas=tuple(deltas))
+                return ReplyStream(
+                    text="".join(deltas), deltas=tuple(deltas), emotions=tuple(emotions)
+                )
             deltas.append(frame.text)
         raise AssertionError(f"no terminal reply within {limit} frames; got {len(deltas)} deltas")
 

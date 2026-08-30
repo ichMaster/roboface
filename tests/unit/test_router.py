@@ -20,6 +20,7 @@ from roboface_server.protocol import (
     AUDIO_FMT,
     PROTO_VERSION,
     Capability,
+    EmotionFrame,
     ErrorCode,
     ErrorFrame,
     Hello,
@@ -75,10 +76,25 @@ class ScriptedTransport:
 
     # -- helpers the assertions read through -------------------------------------------
     def frames(self) -> list[object]:
+        """Everything sent, **except the face**.
+
+        From v2.2 the router drives `emotion{}` alongside every turn and state change. That is
+        pinned by `tests/contract/test_turn_lifecycle.py`, where it belongs; a helper used by
+        every test in this file would otherwise make each of them an assertion about the face,
+        including the several dozen written before the face existed.
+
+        `all_frames` is the unfiltered view, for the tests that are about the face.
+        """
+        return [frame for frame in self.all_frames() if not isinstance(frame, EmotionFrame)]
+
+    def all_frames(self) -> list[object]:
         return [decode(raw) for raw in self.sent]
 
+    def emotions(self) -> list[EmotionFrame]:
+        return [frame for frame in self.all_frames() if isinstance(frame, EmotionFrame)]
+
     def errors(self) -> list[ErrorFrame]:
-        return [frame for frame in self.frames() if isinstance(frame, ErrorFrame)]
+        return [frame for frame in self.all_frames() if isinstance(frame, ErrorFrame)]
 
 
 class ExplodingTransport(ScriptedTransport):

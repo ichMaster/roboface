@@ -12,7 +12,7 @@ from typing import Any
 from fake_device import connect
 from roboface_server.app import create_app
 from roboface_server.orchestrator import Orchestrator
-from roboface_server.protocol import Asr, ErrorCode, ErrorFrame, Reply, TtsEnd
+from roboface_server.protocol import Asr, ErrorCode, ErrorFrame, Reply
 from roboface_server.providers.base import ASRChunk, ProviderError
 from roboface_server.providers.mock import MockASRProvider, MockLLMProvider, MockTTSProvider
 
@@ -82,7 +82,9 @@ def test_text_and_audio_interleave_in_the_answer() -> None:
 def test_the_speaking_window_closes_before_the_turn() -> None:
     _, app = build()
     turn = speak(app)
-    assert isinstance(turn.frames[-2], TtsEnd)
+    # Ordering, not adjacency -- see the note in tests/integration/test_tts_turn.py.
+    kinds = [type(frame).__name__ for frame in turn.frames]
+    assert kinds.index("TtsEnd") < len(kinds) - 1
 
 
 def test_silence_produces_no_words() -> None:

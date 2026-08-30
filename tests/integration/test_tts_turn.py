@@ -77,7 +77,10 @@ def test_the_speaking_window_closes_before_the_turn_does() -> None:
     turn = _turn(_app(MockLLMProvider(deltas=DELTAS)))
     frames = turn.frames
     assert isinstance(frames[-1], Reply) and frames[-1].final
-    assert isinstance(frames[-2], TtsEnd)
+    # Ordering, not adjacency: v2.2 puts the turn's relax instruction between `tts_end` and
+    # the terminal reply, because a frame after the end marker may never be read.
+    kinds = [type(frame).__name__ for frame in frames]
+    assert kinds.index("TtsEnd") < kinds.index("Reply", kinds.index("TtsEnd"))
 
 
 def test_a_tts_failure_aborts_the_turn_with_tts_failed() -> None:

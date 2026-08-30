@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from roboface_server.protocol import EmotionFrame
+
 
 @dataclass(frozen=True, slots=True)
 class ReplyDelta:
@@ -35,5 +37,18 @@ class AudioChunk:
     data: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class EmotionEvent:
+    """How the face should look from this point in the turn.
+
+    A third kind of event rather than a field on `ReplyDelta`, because it arrives at moments the
+    other two do not: when the model call starts and there is no text yet, and when the model's own
+    report lands -- which is **before** the first delta, so the expression changes as the device
+    begins to speak rather than after it has finished.
+    """
+
+    frame: EmotionFrame
+
+
 #: Everything a turn can emit.
-TurnEvent = ReplyDelta | AudioChunk
+TurnEvent = ReplyDelta | AudioChunk | EmotionEvent

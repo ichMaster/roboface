@@ -30,7 +30,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Final
 
-from roboface_server.emotion import ModelReport
+from roboface_server.emotion import ModelReport, TurnState, frame_for
 from roboface_server.logging import chars, log
 from roboface_server.prompt import build_system_prompt
 from roboface_server.protocol import ErrorCode
@@ -44,7 +44,7 @@ from roboface_server.providers.base import (
     TTSProvider,
 )
 from roboface_server.sentence import PhraseSplitter
-from roboface_server.turn import AudioChunk, ReplyDelta, TurnEvent
+from roboface_server.turn import AudioChunk, EmotionEvent, ReplyDelta, TurnEvent
 from roboface_server.utterance import UtteranceTracker
 
 #: The rolling conversation window, in messages. ARCHITECTURE §Data model specifies this
@@ -202,6 +202,7 @@ class Orchestrator:
         # and so the report is in hand by the time RF-062 needs to put it on the wire.
         stream = _ReplyStream(self.provider.stream(self.system_prompt, tuple(history)))
         collected: list[str] = []
+
         # A turn has exactly two endings: it completes, or it rolls back. Abandonment -- a
         # consumer that stops iterating -- was silently a third, leaving the user message
         # stranded with no reply and the provider's stream (an open HTTP response, in the real
@@ -215,6 +216,17 @@ class Orchestrator:
         settled = False
 
         try:
+            # **Inside the `try`, and that placement is the whole of the invariant above.** A
+            # consumer that stops iterating here -- at the very first event of the turn -- would
+            # otherwise leave the user message stranded in history and the provider's stream open,
+            # because a generator abandoned before it enters a `try` never runs the `finally`.
+            # Found by the abandonment tests, which is what they are for.
+            #
+            # The face goes to `thinking` before the model has produced anything, which is exactly
+            # the moment worth saying something: it is the only part of a turn with nothing else
+            # to show for itself.
+            yield EmotionEvent(frame=frame_for(TurnState.THINKING))
+
             try:
                 first = await asyncio.wait_for(anext(stream), timeout=self.first_token_budget_s)
             except TimeoutError as exc:
@@ -241,6 +253,14 @@ class Orchestrator:
             except ProviderError as exc:
                 settled = True
                 raise self._abort_turn(session_id, user_message, self._translate(exc)) from exc
+
+            # **Before the first delta, deliberately.** By the time the first text arrives the
+            # report has already been pulled off the stream -- the schema puts it first for exactly
+            # this -- so the device changes expression as it starts to speak rather than a sentence
+            # later. Emitting it after would be correct, invisible, and impossible to notice.
+            yield EmotionEvent(
+                frame=frame_for(TurnState.REPLYING, report=stream.report, speaking=True)
+            )
 
             collected.append(first)
             yield ReplyDelta(text=first)

@@ -13,7 +13,15 @@ from typing import Any
 from fake_device import connect
 from roboface_server.app import create_app
 from roboface_server.orchestrator import Orchestrator
-from roboface_server.protocol import Asr, ErrorFrame, ListenStart, ListenStop, Reply
+from roboface_server.protocol import (
+    Asr,
+    Emotion,
+    EmotionFrame,
+    ErrorFrame,
+    ListenStart,
+    ListenStop,
+    Reply,
+)
 from roboface_server.providers.mock import MockASRProvider, MockLLMProvider, MockTTSProvider
 
 FRAME = b"\x01\x02" * 320
@@ -103,3 +111,76 @@ def test_listen_stop_with_no_window_is_still_an_error() -> None:
         device.hello()
         device.send(ListenStop())
         assert isinstance(device.recv(), ErrorFrame)
+
+
+# ---------------------------------------------------------------------------------------
+# The face channel's place in the lifecycle (v2.2)
+# ---------------------------------------------------------------------------------------
+
+
+def test_the_turn_lifecycle_drives_the_face_at_every_stage() -> None:
+    """`emotion{}` is not an extra frame beside the turn -- it *is* the turn, seen from the screen.
+
+    The sequence below is the phase DoD written as an ordering. Each frame answers a question the
+    person is asking by looking at the device: has it heard me, is it working, what does it make of
+    what it is saying, is it done.
+    """
+    _, app = build()
+    with connect(app) as device:
+        device.hello()
+        device.send(ListenStart())
+        for _ in range(4):
+            device.send_binary(FRAME)
+        frames = drain(device)
+
+    assert [f.emotion for f in frames if isinstance(f, EmotionFrame)] == [
+        Emotion.CALM,      # listen_start: it has heard you
+        Emotion.THINKING,  # the model was asked
+        Emotion.JOY,       # the model answered, and said how it felt about the answer
+        Emotion.NEUTRAL,   # the turn is over -- an instruction to relax, applied by the device
+    ]
+
+
+def test_the_replying_face_precedes_the_first_reply_delta() -> None:
+    """The ordering the response schema's field order exists to produce.
+
+    A frame arriving after the first word would be correct and useless: the device would speak the
+    sentence wearing the previous expression and change once it had finished.
+    """
+    _, app = build()
+    with connect(app) as device:
+        device.hello()
+        device.send(ListenStart())
+        for _ in range(4):
+            device.send_binary(FRAME)
+        frames = drain(device)
+
+    kinds = [
+        "speaking-face"
+        if isinstance(f, EmotionFrame) and f.speaking
+        else "delta"
+        if isinstance(f, Reply) and f.text
+        else "other"
+        for f in frames
+    ]
+    assert kinds.index("speaking-face") < kinds.index("delta")
+
+
+def test_the_relax_instruction_precedes_the_terminal_reply() -> None:
+    """`reply{final: true}` is the turn's end marker on the wire, and a device is entitled to stop
+    reading the turn there. A frame sent after it is a frame that may never be looked at."""
+    _, app = build()
+    with connect(app) as device:
+        device.hello()
+        device.send(ListenStart())
+        for _ in range(4):
+            device.send_binary(FRAME)
+        frames = drain(device)
+
+    terminal = next(i for i, f in enumerate(frames) if isinstance(f, Reply) and f.final)
+    relax = next(
+        i
+        for i, f in enumerate(frames)
+        if isinstance(f, EmotionFrame) and f.emotion is Emotion.NEUTRAL
+    )
+    assert relax < terminal
