@@ -393,6 +393,38 @@ void endListening(const char* why = "?") {
     apply(roboface::DeviceEvent::kListenStopped);
 }
 
+//: Turn active listening on or off, and say so. One implementation for the tap and for `/mic`:
+//: two copies of this would drift the first time one of them learned to close an open window.
+void setActiveListening(bool wanted) {
+    if (wanted == active_listening) {
+        Serial.printf("\n[mic] активне слухання вже %s\n", wanted ? "увімкнено" : "вимкнено");
+        return;
+    }
+    active_listening = wanted;
+    if (active_listening) {
+        if (!audio.startMonitoring(&onCapturedFrame)) {
+            Serial.println("[vad] мікрофон не запустився — лишаюсь вимкненим");
+            active_listening = false;
+        } else {
+            endpointer.reset();
+            pending_vad = roboface::VadEvent::kNone;
+        }
+    } else {
+        // A window already open is closed with it: switching the microphone off must mean off,
+        // not "off after this sentence".
+        if (audio.isListening()) endListening("mic");
+        audio.stopMonitoring();
+    }
+    Serial.printf("\n[mic] активне слухання %s\n",
+                  active_listening ? "увімкнено" : "вимкнено");
+    needs_push = true;  // the indicator changes now, not at the next repaint
+}
+
+//: The tap's form: no argument to give, so it flips. `/mic on` and `/mic off` exist for scripts,
+//: which cannot see the indicator and so cannot use a toggle.
+void toggleActiveListening() { setActiveListening(!active_listening); }
+
+
 roboface::LinkState linkStateNow() {
     if (ws.isConnected()) return roboface::LinkState::kConnected;
     if (net.isUp()) return roboface::LinkState::kDegraded;  // link but no socket
@@ -847,6 +879,29 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
         startSelfTest();
         return;
     }
+    // `on` / `off` as well as a bare toggle. **A script must be able to set a state, not flip
+    // one** -- it cannot see the indicator, so a toggle leaves it guessing, and guessing wrong
+    // means every scripted line afterwards is refused with `[busy] not idle`.
+    if (line.text == "/mic on") {
+        setActiveListening(true);
+        return;
+    }
+    if (line.text == "/mic off") {
+        setActiveListening(false);
+        return;
+    }
+    if (line.text == "/mic") {
+        // The same toggle the tap performs, reachable from a script.
+        //
+        // **Added because the device was not testable without it.** A scripted line is refused
+        // unless the device is idle, and with active listening on in a room with any noise at all
+        // the VAD opens windows continuously -- measured at `vad s=107 e=83`, windows lasting ten
+        // seconds. A manual test then sends into `[busy] not idle` every time and reports on
+        // something that never ran. A control a script cannot reach is a control that makes the
+        // device untestable, whatever it does for a person.
+        toggleActiveListening();
+        return;
+    }
     if (line.text == "/debug") {
         debug_line = !debug_line;
         Serial.printf("[debug] corner line %s\n", debug_line ? "on" : "off");
@@ -859,6 +914,7 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
         Serial.println("  /http    plain HTTP GET test");
         Serial.println("  /listen [s] capture and stream for s seconds (default 3)");
         Serial.println("  /loopback [s] record and play back locally — a diagnostic, sends nothing");
+        Serial.println("  /mic [on|off] active listening; bare toggles, on/off sets");
         Serial.println("  /chat-on  show the conversation on the panel");
         Serial.println("  /chat-off return to the face");
         Serial.println("  /help    this");
@@ -1025,24 +1081,7 @@ void loop() {
             // reflex and puts mute on a two-finger tap -- but the reflexes are v2.5 and do not
             // exist yet, and a mute nobody can reach is not a feature. Moves to two fingers when
             // the reflexes land; recorded in DEVICE_UI so the two do not disagree quietly.
-            active_listening = !active_listening;
-            if (active_listening) {
-                if (!audio.startMonitoring(&onCapturedFrame)) {
-                    Serial.println("[vad] мікрофон не запустився — лишаюсь вимкненим");
-                    active_listening = false;
-                } else {
-                    endpointer.reset();
-                    pending_vad = roboface::VadEvent::kNone;
-                }
-            } else {
-                // A window already open is closed with it: switching the microphone off must mean
-                // off, not "off after this sentence".
-                if (audio.isListening()) endListening("mute");
-                audio.stopMonitoring();
-            }
-            Serial.printf("\n[mic] активне слухання %s\n", active_listening ? "увімкнено"
-                                                                              : "вимкнено");
-            needs_push = true;  // the indicator changes now, not at the next repaint
+            toggleActiveListening();
             break;
         }
             // Deliberately nothing on the wire. DEVICE_UI gives press-and-hold to PTT; a tap is

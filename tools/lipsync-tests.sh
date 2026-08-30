@@ -33,6 +33,23 @@ countdown() {
     printf "\r  ▶ %s: готово          \n" "$label"
 }
 
+#: Set active listening. **Not a nicety: without it these tests cannot run at all.**
+#:
+#: A scripted line is refused unless the device is idle, and with active listening on in a room with
+#: any noise the VAD opens windows continuously -- measured at `vad s=107 e=83`, windows lasting ten
+#: seconds each. The board is then essentially never idle, every line is dropped with `[busy] not
+#: idle`, and the operator is asked about something that never happened.
+#:
+#: Tests that drive the device by text switch it off; test 4, which is *about* hearing you, switches
+#: it back on and says so.
+mic() {
+    local wanted="$1"
+    echo "  ▸ активне слухання: $wanted"
+    "$PY" "$ROOT/tools/board.py" --for 5 --log "$LOG" --send "/mic $wanted" --send-after 1 \
+        > /dev/null 2>&1
+    sleep 1
+}
+
 announce() {
     local text="$1"
     echo "  🔊 (на платі) $text"
@@ -116,6 +133,7 @@ test_1() {
     echo "  рухається (це вже доведено), а в тому, чи він рухається **разом зі звуком**."
     echo
 
+    mic off
     announce "Зараз я рахуватиму. Дивіться на мій рот і слухайте одночасно."
     watch_board 1 "синхронність" 50 \
         "Порахуй уголос від одного до двадцяти, повільно і чітко, через кому." \
@@ -132,6 +150,8 @@ test_1() {
         "ТАК — чітко закривався і знову відкривався" \
         "закривався не завжди" \
         "НІ — лишався відкритим усю лічбу"
+
+    mic on
 }
 
 test_2() {
@@ -152,15 +172,18 @@ test_2() {
     # device said it correctly -- in about three seconds, which is not enough time to judge
     # anything about shapes. Length is the whole requirement here; the content only has to carry
     # the vowel/consonant contrast, and any counted list does.
+    mic off
     announce "Зараз я довго рахуватиму. Дивіться, наскільки широко відкривається рот."
     watch_board 2 "різні форми" 55 \
         "Порахуй уголос від одного до двадцяти, розтягуючи кожне число: одиииин, двааа, триии, і так далі." \
         "дивіться на ширину рота"
 
-    ask_choice 2 "Чи відкривався рот на РІЗНУ величину?" \
-        "ТАК — на гучному помітно ширше, ніж на тихому" \
+    ask_choice 2 "Чи відкривався рот на РІЗНУ величину протягом фрази?" \
+        "ТАК — на протяжних числах помітно ширше" \
         "трохи різнилось, але ледве помітно" \
         "НІ — завжди однаково"
+
+    mic on
 }
 
 test_3() {
@@ -173,6 +196,7 @@ test_3() {
     echo "  Дивіться на рот у момент, коли звук обірветься."
     echo
 
+    mic off
     announce "Зараз мене обірвуть посеред фрази. Дивіться на мій рот у цю мить."
 
     { echo; echo "=== ТЕСТ 3 — обрив посеред відповіді — $(date '+%H:%M:%S') ==="; } >> "$LOG"
@@ -197,6 +221,8 @@ test_3() {
         "лишився ВІДКРИТИМ і застиг у тій формі" \
         "продовжував рухатись без звуку" \
         "не помітив(ла)"
+
+    mic on
 }
 
 test_4() {
@@ -208,6 +234,8 @@ test_4() {
     echo "  переконайтесь, що вас почули з першого разу."
     echo
 
+    # This one needs the microphone: hearing you after a reply is what it tests.
+    mic on
     announce "Скажіть мені щось після того, як я договорю. Перевіримо, чи я вас почую."
     watch_board 4 "коло після швидкої анімації" 45 \
         "Розкажи коротко, що таке веселка." \
