@@ -86,7 +86,23 @@ def split_lines(buffer: bytes) -> tuple[list[str], bytes]:
 #: How long `--send-when-idle` waits for the board to settle before sending regardless. Long
 #: enough for a turn triggered by ambient noise to finish -- recognition, model, speech -- and
 #: short enough that a scripted test does not appear to hang.
+#:
+#: **Bounded by the watch's own duration**, which the first version was not: with `--for 12` the
+#: 25-second escape could never fire inside the window, so a board that was busy at second one
+#: simply never received the line and the run ended in silence. A ceiling that outlives the thing
+#: it is a ceiling for is not a ceiling.
 IDLE_WAIT_S = 25.0
+
+#: Leave at least this much of the window for the board to answer in.
+IDLE_WAIT_MARGIN_S = 4.0
+
+
+def idle_deadline(duration: float | None, send_after: float) -> float:
+    """How long to wait for `[state] idle` before sending regardless."""
+    if duration is None:
+        return IDLE_WAIT_S
+    room = duration - send_after - IDLE_WAIT_MARGIN_S
+    return max(0.0, min(IDLE_WAIT_S, room))
 
 
 def watch(
@@ -106,6 +122,7 @@ def watch(
     sent = False
     #: What the board last said it was doing. `--send-when-idle` waits on this.
     board_state = "unknown"
+    wait_limit = idle_deadline(duration, send_after)
     stdin_open = True
     read_failures = 0
 
@@ -216,10 +233,10 @@ def watch(
             # `send_deadline` is the escape: if the board never settles, send anyway and let the
             # test see the `[busy]` line rather than hanging.
             ready = board_state == "idle" or not send_when_idle
-            overdue = time.time() - started >= send_after + IDLE_WAIT_S
+            overdue = time.time() - started >= send_after + wait_limit
             if to_send and not sent and time.time() - started >= send_after and (ready or overdue):
                 if send_when_idle and not ready:
-                    note(f"board still {board_state} after {IDLE_WAIT_S:.0f}s — sending anyway")
+                    note(f"board still {board_state} after {wait_limit:.0f}s — sending anyway")
                 for text in to_send:
                     note(f">>> {text}")
                     try:

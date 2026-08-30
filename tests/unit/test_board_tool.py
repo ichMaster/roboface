@@ -80,3 +80,34 @@ def test_a_multibyte_character_split_across_reads() -> None:
 
     assert first == []
     assert "т" in second[0]
+
+
+# ---------------------------------------------------------------------------------------
+# The idle wait's ceiling (v2.3 manual testing)
+# ---------------------------------------------------------------------------------------
+
+
+def test_the_idle_wait_is_bounded_by_the_window() -> None:
+    """**A ceiling that outlives the thing it is a ceiling for is not a ceiling.**
+
+    The first version used a flat 25 s. With `--for 12` that escape could never fire inside the
+    window, so a board busy at second one never received the line at all and the run ended in
+    silence — with the operator told to watch for something that was never asked for.
+    """
+    assert board.idle_deadline(12.0, 1.0) < 12.0
+    assert board.idle_deadline(12.0, 1.0) == pytest.approx(7.0)
+
+
+def test_a_long_window_keeps_the_full_wait() -> None:
+    assert board.idle_deadline(60.0, 2.0) == board.IDLE_WAIT_S
+
+
+def test_no_duration_means_the_flat_wait() -> None:
+    # `board.py` with no `--for` watches until interrupted; there is no window to fit inside.
+    assert board.idle_deadline(None, 2.0) == board.IDLE_WAIT_S
+
+
+def test_a_window_too_short_to_wait_in_sends_immediately() -> None:
+    # Better to send at once and let the test see `[busy] not idle` than to spend the whole
+    # window waiting and send nothing.
+    assert board.idle_deadline(3.0, 2.0) == 0.0

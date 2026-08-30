@@ -37,7 +37,10 @@ announce() {
     local text="$1"
     echo "  🔊 (на платі) $text"
     echo "[скрипт] інструкція вголос: $text" >> "$LOG"
-    "$PY" "$ROOT/tools/board.py" --for 12 --log "$LOG" \
+    # 25 s, not 12: the window has to hold the wait for the board to go idle *and* the spoken
+    # instruction after it. At 12 the instruction was simply never sent -- the run ended in silence
+    # while the operator was told to watch for something nobody had asked for.
+    "$PY" "$ROOT/tools/board.py" --for 25 --log "$LOG" \
         --send "Повтори дослівно, нічого не додаючи від себе: $text" --send-after 1 --send-when-idle \
         > /dev/null 2>&1
     sleep 1
@@ -145,9 +148,13 @@ test_2() {
     echo "  Дивіться, чи рот відкривається на РІЗНУ величину протягом фрази."
     echo
 
-    announce "Зараз я скажу довгу фразу. Дивіться, наскільки широко відкривається рот."
-    watch_board 2 "різні форми" 45 \
-        "Скажи повільно і виразно: оооо, ааа, потім швидко: тук-тук-тук, потім знову протяжно: уууу." \
+    # **Long enough to look at.** The first material was "оооо, ааа, тук-тук-тук, уууу" and the
+    # device said it correctly -- in about three seconds, which is not enough time to judge
+    # anything about shapes. Length is the whole requirement here; the content only has to carry
+    # the vowel/consonant contrast, and any counted list does.
+    announce "Зараз я довго рахуватиму. Дивіться, наскільки широко відкривається рот."
+    watch_board 2 "різні форми" 55 \
+        "Порахуй уголос від одного до двадцяти, розтягуючи кожне число: одиииин, двааа, триии, і так далі." \
         "дивіться на ширину рота"
 
     ask_choice 2 "Чи відкривався рот на РІЗНУ величину?" \
