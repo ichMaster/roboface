@@ -40,7 +40,13 @@ countdown() {
 # питають плату прямо замість того, щоб просити людину переказати серіал.
 board_line() {
     local test_number="$1" command="$2" pattern="$3"
-    { echo; echo "=== ТЕСТ ${test_number} — ${command} — $(date '+%H:%M:%S') ==="; } >> "$LOG"
+    # **`ЗАПИТ`, not `ТЕСТ`** -- deliberately a different word. `said` scans from the last line
+    # matching `=== ТЕСТ n`, so a query that wrote the same marker moved the scan window past the
+    # very lines it was meant to search. That is exactly what happened: test 4 reported no
+    # approach/leave while the log held 21 of them, because the closing /sensors read had pushed
+    # the window past all of them. A false failure on the one test that cannot be re-run from a
+    # laptop is the worst place to put a harness bug.
+    { echo; echo "=== ЗАПИТ ${test_number} — ${command} — $(date '+%H:%M:%S') ==="; } >> "$LOG"
     "$PY" "$ROOT/tools/board.py" --for 6 --log "$LOG" --send "$command" --send-after 1 2>/dev/null \
         | grep -oE "$pattern" | tail -1
 }
@@ -144,7 +150,7 @@ test_0() {
     echo "  і не могла спрацювати ніколи — при цьому рапортувала успіх. Тепер вона питає"
     echo "  сенсор про його ідентифікатор, і плата каже, що з нього вийшло."
     echo
-    { echo; echo "=== ТЕСТ 0 — сенсори — $(date '+%H:%M:%S') ==="; } >> "$LOG"
+    { echo; echo "=== ЗАПИТ 0 — сенсори — $(date '+%H:%M:%S') ==="; } >> "$LOG"
     local sensors
     sensors=$("$PY" "$ROOT/tools/board.py" --for 8 --log "$LOG" --send "/sensors" --send-after 1 \
                     2>/dev/null | grep -m1 '\[sensors\]')
