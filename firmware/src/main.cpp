@@ -152,9 +152,7 @@ roboface::PushToTalk ptt;
 //: two classifiers over one panel.
 roboface::TouchGestures gestures;
 
-//: How many fingers were on the glass last loop. Mute is the two-finger tap from v2.4, and a count
-//: is the only way to tell it from the single tap that is now affection.
-uint8_t fingers_last = 0;
+
 
 //: When a `/loopback` recording should stop and play back. Zero means none is running.
 uint32_t loopback_until_ms = 0;
@@ -481,6 +479,23 @@ const char* zoneName(roboface::TouchZone zone) {
 //: -- it is the whole point of the first level that it does not wait for a network -- and the
 //: report goes second and may fail without anyone noticing.
 void onTouchGesture(const roboface::TouchResult& touched, uint32_t now_ms) {
+    // **Mute is the button in the top-left corner** -- the one control target on the screen.
+    //
+    // It was the two-finger tap until the board was measured: this panel reports a single touch
+    // point (`peak fingers=1` on every two-fingered tap) whatever the FT6336U's datasheet claims,
+    // so that gesture could never fire. The double tap was tried next and worked -- but it spent a
+    // gesture DEVICE_UI had already given to affection, and every version of "mute is a gesture"
+    // has leaked back into affection somehow. A visible target ends that: it costs no gesture, and
+    // `pure/touch.h` keeps it out of the tap run entirely.
+    //
+    // The click comes first: if this is turning the microphone *off*, clicking afterwards would be
+    // confirming something already done.
+    if (touched.gesture == roboface::TouchGesture::kMicToggle) {
+        audio.click();
+        toggleActiveListening();
+        return;  // control is local UI and is deliberately not reported (DEVICE_UI §Input)
+    }
+
     const roboface::Reflex reflex = reflexFor(touched.gesture);
     if (reflex != roboface::Reflex::kNone) {
         if (touched.gesture == roboface::TouchGesture::kTap ||
@@ -605,8 +620,20 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
             // v0.3 code review, finding 5: a reply outside a turn used to print as though a turn
             // were running, so the text and the device state disagreed. From this version state is
             // on a screen a person is looking at, which is what makes the disagreement matter.
+            //
+            // **`idle` joined the list in v2.4**, because the premise changed. Until then a turn
+            // could only begin with the device -- a held button or a voice -- so a reply arriving
+            // in `idle` was by definition a server confused about state. v2.4 gave the server a
+            // reason to speak first: it answers an `event{}`, and a device stroked while idle gets
+            // a reaction it never asked for.
+            //
+            // The old guard threw exactly those away. Observed on the board: `[touch] poke_eye`,
+            // the server's `surprised 80% speaking`, and then
+            // `[warn] reply outside a turn (idle) — ignored` -- the character appearing to ignore
+            // being poked while the server's log showed the reply it had sent.
             if (state != roboface::DeviceState::kThinking &&
-                state != roboface::DeviceState::kReplying) {
+                state != roboface::DeviceState::kReplying &&
+                state != roboface::DeviceState::kIdle) {
                 Serial.printf("\n[warn] reply outside a turn (%s) — ignored\n",
                               roboface::toString(state));
                 return;
@@ -1185,16 +1212,6 @@ void loop() {
     // **The affection half of the same finger** (v2.4). `PushToTalk` above decides what the touch
     // does to the microphone; `TouchGestures` decides what it meant to the character. Both are fed
     // the same panel state in the same loop, so they cannot disagree about whether a finger is down.
-    // **Mute is the two-finger tap from v2.4**, which is what DEVICE_UI §Input always specified.
-    // Counted on the edge -- a second finger arriving while the first is down -- rather than on
-    // release, because the panel reports the count only while both are present and a release has
-    // already lost it.
-    {
-        const uint8_t fingers = M5.Touch.getCount();
-        if (fingers >= 2 && fingers_last < 2) toggleActiveListening();
-        fingers_last = fingers;
-    }
-
     {
         const auto detail = M5.Touch.getDetail();
         const roboface::TouchSample sample{detail.isPressed(), detail.x, detail.y, now_ms,

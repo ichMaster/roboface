@@ -166,6 +166,18 @@ static void test_more_deltas_while_replying_is_not_a_state_change() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(DeviceState::kReplying), static_cast<int>(result.next));
 }
 
+static void test_the_server_may_speak_first() {
+    // **v2.4 gave the server a reason to start a turn the device never asked for.** It answers an
+    // `event{}` -- a device stroked or shaken while idle gets a spoken reaction nobody requested --
+    // and until this transition existed the reply was thrown away with
+    // `[warn] reply outside a turn (idle) -- ignored`. The guard was right for v1, where every turn
+    // began with a person holding the button; the product changed under it.
+    const Transition result = transition(DeviceState::kIdle, DeviceEvent::kReplyStarted);
+
+    TEST_ASSERT_TRUE(result.accepted);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(DeviceState::kReplying), static_cast<int>(result.next));
+}
+
 static void test_a_turn_cannot_start_unless_idle() {
     for (const auto state : kAllStates) {
         TEST_ASSERT_EQUAL_INT(state == DeviceState::kIdle ? 1 : 0, canStartTurn(state) ? 1 : 0);
@@ -345,6 +357,7 @@ int main(int, char**) {
     RUN_TEST(test_offline_does_not_claim_to_be_idle_before_the_socket_is_back);
     RUN_TEST(test_a_turn_that_says_nothing_still_returns_to_idle);
     RUN_TEST(test_more_deltas_while_replying_is_not_a_state_change);
+    RUN_TEST(test_the_server_may_speak_first);
     RUN_TEST(test_a_turn_cannot_start_unless_idle);
     RUN_TEST(test_backoff_grows_exponentially);
     RUN_TEST(test_backoff_is_capped_at_the_ceiling);

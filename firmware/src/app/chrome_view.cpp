@@ -22,8 +22,6 @@ constexpr int kMeterMaxHeight = 18;
 constexpr int kBatteryWidth = 22;
 constexpr int kBatteryHeight = 11;
 constexpr int kLinkWidth = 16;
-constexpr int kMicWidth = 11;
-constexpr int kMicHeight = 13;
 constexpr int kClusterGap = 8;
 
 uint16_t withAlpha(uint16_t colour565, uint8_t alpha) {
@@ -75,9 +73,11 @@ void ChromeView::draw(M5Canvas* canvas, const roboface::Chrome& chrome, float le
         drawBattery(*canvas, chrome.batteryPercent(), chrome.charging(), 255);
     }
 
-    // No fade and no alpha: DEVICE_UI keeps a muted microphone permanently visible, alongside a
-    // fault and a live camera. Drawn after the others so it is never the thing that gets clipped.
-    if (shown.mic_muted) drawMuted(*canvas);
+    // **Always drawn, in both states, with no fade** -- and it is the one indicator that is also a
+    // control (`pure/layout.h` §kMicButtonLeft). DEVICE_UI already exempted a *muted* microphone
+    // from fading; a button has to go further, because a control that fades out is a control nobody
+    // can find, and mute is reached for in a hurry.
+    drawMicButton(*canvas, shown.mic_muted);
 
     if (shown.band == roboface::BandTenant::kFault) drawFaultLine(*canvas, chrome.fault());
     if (shown.band == roboface::BandTenant::kLevel) drawLevelMeter(*canvas, level);
@@ -100,19 +100,39 @@ void ChromeView::drawLink(M5Canvas& canvas, roboface::LinkState state, uint8_t a
     }
 }
 
-void ChromeView::drawMuted(M5Canvas& canvas) {
-    // A microphone with a slash through it, in the status cluster's leftmost slot -- left of the
-    // battery, which is left of the link. Amber rather than red: this is a state someone chose,
-    // not a fault, and the colour should not say otherwise.
-    const int x = roboface::kStatusClusterRight - kLinkWidth - kClusterGap - kBatteryWidth -
-                  kClusterGap - kMicWidth;
-    const int y = roboface::kStatusClusterTop;
+void ChromeView::drawMicButton(M5Canvas& canvas, bool muted) {
+    // A microphone glyph in the top-left corner: capsule, stand, base -- plus a slash when muted.
+    //
+    // **Amber when muted, the indicator cyan when live.** Not red either way: mute is a state
+    // someone chose, not a fault, and this repo spends red on `kFaultColour` alone. The colour is
+    // the only thing that changes between the two states besides the slash, so the button reads at
+    // a glance without reading as an alarm.
+    const int x = roboface::kMicButtonLeft;
+    const int y = roboface::kMicButtonTop;
+    const int w = roboface::kMicButtonWidth;
+    const int h = roboface::kMicButtonHeight;
+    const uint16_t colour = muted ? kAmber : kIndicatorColour;
 
-    // The capsule, then the stand, then the slash.
-    canvas.fillRoundRect(x + 3, y, kMicWidth - 6, kMicHeight - 5, (kMicWidth - 6) / 2, kAmber);
-    canvas.drawFastHLine(x + 1, y + kMicHeight - 4, kMicWidth - 2, kAmber);
-    canvas.drawFastVLine(x + kMicWidth / 2, y + kMicHeight - 4, 3, kAmber);
-    canvas.drawLine(x, y + kMicHeight, x + kMicWidth, y - 1, kAmber);
+    static_assert(roboface::clearOfFace(0, 0, roboface::kMicButtonHitWidth,
+                                        roboface::kMicButtonHitHeight),
+                  "the microphone button must not overlap the face");
+
+    // The capsule -- filled when live, outlined when muted, so the two differ in weight as well as
+    // in hue. A person who cannot pick cyan from amber can still tell a solid shape from a hollow.
+    const int capsule_w = w - 6;
+    const int capsule_h = h - 6;
+    if (muted) {
+        canvas.drawRoundRect(x + 3, y, capsule_w, capsule_h, capsule_w / 2, colour);
+    } else {
+        canvas.fillRoundRect(x + 3, y, capsule_w, capsule_h, capsule_w / 2, colour);
+    }
+
+    // The cradle under it, then the stand down to the base.
+    canvas.drawFastHLine(x + 1, y + h - 5, w - 2, colour);
+    canvas.drawFastVLine(x + w / 2, y + h - 5, 4, colour);
+    canvas.drawFastHLine(x + w / 2 - 3, y + h - 1, 7, colour);
+
+    if (muted) canvas.drawLine(x, y + h, x + w, y - 1, kAmber);
 }
 
 void ChromeView::drawBattery(M5Canvas& canvas, int percent, bool charging, uint8_t alpha) {

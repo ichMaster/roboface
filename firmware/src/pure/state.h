@@ -108,6 +108,16 @@ inline constexpr Transition transition(DeviceState current, DeviceEvent event) {
 
         case DeviceState::kIdle:
             if (event == DeviceEvent::kTurnStarted) return accepted(DeviceState::kThinking);
+            // **The server may now speak first** (v2.4). Until this phase a turn could only begin
+            // with the device -- a held button or a voice -- so a `reply` arriving in `idle` was
+            // by definition a server confused about state, and was refused.
+            //
+            // v2.4 gave the server a reason to start one: it answers an `event{}`, and a device
+            // stroked while idle gets a spoken reaction it never asked for. The old guard threw
+            // exactly those away, with `[warn] reply outside a turn (idle) — ignored`, and the
+            // character appeared to ignore being touched while the server logged a reply it had
+            // sent.
+            if (event == DeviceEvent::kReplyStarted) return accepted(DeviceState::kReplying);
             if (event == DeviceEvent::kListenStarted) return accepted(DeviceState::kListening);
             if (event == DeviceEvent::kSocketLost) return accepted(DeviceState::kOffline);
             return rejected(current);

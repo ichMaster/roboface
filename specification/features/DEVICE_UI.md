@@ -57,12 +57,32 @@ The face is the button. Gestures split into two families: **affection**, which t
 | **Hold past 1.2 s in silence** | anywhere | control | the hold **becomes the skin carousel**: dots appear, slide left/right to choose, release to confirm |
 | Swipe down from the top edge | — | control | the **status sheet** (below) |
 | Swipe up / tap outside | — | control | dismiss the sheet |
-| Two-finger tap | — | control | mute / unmute the microphone |
+| Tap the mic button | top-left corner | control | mute / unmute the microphone, with an audible click |
 
-> **Landed in v2.4.** The single tap is the affection reflex and mute is the two-finger tap, as
-> this table always said. The stop-gap that put mute on the single tap lasted from v1.4 to v2.4 and
-> is recorded here rather than quietly removed: a control nobody can reach is not a feature, and a
-> table that disagreed with the device for three phases is worth being able to see.
+> **Mute is a button, not a gesture — and it took three attempts to get there.** This table said
+> "two-finger tap" from the start and v2.4 implemented it, but on the board it never fired: the
+> CoreS3's panel reports **one** touch point, `peak fingers=1` on every two-fingered tap, whatever
+> the FT6336U's datasheet says the controller can do. The double tap was tried next and worked —
+> but it spent a gesture this same table had already given to affection, so *"repeated taps build
+> joy"* would have had to mean something else.
+>
+> That is the pattern worth recording: **every version of "mute is a gesture" collided with
+> affection.** The two-finger tap leaked a tickle (v2.4 review #2), the single tap was mute's
+> stop-gap home from v1.4 and blocked the tickle entirely, and the double tap would have taken the
+> joy ladder. A control sharing a vocabulary with the character keeps finding its way back into it.
+>
+> So mute gets its own target instead: a microphone glyph in the **top-left corner** of the upper
+> band, drawn in both states — cyan and filled when live, amber, hollow and slashed when muted. The
+> hit area is 60×28, wider than the glyph, because a corner control is aimed at rather than looked
+> at. It is the one place on this screen where a control is visible, and it earns that by being the
+> control reached for in a hurry.
+>
+> It **never fades**, which extends the rule this document already had for a muted microphone: a
+> control that fades out is a control nobody can find. And `pure/touch.h` keeps the button out of
+> the tap run entirely — it is not affection's counter's business that someone pressed a button.
+>
+> Tapping it **clicks** — two short rising notes — because the person cannot otherwise tell the
+> press landed without looking. The click never plays over a reply.
 >
 > `/mic on|off` over serial does the same thing and stays — it is what makes the device scriptable,
 > and every manual test since v2.3 depends on it.

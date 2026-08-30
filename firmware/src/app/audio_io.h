@@ -171,6 +171,17 @@ class AudioIo {
     void abort();
 
     bool isSpeaking() const { return speaking_; }
+
+    //: A short click, for a **control** gesture the person cannot otherwise tell landed.
+    //:
+    //: Goes through here rather than calling `M5.Speaker` directly, because the speaker shares one
+    //: I2S bus with the microphone and this class owns that. A tone played around it would meet a
+    //: port still configured for capture -- `Speaker.begin()` reports success and produces silence,
+    //: which is the most misleading pair of symptoms in this subsystem and cost v1 an evening.
+    //:
+    //: **Refused while the device is speaking.** A reply must never be interrupted by feedback
+    //: about a button, and the reflex layer follows the same rule for the same reason.
+    void click();
     //: Only while actually speaking, and only with a backlog to fill. An unattached ring reports
     //: zero free, so an unguarded version throttled the socket **permanently** -- the device never
     //: reached the server at all, which looks like a network fault rather than an audio one.

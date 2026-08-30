@@ -23,6 +23,32 @@ inline constexpr int kFaceBottom = kFaceTop + kFaceHeight;           // 212
 // The chrome bands: everything outside the face.
 inline constexpr int kBandHeight = kFaceTop;  // 28, top and bottom alike
 
+// The microphone button: the one **control** on the screen, top-left of the upper band.
+//
+// **Why a button at all**, when every other control here is a gesture: a gesture has to be known
+// before it can be used, and mute is the one control a person reaches for in a hurry -- mid-sentence,
+// with someone else in the room. v2.4 put it on the two-finger tap, which this panel cannot detect
+// (it reports a single point); moving it to the double tap worked but spent a gesture that DEVICE_UI
+// had already given to affection. A target you can see costs no gesture and needs no explaining.
+//
+// **The hit area is wider than the glyph, deliberately.** The drawn icon is 22 px in a 28 px band,
+// which is small for a fingertip (~24 px). Extending the *target* to 60x28 makes it reachable
+// without making the icon shout; the whole strip is above `kFaceTop`, so it takes nothing from the
+// face. Missing a mute button is worse than hitting it slightly off-centre.
+inline constexpr int kMicButtonLeft = 6;
+inline constexpr int kMicButtonTop = 7;
+inline constexpr int kMicButtonWidth = 14;
+inline constexpr int kMicButtonHeight = 15;
+
+//: The touch target, which starts at the very corner: a finger aiming for a corner control lands
+//: short as often as long, and there is nothing to the left of it to hit by mistake.
+inline constexpr int kMicButtonHitWidth = 60;
+inline constexpr int kMicButtonHitHeight = kBandHeight;
+
+inline constexpr bool inMicButton(int x, int y) {
+    return x >= 0 && x < kMicButtonHitWidth && y >= 0 && y < kMicButtonHitHeight;
+}
+
 // Where the status cluster sits (top-right, 12 px glyphs).
 inline constexpr int kGlyphSize = 12;
 inline constexpr int kStatusClusterRight = kScreenWidth - 8;

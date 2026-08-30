@@ -44,9 +44,83 @@ std::vector<roboface::TouchResult> replay(TouchGestures& gestures,
 
 static void test_outside_the_face_is_not_affection() {
     // The outer 28 px bands are chrome. A touch there belongs to the UI, not to the character.
-    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kOutside), static_cast<int>(roboface::zoneAt(5, 5)));
+    // (5,5) used to be here and is now the microphone button -- see the zone test below.
     TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kOutside), static_cast<int>(roboface::zoneAt(160, 5)));
     TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kOutside), static_cast<int>(roboface::zoneAt(315, 120)));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kOutside), static_cast<int>(roboface::zoneAt(5, 230)));
+}
+
+static void test_the_microphone_button_owns_the_top_left_corner() {
+    // The corner itself, the glyph, and the right-hand edge of the target.
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kMicButton), static_cast<int>(roboface::zoneAt(0, 0)));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kMicButton), static_cast<int>(roboface::zoneAt(5, 5)));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kMicButton),
+                          static_cast<int>(roboface::zoneAt(roboface::kMicButtonHitWidth - 1, 0)));
+
+    // And it stops. A target that crept past its own width would eat the top band.
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kOutside),
+                          static_cast<int>(roboface::zoneAt(roboface::kMicButtonHitWidth, 5)));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kOutside),
+                          static_cast<int>(roboface::zoneAt(5, roboface::kMicButtonHitHeight)));
+}
+
+static void test_the_button_never_takes_a_pixel_from_the_face() {
+    // **The property, not an example.** The whole target is checked against the face rectangle, so
+    // widening the button later cannot silently start stealing touches from the character.
+    TEST_ASSERT_TRUE(roboface::clearOfFace(0, 0, roboface::kMicButtonHitWidth,
+                                           roboface::kMicButtonHitHeight));
+    for (int x = 0; x < roboface::kMicButtonHitWidth; ++x) {
+        for (int y = 0; y < roboface::kMicButtonHitHeight; ++y) {
+            TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kMicButton),
+                                  static_cast<int>(roboface::zoneAt(x, y)));
+        }
+    }
+}
+
+static void test_tapping_the_button_is_the_toggle_and_not_affection() {
+    roboface::TouchGestures gestures;
+    gestures.feed({true, 10, 10, 1000});
+    const auto result = gestures.feed({false, 10, 10, 1080});
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kMicToggle), static_cast<int>(result.gesture));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kMicButton), static_cast<int>(result.zone));
+}
+
+static void test_the_button_does_not_feed_the_affection_run() {
+    // **The regression this file exists for.** Mute was the two-finger tap and then the double tap;
+    // both leaked into affection -- the character was delighted by being silenced. A control that
+    // shares a counter with affection will always find its way back into it, so the counter must
+    // not see the button at all.
+    roboface::TouchGestures gestures;
+    gestures.feed({true, 10, 10, 1000});
+    gestures.feed({false, 10, 10, 1050});   // the button
+
+    gestures.feed({true, kCheekX, kCheekY, 2000});  // then a genuine tap on the face, long after
+    const auto face = gestures.feed({false, kCheekX, kCheekY, 2050});
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kTap), static_cast<int>(face.gesture));
+    TEST_ASSERT_EQUAL_UINT8(1, face.count);  // not 2: the button was never a tap
+}
+
+static void test_sliding_off_the_button_cancels_it() {
+    // The only way to change your mind after touching a control that mutes you.
+    roboface::TouchGestures gestures;
+    gestures.feed({true, 10, 10, 1000});
+    gestures.feed({true, kCheekX, kCheekY, 1100});
+    const auto result = gestures.feed({false, kCheekX, kCheekY, 1150});
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kNone), static_cast<int>(result.gesture));
+}
+
+static void test_the_button_is_never_a_stroke_or_a_carousel_hold() {
+    roboface::TouchGestures gestures;
+    gestures.feed({true, 10, 10, 1000});
+    for (uint32_t t = 1050; t <= 3000; t += 50) {
+        const auto held = gestures.feed({true, 10, 10, t});
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kNone), static_cast<int>(held.gesture));
+    }
+    const auto released = gestures.feed({false, 10, 10, 3050});
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kNone), static_cast<int>(released.gesture));
 }
 
 static void test_an_eye_is_where_the_renderer_draws_one() {
@@ -377,6 +451,12 @@ static void test_one_finger_is_still_affection() {
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_outside_the_face_is_not_affection);
+    RUN_TEST(test_the_microphone_button_owns_the_top_left_corner);
+    RUN_TEST(test_the_button_never_takes_a_pixel_from_the_face);
+    RUN_TEST(test_tapping_the_button_is_the_toggle_and_not_affection);
+    RUN_TEST(test_the_button_does_not_feed_the_affection_run);
+    RUN_TEST(test_sliding_off_the_button_cancels_it);
+    RUN_TEST(test_the_button_is_never_a_stroke_or_a_carousel_hold);
     RUN_TEST(test_an_eye_is_where_the_renderer_draws_one);
     RUN_TEST(test_moving_the_eyes_moves_the_poke_zone);
     RUN_TEST(test_forehead_and_cheek_split_at_the_eyes);

@@ -27,6 +27,7 @@ namespace roboface {
 //: than to the character -- a touch there is not affection.
 enum class TouchZone : uint8_t {
     kOutside,
+    kMicButton,  // the one control target on the screen: top-left of the upper band
     kForehead,
     kEye,
     kCheek,
@@ -44,6 +45,7 @@ enum class TouchGesture : uint8_t {
     kPokeEye,     // a press that landed on an eye
     kLongPress,   // held past the PTT threshold -- control, not affection
     kHeldSilent,  // held past 1.2 s with no speech: v2.6 turns this into the carousel
+    kMicToggle,   // the microphone button was tapped -- control, not affection
     kCount,
 };
 
@@ -56,6 +58,7 @@ inline constexpr const char* toString(TouchGesture gesture) {
         case TouchGesture::kPokeEye: return "poke_eye";
         case TouchGesture::kLongPress: return "long_press";
         case TouchGesture::kHeldSilent: return "held_silent";
+        case TouchGesture::kMicToggle: return "mic_toggle";
         case TouchGesture::kCount: break;
     }
     return "none";
@@ -99,6 +102,11 @@ inline constexpr uint32_t kCarouselHoldMs = 1200;
 //: ones `layout.h` draws, widened by a margin because a finger is far larger than a pupil and a poke
 //: that required pixel accuracy would simply never fire.
 inline constexpr TouchZone zoneAt(int x, int y, const FaceGeometry& geometry = {}) {
+    // Checked first, and it cannot overlap the face: `inMicButton` lives entirely above `kFaceTop`.
+    // The order still matters for readability -- a reader should not have to prove the two are
+    // disjoint to know which one wins.
+    if (inMicButton(x, y)) return TouchZone::kMicButton;
+
     if (x < kFaceLeft || x >= kFaceRight || y < kFaceTop || y >= kFaceBottom) {
         return TouchZone::kOutside;
     }
@@ -128,11 +136,15 @@ struct TouchSample {
     int x = 0;
     int y = 0;
     uint32_t at_ms = 0;
-    //: How many fingers are on the glass. **More than one is control, never affection**
-    //: (code review #2): DEVICE_UI §Input puts mute on the two-finger tap, and the panel reports
-    //: only the first touch through `getDetail()` -- so without this a two-finger mute also read as
-    //: an ordinary tap, tickled the face, and told the server it had been petted. The character was
-    //: delighted by being silenced.
+    //: How many fingers are on the glass. **More than one is never affection.**
+    //:
+    //: Mute moved off the two-finger tap in v2.4 -- measured on the board, the CoreS3's panel
+    //: reports a single point (`peak fingers=1` on every two-fingered tap) whatever the FT6336U's
+    //: datasheet says it can do. So nothing acts on two fingers any more.
+    //:
+    //: This guard stays anyway, and deliberately: a second finger landing is still not a caress,
+    //: and on the day a board *does* report two points the character should not be delighted by
+    //: whatever the person was actually doing.
     uint8_t fingers = 1;
 };
 
@@ -181,6 +193,18 @@ class TouchGestures {
             return result;
         }
 
+        if (sample.down && held_ && zone_ == TouchZone::kMicButton) {
+            // **A button is a button.** A press that began on the control produces one outcome or
+            // none -- never a stroke, never the carousel hold. Sliding off it far enough cancels,
+            // which is the ordinary button idiom and the only way to change your mind after
+            // touching a control that mutes you.
+            const int dx = sample.x - start_x_;
+            const int dy = sample.y - start_y_;
+            const int distance = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
+            if (distance >= kStrokeTravelPx) reported_hold_ = true;  // cancelled
+            return result;
+        }
+
         if (sample.down && held_) {
             const int dx = sample.x - start_x_;
             const int dy = sample.y - start_y_;
@@ -213,7 +237,22 @@ class TouchGestures {
             held_ = false;
             const uint32_t duration = sample.at_ms - pressed_at_ms_;
 
-            if (reported_hold_) return result;  // already spoken for: a stroke or the carousel hold
+            if (reported_hold_) return result;  // already spoken for: a stroke, the hold, or a cancel
+
+            if (zone_ == TouchZone::kMicButton) {
+                // Control, and it deliberately does **not** join the tap run: `taps_` is affection's
+                // counter, and a person reaching for mute has not petted anything. The refractory
+                // still applies -- a panel that reports one release as two must not toggle twice.
+                if (duration >= kPttHoldMs) return result;
+                if (reported_at_ms_ != 0 && sample.at_ms - reported_at_ms_ < kGestureRefractoryMs) {
+                    return result;
+                }
+                reported_at_ms_ = sample.at_ms;
+                result.gesture = TouchGesture::kMicToggle;
+                result.zone = zone_;
+                result.count = 1;
+                return result;
+            }
 
             if (duration >= kPttHoldMs) {
                 result.gesture = TouchGesture::kLongPress;

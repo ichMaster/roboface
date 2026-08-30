@@ -197,6 +197,36 @@ void AudioIo::playBacklog() {
     draining_ = true;  // there is no `tts_end` coming; play out and release
 }
 
+void AudioIo::click() {
+    // Never over a reply. The gesture is worth confirming; it is not worth talking over.
+    if (speaking_) return;
+
+    const bool was_monitoring = monitoring_;
+
+    // The same teardown `speak` does, and for the same reason -- see the note there.
+    if (M5.Mic.isEnabled()) M5.Mic.end();
+    M5.Speaker.end();
+    delay(20);
+    if (M5.Speaker.begin()) {
+        M5.Speaker.setVolume(volume_);
+        // Two short notes rather than one: a single beep at this length is easy to mistake for a
+        // system sound, and a rising pair reads as "acknowledged" the way a click does.
+        M5.Speaker.tone(2200, 40);
+        delay(45);
+        M5.Speaker.tone(2900, 40);
+        delay(60);
+    }
+    M5.Speaker.end();
+    delay(20);
+
+    // Give the microphone back if it had the bus. Not doing so would mean the device stopped
+    // listening because someone acknowledged a gesture, which is a strange way to lose a
+    // conversation.
+    if (was_monitoring && observer_ != nullptr) {
+        monitoring_ = M5.Mic.begin();
+    }
+}
+
 void AudioIo::tick(uint32_t now_ms) {
     if (listening_ || monitoring_) {
         // A frame is ready when the recorder has stopped filling it. Sending happens here, in the
