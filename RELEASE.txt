@@ -1,3 +1,28 @@
+Version 2.6.0 (2026-08-30)
+---------------------------
+- Five faces, one contract: stackchan plus ghost, flame, jellyfish and cloud,
+  all rendering the same EmotionFrame. A skin is a struct -- anchors, colours,
+  a body and an element -- so there is nowhere to put renderer logic.
+- The procedural face is a manifest like the others. Moving the known-good
+  face is what made "adding a skin requires no renderer code change"
+  testable rather than aspirational, against a face whose correct appearance
+  was already known.
+- Every per-emotion table is sized by the emotion enum, so adding an emotion
+  breaks every skin at once instead of leaving the newest one undrawn in the
+  five places nobody looks.
+- config_updated{face_set} switches the face from the server, and hello
+  reports which one the device wears. Refused rather than coerced on both
+  sides: an unknown name quietly ignored is indistinguishable from a switch
+  that worked.
+- The carousel: a hold that passes 1.2 s without speech opens a dot strip,
+  sliding previews, releasing confirms, releasing outside cancels. It is the
+  first consumer of a gesture the firmware has produced since v2.4.
+- Bottom band: carousel > fault > toast > level meter.
+- A missing or broken pack degrades to the procedural face with a named
+  reason, and every pack reports itself at boot -- healthy or not. Packs are
+  compiled-in manifests rather than files; ARCHITECTURE records why.
+- v2 is complete: the living face.
+
 Version 2.5.0 (2026-08-30)
 ---------------------------
 - Both microphones. The Core S3 has two on an ES7210 and the device used one
