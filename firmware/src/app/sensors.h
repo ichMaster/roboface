@@ -76,10 +76,27 @@ constexpr uint32_t kProximityIntervalMs = 50;
 
 class Proximity {
   public:
-    //: Start the sensor. Returns false if the board has none -- a variant without it is a device
-    //: that does not wake to a hand, not a device that fails to boot.
+    //: Start the sensor, and **prove it is there** (code review #1).
+    //:
+    //: Two things were wrong and they compounded. The reads went to `Ex_I2C` -- Port A, the external
+    //: connector -- while the LTR-553 sits on the **internal** bus beside the AXP2101, the touch
+    //: controller and the IMU. So every read failed, the count was always zero, and no approach was
+    //: ever detected.
+    //:
+    //: And `begin()` returned whatever the bus's own `begin()` returned, which succeeds whatever is
+    //: connected. So the "not present" line never printed and the boot log said everything was
+    //: fine: a feature that silently did nothing, on a board that reported itself healthy.
+    //:
+    //: Asking the sensor for its part ID is the difference between checking that a bus exists and
+    //: checking that a sensor answers.
     bool begin() {
-        ready_ = M5.Ex_I2C.begin();
+        if (!M5.In_I2C.begin()) return false;
+
+        constexpr uint8_t kPartIdRegister = 0x86;
+        constexpr uint8_t kExpectedPartId = 0x92;
+        uint8_t part_id = 0;
+        ready_ = M5.In_I2C.readRegister(kAddress, kPartIdRegister, &part_id, 1, kI2cHz) &&
+                 part_id == kExpectedPartId;
         return ready_;
     }
 
@@ -98,14 +115,17 @@ class Proximity {
     //: The LTR-553's proximity register, read over the shared I2C bus. A count, not a distance --
     //: see the note in `pure/proximity.h` about why the thresholds are stated in counts.
     uint16_t read() {
-        constexpr uint8_t kAddress = 0x23;
         constexpr uint8_t kProximityDataRegister = 0x8D;
         uint8_t bytes[2] = {0, 0};
-        if (!M5.Ex_I2C.readRegister(kAddress, kProximityDataRegister, bytes, 2, 100000)) {
+        if (!M5.In_I2C.readRegister(kAddress, kProximityDataRegister, bytes, 2, kI2cHz)) {
             return 0;
         }
         return static_cast<uint16_t>(bytes[0] | ((bytes[1] & 0x07) << 8));
     }
+
+    //: The LTR-553's address on the internal bus, and the speed to talk to it at.
+    static constexpr uint8_t kAddress = 0x23;
+    static constexpr uint32_t kI2cHz = 100000;
 
     roboface::ProximityDetector detector_;
     bool ready_ = false;

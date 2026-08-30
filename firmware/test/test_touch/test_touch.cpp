@@ -276,6 +276,51 @@ static void test_reset_drops_a_run_of_taps() {
     TEST_ASSERT_EQUAL_INT(1, after[0].count);
 }
 
+// ---------------------------------------------------------------------------------------
+// Control is not affection (code review #2, #3)
+// ---------------------------------------------------------------------------------------
+
+static void test_two_fingers_are_not_affection() {
+    // **The gesture that muted the microphone and delighted the character.** The panel reports only
+    // the first touch through `getDetail()`, so a two-finger mute also read as an ordinary tap:
+    // the face tickled and the server was told it had been petted.
+    //
+    // DEVICE_UI §Input separates affection from control and says control is local UI, deliberately
+    // not reported. This is that line, enforced.
+    TouchGestures gestures;
+    const auto out = replay(gestures, {
+        {true,  kCheekX, kCheekY, 1000, 2},
+        {false, kCheekX, kCheekY, 1060, 2},
+    });
+
+    TEST_ASSERT_EQUAL_INT(0, static_cast<int>(out.size()));
+}
+
+static void test_a_second_finger_cancels_a_gesture_in_progress() {
+    // Not merely ignored: a gesture half-formed when the control gesture began must not complete
+    // after it ends, or muting would be followed by a stray tap.
+    TouchGestures gestures;
+    const auto out = replay(gestures, {
+        {true,  kCheekX, kCheekY, 1000, 1},
+        {true,  kCheekX, kCheekY, 1030, 2},
+        {false, kCheekX, kCheekY, 1080, 1},
+    });
+
+    TEST_ASSERT_EQUAL_INT(0, static_cast<int>(out.size()));
+}
+
+static void test_one_finger_is_still_affection() {
+    // The other half: the default must not have become "ignore everything".
+    TouchGestures gestures;
+    const auto out = replay(gestures, {
+        {true,  kCheekX, kCheekY, 1000, 1},
+        {false, kCheekX, kCheekY, 1060, 1},
+    });
+
+    TEST_ASSERT_EQUAL_INT(1, static_cast<int>(out.size()));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kTap), static_cast<int>(out[0].gesture));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_outside_the_face_is_not_affection);
@@ -295,5 +340,8 @@ int main(int, char**) {
     RUN_TEST(test_speaking_keeps_a_long_hold_a_ptt_hold);
     RUN_TEST(test_a_hold_reports_at_most_one_thing);
     RUN_TEST(test_reset_drops_a_run_of_taps);
+    RUN_TEST(test_two_fingers_are_not_affection);
+    RUN_TEST(test_a_second_finger_cancels_a_gesture_in_progress);
+    RUN_TEST(test_one_finger_is_still_affection);
     return UNITY_END();
 }

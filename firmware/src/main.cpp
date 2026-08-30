@@ -293,6 +293,11 @@ void apply(roboface::DeviceEvent event) {
     if (!result.accepted) return;
 
     state = result.next;
+    // **A run of taps does not survive a state change** (code review #3). `TouchGestures::reset`
+    // was written for exactly this and nothing called it: a tap just before a short reply and one
+    // just after would merge into a multi-tap the person never performed, and the server would be
+    // told so.
+    gestures.reset();
     Serial.printf("\n[state] %s\n", roboface::toString(state));
     render();
     needs_push = true;
@@ -1192,7 +1197,8 @@ void loop() {
 
     {
         const auto detail = M5.Touch.getDetail();
-        const roboface::TouchSample sample{detail.isPressed(), detail.x, detail.y, now_ms};
+        const roboface::TouchSample sample{detail.isPressed(), detail.x, detail.y, now_ms,
+                                           M5.Touch.getCount()};
         const roboface::TouchResult touched = gestures.feed(sample, audio.isListening());
         if (touched.gesture != roboface::TouchGesture::kNone) {
             onTouchGesture(touched, now_ms);

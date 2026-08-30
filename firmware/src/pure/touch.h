@@ -116,6 +116,12 @@ struct TouchSample {
     int x = 0;
     int y = 0;
     uint32_t at_ms = 0;
+    //: How many fingers are on the glass. **More than one is control, never affection**
+    //: (code review #2): DEVICE_UI §Input puts mute on the two-finger tap, and the panel reports
+    //: only the first touch through `getDetail()` -- so without this a two-finger mute also read as
+    //: an ordinary tap, tickled the face, and told the server it had been petted. The character was
+    //: delighted by being silenced.
+    uint8_t fingers = 1;
 };
 
 //: What the classifier decided this sample, and where.
@@ -141,6 +147,16 @@ class TouchGestures {
     //: at any point during a hold means the person is talking, not browsing.
     TouchResult feed(const TouchSample& sample, bool speech_detected = false) {
         TouchResult result;
+
+        // A second finger cancels whatever the first was becoming. Not "is ignored": a gesture
+        // half-formed when the control gesture began must not complete after it ends, or muting
+        // would be followed by a stray tap.
+        if (sample.down && sample.fingers > 1) {
+            held_ = false;
+            reported_hold_ = true;
+            taps_ = 0;
+            return result;
+        }
 
         if (sample.down && !held_) {
             held_ = true;
