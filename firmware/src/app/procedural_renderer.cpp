@@ -165,6 +165,18 @@ void ProceduralRenderer::setGazeReflex(bool active, float x) {
     animating_ = true;
 }
 
+void ProceduralRenderer::setGazeVoice(bool present, float x) {
+    // **Below a reflex, above the server.** A hand reaching toward the device is a nearer and more
+    // specific claim on attention than a voice across the room; and this beats the server's `gaze`
+    // because it is the same fact without the round trip -- the frame that comes back is a
+    // confirmation of something the face already did.
+    const float clamped = x < -1.0f ? -1.0f : (x > 1.0f ? 1.0f : x);
+    if (present == voice_gaze_ && clamped == voice_gaze_x_) return;
+    voice_gaze_ = present;
+    voice_gaze_x_ = clamped;
+    animating_ = true;
+}
+
 void ProceduralRenderer::setPlaying(bool playing) {
     const bool was_playing = playing_;
     playing_ = playing;
@@ -258,10 +270,16 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
     geometry.eye_offset_y += static_cast<int>(idle.gaze_y);
     geometry.centre_x += static_cast<int>(idle.gaze_x);
 
-    // The gaze, in the documented order of authority: a local reflex if one is active, otherwise
-    // whatever the server last asked for. The idle drift above is a third source and the smallest
-    // -- it is a wander, not a look, and it composes with either.
-    const float gaze_x = reflex_gaze_ ? reflex_gaze_x_ : server_gaze_x_;
+    // The gaze, in the documented order of authority (ARCHITECTURE §Gaze): a local reflex, then
+    // the voice direction, then whatever the server last asked for. The idle drift above is the
+    // fourth and smallest -- a wander, not a look, and it composes with any of them.
+    //
+    // **Absence is what makes the order work.** Each source is skipped when it has no opinion
+    // rather than contributing a zero, so a speaker sitting directly in front of the device leaves
+    // the face to its drift instead of pinning the eyes forward.
+    const float gaze_x = reflex_gaze_  ? reflex_gaze_x_
+                         : voice_gaze_ ? voice_gaze_x_
+                                       : server_gaze_x_;
     geometry.centre_x += static_cast<int>(gaze_x * static_cast<float>(geometry.max_tilt_px));
 
     // Skip the compose when nothing moved. **Narrower than it sounds**: the breath is a continuous

@@ -58,7 +58,9 @@ from roboface_server.protocol import (
     ErrorCode,
     ErrorFrame,
     Event,
+    EventType,
     Frame,
+    Gaze,
     Hello,
     ListenStart,
     ListenStop,
@@ -176,6 +178,24 @@ def echo_deltas(text: str) -> tuple[str, ...]:
     return tuple(part + " " if index < len(parts) - 1 else part for index, part in enumerate(parts))
 
 
+def _gaze_from_event(event: Event) -> Gaze | None:
+    """The `x` a `voice`/`direction` event carries, or `None` when it carries nothing usable.
+
+    **Coerced, not trusted.** `meta` is free-form by contract, so this is arbitrary JSON off the
+    network: a string, a list, a NaN, or absent entirely. Anything that cannot become a number
+    becomes "no opinion" rather than a default of zero -- which would be the server asserting a
+    centred stare the device never claimed, and holding the face rigidly forward against its own
+    idle drift.
+    """
+    raw = event.meta.get("x")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    value = float(raw)
+    if value != value:  # NaN: the one float that fails every comparison, including with itself
+        return None
+    return Gaze(x=max(-1.0, min(1.0, value)), y=0.0)
+
+
 class ConnectionPhase(StrEnum):
     """Where a connection is in its life. Every inbound frame is judged against it."""
 
@@ -190,6 +210,14 @@ class Connection:
 
     session_id: str
     phase: ConnectionPhase = ConnectionPhase.AWAITING_HELLO
+    #: Where the device last heard a voice, or `None` when it has no opinion (v2.5).
+    #:
+    #: **Per connection, not global**, and that is not pedantry: two devices in one room hear the
+    #: same person from different angles, and a shared value would make each look where the other
+    #: is standing. `None` is the resting state and stays it -- the device's own idle drift owns the
+    #: face when nobody knows anything, and a centred gaze from here would override that drift with
+    #: a rigid stare.
+    gaze: Gaze | None = None
     device_id: str | None = None
     caps: frozenset[Capability] = frozenset()
 
@@ -813,6 +841,15 @@ class Router:
         orchestrator, the same emotion frame, the same TTS. A second path to speech would be a
         second place for every latency, cancellation and history rule to be got wrong.
         """
+        # **Where a voice is changes where the face looks, and nothing else.** It is not a mood
+        # and not a remark, so it never reaches `reaction_to` -- it is remembered on the connection
+        # and rides out on the next `EmotionFrame` the server has reason to send. Sending a frame
+        # of its own per direction update would put a face change on the wire every time someone
+        # shifted in their chair.
+        if event.type is EventType.VOICE:
+            conn.gaze = _gaze_from_event(event)
+            return
+
         face, prompt = reaction_to(str(event.type), event.kind)
 
         if face is not None:
@@ -822,6 +859,7 @@ class Router:
                     emotion=face,
                     intensity=BASE_INTENSITY[TurnState.IDLE] + 0.35,
                     accent_color=ACCENTS[face],
+                    gaze=conn.gaze,
                     ttl_ms=TTL_MS[TurnState.IDLE],
                 ),
             )

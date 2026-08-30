@@ -55,6 +55,10 @@ class Ws {
                    const char* meta_key = nullptr, const char* meta_value = nullptr,
                    const char* count_key = nullptr, int count = 0);
 
+    //: Where a voice is, as a JSON number. Separate from `sendEvent` because that one's `meta`
+    //: takes strings and an int, and the server refuses a non-numeric `x`.
+    bool sendVoiceDirection(float x);
+
     // The listening window, and the audio inside it. `sendAudio` is a **binary** frame with no
     // envelope -- its meaning comes from the window being open, which is why these three belong
     // together rather than being three unrelated sends.

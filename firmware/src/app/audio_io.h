@@ -193,6 +193,14 @@ class AudioIo {
     std::size_t backlogCapacity() const { return backlog_.capacity(); }
     uint32_t bytesQueued() const { return bytes_queued_; }
     uint32_t chunksRefused() const { return chunks_refused_; }
+    //: Both channels of a completed frame, deinterleaved. Separate from `FrameObserver`, which is
+    //: the VAD's and takes one channel: the VAD does not want two, and the direction estimator
+    //: cannot work with one. Widening the existing callback would have made every caller carry a
+    //: parameter it ignores.
+    using StereoObserver = void (*)(const int16_t* left, const int16_t* right, std::size_t count,
+                                    uint32_t at_ms);
+    void onStereoFrame(StereoObserver observer) { stereo_observer_ = observer; }
+
     //: What the two channels last measured, and the widest imbalance since boot. `/mic-levels`.
     const roboface::StereoLevels& stereoLevels() const { return levels_; }
     float balanceMin() const { return balance_min_; }
@@ -237,6 +245,7 @@ class AudioIo {
     bool listening_ = false;
     bool monitoring_ = false;
     FrameObserver observer_ = nullptr;
+    StereoObserver stereo_observer_ = nullptr;
     //: Whether the room should be monitored at all, independent of whether the bus is momentarily
     //: busy. Playback clears `monitoring_`; this is what says to put it back afterwards.
     bool monitor_wanted_ = false;

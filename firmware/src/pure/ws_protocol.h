@@ -39,6 +39,7 @@ enum class EventType : uint8_t {
     kTouch,
     kMotion,
     kProximity,
+    kVoice,  // v2.5: where a voice is, from the two microphones
     kCount,
 };
 
@@ -47,6 +48,7 @@ inline constexpr const char* toString(EventType type) {
         case EventType::kTouch: return "touch";
         case EventType::kMotion: return "motion";
         case EventType::kProximity: return "proximity";
+        case EventType::kVoice: return "voice";
         case EventType::kCount: break;
     }
     return "touch";
@@ -282,6 +284,23 @@ inline std::string buildEvent(EventType type, const char* kind,
         if (meta_key != nullptr && meta_value != nullptr) meta[meta_key] = meta_value;
         if (count_key != nullptr) meta[count_key] = count;
     }
+    std::string out;
+    serializeJson(doc, out);
+    return out;
+}
+
+// Where a voice is (v2.5). Its own builder because `meta.x` must be a **JSON number**: the server
+// coerces `meta` from arbitrary network input and refuses anything that is not numeric, so a value
+// rendered as `"-0.62"` would arrive, validate, and silently mean "no opinion" -- the failure mode
+// this project keeps meeting, where something reports success and does nothing.
+inline std::string buildVoiceDirection(float x) {
+    JsonDocument doc;
+    doc["type"] = toString(DeviceMessage::kEvent);
+    JsonObject event = doc["event"].to<JsonObject>();
+    event["type"] = toString(EventType::kVoice);
+    event["kind"] = "direction";
+    JsonObject meta = event["meta"].to<JsonObject>();
+    meta["x"] = x;
     std::string out;
     serializeJson(doc, out);
     return out;

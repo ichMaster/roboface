@@ -267,6 +267,9 @@ void AudioIo::tick(uint32_t now_ms) {
             if (observer_ != nullptr) {
                 observer_(left_, roboface::kCaptureFrameSamples, roboface::kCaptureFrameMs);
             }
+            if (stereo_observer_ != nullptr) {
+                stereo_observer_(left_, right_, roboface::kCaptureFrameSamples, now_ms);
+            }
 
             if (listening_) {
                 // **The uplink stays mono and stays exactly this many bytes** -- part of the v2.5

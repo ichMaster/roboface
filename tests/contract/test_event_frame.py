@@ -27,8 +27,8 @@ from roboface_server.protocol import (
 )
 
 
-def test_the_event_types_are_the_documented_three() -> None:
-    assert [member.value for member in EventType] == ["touch", "motion", "proximity"]
+def test_the_event_types_are_the_documented_four() -> None:
+    assert [member.value for member in EventType] == ["touch", "motion", "proximity", "voice"]
 
 
 def test_the_kind_vocabularies_are_the_documented_ones() -> None:
@@ -40,6 +40,7 @@ def test_the_kind_vocabularies_are_the_documented_ones() -> None:
         {"tilt", "shake", "picked_up", "upside_down", "free_fall"}
     )
     assert EVENT_KINDS[EventType.PROXIMITY] == frozenset({"approach", "leave"})
+    assert EVENT_KINDS[EventType.VOICE] == frozenset({"direction"})
 
 
 def test_the_documented_example_round_trips() -> None:
@@ -135,3 +136,15 @@ def test_event_refuses_where_emotion_coerces() -> None:
 
     with pytest.raises(MalformedFrame):
         decode('{"type":"event","event":{"type":"touch","kind":"ecstatic"}}')
+
+
+def test_a_voice_direction_carries_its_x_through_meta() -> None:
+    """v2.5. `voice` rides the event channel because it is the same kind of claim as the other
+    three -- something the device sensed that the server could not have known -- even though it is
+    not a thing that happened *to* the device."""
+    frame = Event(type=EventType.VOICE, kind="direction", meta={"x": -0.62})
+    payload = json.loads(encode(frame))
+
+    assert payload["event"]["type"] == "voice"
+    assert payload["event"]["kind"] == "direction"
+    assert decode(encode(frame)).meta == {"x": -0.62}

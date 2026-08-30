@@ -184,6 +184,10 @@ class EventType(StrEnum):
     TOUCH = "touch"
     MOTION = "motion"
     PROXIMITY = "proximity"
+    #: Where a voice is, from the two microphones (v2.5). Not a thing that happened *to* the
+    #: device, which the other three are -- but it arrives through the same channel because it is
+    #: the same kind of claim: something the device sensed and the server could not have known.
+    VOICE = "voice"
 
 
 #: The `kind` vocabulary, per type. ARCHITECTURE §event{} lists exactly these, and the firmware's
@@ -193,6 +197,7 @@ EVENT_KINDS: Final[dict[EventType, frozenset[str]]] = {
     EventType.TOUCH: frozenset({"tap", "multi_tap", "stroke", "poke_eye", "long_press"}),
     EventType.MOTION: frozenset({"tilt", "shake", "picked_up", "upside_down", "free_fall"}),
     EventType.PROXIMITY: frozenset({"approach", "leave"}),
+    EventType.VOICE: frozenset({"direction"}),
 }
 
 #: The largest `meta` an event may carry, in **entries**. `meta` is free-form by design -- a touch

@@ -22,6 +22,7 @@
 #include "app/ws.h"
 #include "config.h"
 #include "pure/chrome.h"
+#include "pure/direction.h"
 #include "pure/console.h"
 #include "pure/motion.h"
 #include "pure/proximity.h"
@@ -337,6 +338,58 @@ bool sendCapturedFrame(const uint8_t* data, std::size_t length) {
 // The loopback sink: the same frames, into the playback buffer instead of onto the wire.
 bool storeCapturedFrame(const uint8_t* data, std::size_t length) {
     return audio.captureToBacklog(data, length) == length;
+}
+
+//: Where a voice is, and what has been told to the server about it. v2.5.
+roboface::DirectionEstimator direction;
+float reported_direction = 0.0f;
+bool reported_present = false;
+uint32_t direction_sent_ms = 0;
+float last_confidence = 0.0f;
+
+//: How much the estimate must move, and how rarely it may be sent.
+//:
+//: **The throttle is the whole design of this report.** The estimator runs every 20 ms, and a face
+//: direction on the wire fifty times a second would cost more than the feature is worth -- for a
+//: value that changes meaningfully perhaps twice in a conversation. The device acts on its own
+//: estimate immediately; what the server needs is only to know roughly where to point a frame it
+//: was going to send anyway.
+inline constexpr float kDirectionReportDelta = 0.20f;
+inline constexpr uint32_t kDirectionReportIntervalMs = 700;
+
+//: Both channels of every captured frame: the direction estimate and the gaze it drives.
+void onStereoFrame(const int16_t* left, const int16_t* right, std::size_t count, uint32_t at_ms) {
+    const roboface::DirectionEstimate estimate = direction.feed(left, right, count, at_ms);
+
+    // Locally and at once -- the reflex level of the two-level model, applied to the gaze. Waiting
+    // for the server would mean looking at where the voice had been.
+    renderer.setGazeVoice(estimate.present, estimate.direction);
+    last_confidence = estimate.confidence;
+
+    // Two reasons to send, and they are not the same reason:
+    //
+    //   * **appearing or vanishing** -- a voice arriving or the room going quiet. Sent at once,
+    //     because it is rare (the estimate holds for 1.5 s before it lets go, so it cannot flap)
+    //     and because it is the transition the server most needs.
+    //   * **moving far enough, and not too often** -- someone crossing the room. Rate-limited,
+    //     because the estimator runs fifty times a second and this value is worth perhaps two
+    //     updates in a conversation.
+    const float moved = estimate.direction - reported_direction;
+    const float distance = moved < 0.0f ? -moved : moved;
+    const bool changed_presence = estimate.present != reported_present;
+    const bool moved_enough = distance >= kDirectionReportDelta &&
+                              at_ms - direction_sent_ms >= kDirectionReportIntervalMs;
+
+    if (!changed_presence && !moved_enough) return;
+
+    direction_sent_ms = at_ms;
+    reported_direction = estimate.direction;
+    reported_present = estimate.present;
+
+    // **Absence is reported too, and as absence.** A device that only ever sent directions would
+    // leave the server holding the last one forever, pointing the face at a corner of the room long
+    // after whoever was standing there left.
+    ws.sendVoiceDirection(estimate.present ? estimate.direction : 0.0f);
 }
 
 void onCapturedFrame(const int16_t* samples, std::size_t count, uint32_t frame_ms) {
@@ -1037,6 +1090,15 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
     // `on` / `off` as well as a bare toggle. **A script must be able to set a state, not flip
     // one** -- it cannot see the indicator, so a toggle leaves it guessing, and guessing wrong
     // means every scripted line afterwards is refused with `[busy] not idle`.
+    if (line.text == "/direction") {
+        Serial.printf("\n[direction] %s x=%+.2f впевненість=%.2f\n",
+                      reported_present ? "голос" : "нічого", reported_direction,
+                      last_confidence);
+        Serial.printf("[direction] поріг когерентності %.2f · мертва зона %.2f\n",
+                      roboface::kCoherenceThreshold, roboface::kDirectionDeadZone);
+        return;
+    }
+
     if (line.text == "/mic-levels") {
         // **RF-073's whole point.** `/mic-info` says `stereo=1`, which is a configuration flag and
         // proves nothing about how many microphones are wired -- exactly the shape of claim that
@@ -1172,6 +1234,10 @@ void setup() {
 
     // The renderer is the ONLY way this app draws a face (ROADMAP §v0.4 DoD). There is no
     // M5.Display drawing call anywhere below — the v0.3 banner that used to be here is gone.
+    // Both channels of every captured frame go to the direction estimate. Registered once, before
+    // anything starts recording, so no frame is missed while the first window opens.
+    audio.onStereoFrame(&onStereoFrame);
+
     if (!renderer.begin()) {
         // A blank screen presented as a working one is worse than an admission. PSRAM is the only
         // thing that can fail here, and it fails silently otherwise.

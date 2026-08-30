@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
-from roboface_server.protocol import DEFAULT_TTL_MS, Emotion, EmotionFrame
+from roboface_server.protocol import DEFAULT_TTL_MS, Emotion, EmotionFrame, Gaze
 
 
 class TurnState(StrEnum):
@@ -151,6 +151,9 @@ EVENT_EMOTIONS: Final[dict[tuple[str, str], Emotion]] = {
     ("motion", "upside_down"): Emotion.SURPRISED,
     ("motion", "free_fall"): Emotion.SAD,
     ("proximity", "approach"): Emotion.CALM,
+    # `voice`/`direction` is deliberately absent from both tables: where a person is standing is
+    # not a mood and not a remark. It changes where the face *looks*, which is `gaze`, and a
+    # character that said something every time someone moved would be unbearable.
 }
 
 
@@ -168,6 +171,7 @@ def frame_for(
     *,
     report: ModelReport | None = None,
     speaking: bool = False,
+    gaze: Gaze | None = None,
 ) -> EmotionFrame:
     """One state, one optional model report -> one frame.
 
@@ -198,11 +202,13 @@ def frame_for(
     return EmotionFrame(
         emotion=emotion,
         intensity=intensity,
-        # Gaze stays centre in this phase, and "centre" is spelled as *absent*: the server has no
-        # opinion about where the face looks until v2.5 gives it voice direction and v3 gives it the
-        # vision turn. Inventing one here would be a later phase's scope arriving early, and a
-        # device reflex could not tell it from a real instruction.
-        gaze=None,
+        # **v2.5 gave this a voice, and the comment that stood here predicted it.**
+        #
+        # `None` still means "no opinion", and that is the common case: the server only has one when
+        # the device has told it where a speaker is. Absent is not centre -- the device's own idle
+        # drift owns the face when nobody has an opinion, and a centred gaze arriving from here
+        # would fight it for control and win, holding the eyes rigidly forward.
+        gaze=gaze,
         accent_color=ACCENTS[emotion],
         speaking=speaking,
         ttl_ms=TTL_MS[state],

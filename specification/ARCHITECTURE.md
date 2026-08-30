@@ -111,7 +111,9 @@ event that spread its fields into the envelope would overwrite it, and the frame
 unknown message called `touch`. Earlier revisions of this section showed only the inner object; that
 was the object being described, not the frame on the wire.
 
-`kind` is a small enum per type — touch: `tap · multi_tap · stroke · poke_eye · long_press`; motion: `tilt · shake · picked_up · upside_down · free_fall`; proximity: `approach · leave`. The server may answer with an `emotion` frame, a spoken line, or nothing at all.
+`kind` is a small enum per type — touch: `tap · multi_tap · stroke · poke_eye · long_press`; motion: `tilt · shake · picked_up · upside_down · free_fall`; proximity: `approach · leave`; voice: `direction`. The server may answer with an `emotion` frame, a spoken line, or nothing at all.
+
+`voice`/`direction` (v2.5) is the one type that is not a thing that happened *to* the device: it carries `meta.x` in [-1, +1], where the two microphones heard a speaker. It rides this channel because it is the same kind of claim as the other three — something the device sensed and the server could not have known — and it is answered with **neither** a face nor a line. The server remembers it per connection and attaches it as `gaze` to the next frame it had a reason to send; a frame of its own per update would put a face change on the wire every time someone shifted in their chair.
 
 ### Error codes
 
@@ -276,11 +278,26 @@ Indicators, notifications and input affordances are specified in **[features/DEV
 
 ### Gaze
 
-`gaze` arrives from the server (voice direction in v2.5, the vision turn in v3) and is overridden locally by reflexes: the proximity sensor pulls the gaze toward an approaching hand; a touch pulls it to the touched zone; the IMU rolls the eyes against a tilt to keep the horizon.
+`gaze` arrives from the server (voice direction from v2.5, the vision turn in v3) and is overridden locally by reflexes: the proximity sensor pulls the gaze toward an approaching hand; a touch pulls it to the touched zone; the IMU rolls the eyes against a tilt to keep the horizon.
 
-**The order of authority, from v2.4 where the field acquired its first consumer:** a local reflex
-wins while it is active; otherwise the server's last `gaze`; and the idle loop's drift composes with
-either, because it is a wander rather than a look. The reflex wins for a reason that is not about
+**The order of authority, from v2.4 where the field acquired its first consumer and v2.5 where it
+acquired its first producer:**
+
+1. **a local reflex** — a hand at the proximity sensor, a touched zone — while it is active;
+2. **the local voice direction** (v2.5), while the estimate is `present`;
+3. **the server's last `gaze`**;
+4. **the idle loop's drift**, which composes with any of them because it is a wander, not a look.
+
+A hand outranks a voice because it is a nearer and more specific claim on attention: someone
+reaching toward the device is addressing it, someone talking across the room may not be. And the
+voice estimate outranks the server's because it is the same fact without the round trip — the device
+reports the direction, and the frame that comes back is a confirmation of something it already did.
+
+**`present` is a third state, not a centred gaze.** A speaker directly in front of the device
+produces a balance near zero, which is the absence of evidence rather than an instruction to stare
+straight ahead. Reporting it as centre would override the idle drift and hold the eyes rigidly
+forward — which is why both `DirectionEstimate.present` on the device and `Gaze | None` on the wire
+distinguish "no opinion" from "look ahead". The reflex wins for a reason that is not about
 layering — the device can see a hand and the server cannot, being one round trip and a model call
 away from knowing. A gaze that waited for permission would always be looking at where the hand had
 been. When the reflex releases, the face returns to the server's gaze rather than to centre: the

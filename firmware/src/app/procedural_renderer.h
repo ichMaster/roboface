@@ -48,6 +48,12 @@ class ProceduralRenderer : public IFaceRenderer {
     //: "overridden locally by a reflex". The device can see a hand; the server cannot.
     void setGazeReflex(bool active, float x = 0.0f);
 
+    //: Where a voice is (v2.5), or that there is no opinion. **Below a reflex and above the
+    //: server** -- ARCHITECTURE §Gaze: a hand reaching toward the device is a nearer and more
+    //: specific claim than someone talking across the room, and the local estimate beats the
+    //: server's because it is the same fact without the round trip.
+    void setGazeVoice(bool present, float x = 0.0f);
+
     //: Fire a reflex over the current expression. The renderer owns the layer because the layer's
     //: output is a recipe and the renderer is the only thing that draws one.
     void fireReflex(roboface::Reflex reflex, uint32_t now_ms) { reflexes_.fire(reflex, now_ms); }
@@ -133,6 +139,8 @@ class ProceduralRenderer : public IFaceRenderer {
     float server_gaze_x_ = 0.0f;
     bool reflex_gaze_ = false;
     float reflex_gaze_x_ = 0.0f;
+    bool voice_gaze_ = false;
+    float voice_gaze_x_ = 0.0f;
     //: A frame that arrived while the device was still speaking and ends the speaking. Applied
     //: when playback stops, which is the moment it was actually describing.
     roboface::EmotionFrame pending_;

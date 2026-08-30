@@ -23,6 +23,15 @@
 //     Normalised cross-correlation at zero lag separates those, and it is the single most useful
 //     thing a second microphone provides. It is also what tells a face not to look at a fan.
 //
+// **A limit of coherence at this spacing, stated rather than discovered later.** 40 mm is small
+// against the wavelength of anything below about 4 kHz -- 86 mm at 4 kHz, 3.4 m at 100 Hz -- so at
+// speech frequencies both microphones see nearly the same waveform *whatever* the source, including
+// diffuse room noise. Coherence therefore discriminates less on this board than the physics of
+// widely-spaced arrays would suggest, and the level dead zone does more of the work than the
+// coherence threshold does. Measured on hardware: ambient noise reads around 0.50 coherence, close
+// to the 0.55 threshold rather than near zero. The two gates are kept in series for that reason --
+// neither is sufficient alone, and the dead zone is what actually keeps a fan out of the gaze.
+//
 // So: direction from level, confidence from coherence, and **absent** whenever confidence is low --
 // which is a third state, not a centred gaze. `coerce_gaze` on the server already draws that
 // distinction ("no opinion" and "look straight ahead" are different), and this is the device end of
