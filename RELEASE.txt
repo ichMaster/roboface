@@ -1,3 +1,49 @@
+Version 2.3.0 (2026-08-30)
+---------------------------
+v2.3 -- lip-sync. The mouth moves with the voice, and the server sends nothing
+at all for it. This is the one phase whose entire content is on the device,
+which is what "lip-sync is local, for latency" was always going to mean.
+
+Smaller than the roadmap implies, because v2.1.2 shipped lip-sync ahead of
+schedule at the user's request. Three of this phase's four tasks were already
+done; what remained was the part that had been approximated.
+
+- The mouth is driven by a windowed RMS envelope of the audio being played,
+  not by a peak. A peak over one 32 ms chunk sits near full scale through
+  almost all of continuous speech -- measured on the board -- so the ladder fed
+  from it held one shape. Energy over the window is what actually moves with
+  speech, and it is what a jaw opening is a question about. The input level
+  meter keeps its peak: a meter answers a different question, and the two
+  constants are now in different files so neither can drift into the other.
+- The viseme thresholds are calibrated against that envelope's measured
+  distribution rather than chosen. What the tests assert is the property, not
+  the numbers: every mouth shape must be reached by real speech and none may
+  hold most of a reply. That is what made a later recalibration a change of
+  constants rather than a change of design.
+- The mouth is redrawn at 20 FPS while speaking, up from 8. Three intervals
+  were measured rather than one, because "the interval is the binding
+  constraint" needed establishing -- the per-push cost could as easily have
+  been the ceiling. Half-duplex suspends the microphone during playback, so
+  these frames compete with nothing: drop=0 and ref=0 through a thirty-second
+  reply, and the microphone's rate in the surrounding windows is unchanged.
+- The envelope falls because time passed, not because a chunk arrived. It used
+  to advance only when audio was handed to the speaker, so a network stall
+  mid-reply held it at its last value and the mouth froze in whatever shape a
+  stalled syllable left it in.
+
+The lesson of this phase, recorded because it happened twice in one afternoon:
+a fixture that does not match the signal produces numbers that pass every test
+and fail on the desk. A sine peaks at 1.4x its RMS and speech at three to four
+times, so a sine fixture carried twice the energy of the thing it modelled --
+and thresholds derived from it put the widest mouth out of the device's reach
+while the test written to catch exactly that passed.
+
+And the pattern underneath it: this subsystem's most visible failure is a mouth
+that stops moving, and it has now arrived from three unrelated causes in three
+consecutive phases -- a saturating peak detector, a permission withdrawn before
+the speaker finished, and a signal that was simply not asked. Anything new that
+feeds the mouth should be asked what happens to it when it stops being updated.
+
 Version 2.2.0 (2026-08-30)
 ---------------------------
 v2.2 -- the emotion channel. The server decides how the face feels; the device

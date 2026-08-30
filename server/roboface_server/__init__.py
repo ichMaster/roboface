@@ -13,4 +13,4 @@ __all__ = ["__version__"]
 
 #: The running server version. Kept in step with the release tag `vA.B.C` by
 #: `release-version`, and with the `version=` string the FastAPI app reports.
-__version__ = "2.2.0"
+__version__ = "2.3.0"
