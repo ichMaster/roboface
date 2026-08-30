@@ -136,8 +136,9 @@ def test_only_the_landed_phases_variables_are_read(tmp_path: Path) -> None:
 
     ARCHITECTURE §Configuration assigns each variable to the phase that introduces it, and
     reading one early would let an unset future key look configured. v0.2 added the three
-    Gemini keys, v1.1 the four ElevenLabs ones (five since the voice gained its settings) and **v1.3 the six Deepgram ones**, so all of
-    those are now expected; the canon key is not, and arrives with v4.1.
+    Gemini keys, v1.1 the four ElevenLabs ones (five since the voice gained its settings) and
+    **v1.3 the six Deepgram ones**, so all of those are now expected; the canon key is not, and
+    arrives with v4.1.
 
     This test is meant to fail when a phase lands, and it did: it was asserting that
     ``ELEVENLABS_API_KEY`` must not be read, which was true right up until RF-030. Updating it

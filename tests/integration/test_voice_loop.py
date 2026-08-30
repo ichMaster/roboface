@@ -155,9 +155,10 @@ def test_interims_reach_the_device_when_asked_for() -> None:
         asr=MockASRProvider(),
     )
     app = create_app(responder=orchestrator, registry=ConnectionRegistry())
-    # The flag lives on the Router; the app builds one, so reach it the way a deployment would.
-    for route in app.router.routes:  # pragma: no branch
-        pass
+    # The flag lives on the Router; the app builds one, so touching its routes is how a deployment
+    # reaches it. The result is unused -- what is being asserted is that `create_app` wires a router
+    # at all, before the flag is checked on one built directly.
+    assert app.router.routes
     router = Router(responder=orchestrator, send_partials=True)
     assert router.send_partials is True
     assert AsrPartial(text="x").text == "x"
