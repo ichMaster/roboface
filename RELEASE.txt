@@ -1,3 +1,31 @@
+Version 2.1.2 (2026-08-30)
+---------------------------
+- The mouth moves while the device speaks. Four -- now five -- discrete shapes
+  chosen from the playback level, with hysteresis, rather than a jaw scaled
+  smoothly by loudness: real speech moves between a few positions, and a shape
+  only redraws when it changes.
+- Openness is its own number. Lip-sync was driven through the recipe's
+  `mouth_curve`, so a face already smiling at 0.70 hit the 1.0 ceiling on the
+  first shape and moved two pixels -- the animation ran perfectly and was
+  invisible. A talking mouth opens; it does not smile harder.
+- The turn ends when the device has finished speaking, not when the server has
+  finished sending. Those are seconds apart -- the device buffers about eight
+  seconds of voice it cannot play yet -- so the face went to idle mid-sentence:
+  the drift and blink returned and the mouth froze open for the rest of the
+  reply. Two reported faults, one line.
+- The shape thresholds are spread across the range the signal actually uses.
+  The top step sat at 0.30 while playback levels range over 0..95%, so the mouth
+  held one shape for nearly the whole reply: four changes in ten seconds became
+  83-92, which is syllable rate.
+- The mouth carries a width as well as a height, alternating between a spread
+  and a pursed variant each time it shuts. A mouth that only changes height
+  reads as a hinge.
+- The status line reports `mouth=` (shape changes) and `lvl=` (the level range
+  that drove them). They separate a mouth with no signal from a mouth whose
+  signal never varies -- the two failures above, which look identical on screen.
+- The server version constants are back in step with the release tag; they had
+  drifted to 0.4.0 and 1.3.0.
+
 Version 2.1.1 (2026-08-30)
 ---------------------------
 - The face was costing the microphone half its frames. A 15-second window
