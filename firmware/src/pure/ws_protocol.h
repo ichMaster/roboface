@@ -232,12 +232,16 @@ struct Caps {
 // ---------------------------------------------------------------------------------------
 
 inline std::string buildHello(const char* device_id, const Caps& caps = Caps{},
-                              int proto_ver = kProtoVersion) {
+                              int proto_ver = kProtoVersion, const char* face_set = nullptr) {
     JsonDocument doc;
     doc["type"] = toString(DeviceMessage::kHello);
     doc["device_id"] = device_id;
     doc["proto_ver"] = proto_ver;
     doc["audio_fmt"] = kAudioFmt;
+    // **Which face the device is wearing** (v2.6), so a reconnect does not lose it and the server
+    // knows what it is looking at. Omitted rather than sent empty: a field always present and
+    // usually meaningless teaches every reader to skip it.
+    if (face_set != nullptr) doc["face_set"] = face_set;
 
     // Sorted, so two identical devices produce identical bytes and a wire log stays diffable --
     // the same reason the server sorts its own.
@@ -337,6 +341,7 @@ enum class ParseResult {
     kTtsEnd,       // tts_end -- the speaking window is closed (v1.1)
     kError,        // error{code, msg}
     kPong,         // pong
+    kConfigUpdated,  // config_updated{face_set} -- change the face (v2.6)
     kUnsupported,  // a declared type this phase does not handle -- not a fault
     kMalformed,    // not JSON, not an object, no type, an unknown type, or a bad field
     kOversize,     // longer than the server would have accepted; refused before parsing
@@ -344,6 +349,15 @@ enum class ParseResult {
 
 struct ServerFrame {
     ParseResult result = ParseResult::kMalformed;
+
+    //: `config_updated{face_set}`. **Owned, not a pointer into the document.**
+    //:
+    //: The first version was `const char*` into the `JsonDocument`, with a comment claiming it was
+    //: "valid for as long as the frame is". It was not: the document is a local of
+    //: `parseServerFrame` and dies at the return, so every reader saw an empty string. A host test
+    //: caught it immediately, which is the argument for the pure/glue split in one line -- on the
+    //: board this would have been a face that silently never changed.
+    std::string face_set;
 
     // reply
     std::string text;
@@ -451,6 +465,21 @@ inline ServerFrame parseServerFrame(const char* raw, std::size_t length) {
     // separately releasable, so the device may not assume the server sanitised what it sent, any
     // more than the server assumes the device will. Both coerce; the rules are identical and are
     // stated once in ARCHITECTURE §EmotionFrame.
+    if (std::strcmp(name, toString(ServerMessage::kConfigUpdated)) == 0) {
+        // **Refused here if it is not a string**, and refused *again* by `skinIndexFor` if it is a
+        // name nothing answers to. Two checks because they are two different failures: a malformed
+        // frame is a protocol fault, and an unknown face is a version disagreement between the two
+        // sides -- and only the second one is worth a legible line in a boot log.
+        JsonVariantConst face = doc["face_set"];
+        if (!face.is<const char*>()) {
+            frame.result = ParseResult::kMalformed;
+            return frame;
+        }
+        frame.result = ParseResult::kConfigUpdated;
+        frame.face_set = face.as<const char*>();  // copied: the document dies at this return
+        return frame;
+    }
+
     if (std::strcmp(name, toString(ServerMessage::kEmotion)) == 0) {
         frame.result = ParseResult::kEmotion;
 
@@ -485,11 +514,12 @@ inline ServerFrame parseServerFrame(const char* raw, std::size_t length) {
         return frame;
     }
 
-    // Declared server->device types this phase does not handle: config_updated, restart.
-    // (tts_audio is binary and never arrives here; tts_end is handled above from v1.1, and
-    // emotion from v2.2.) Answering these with "malformed" would make every later frame look
-    // like a broken server.
-    for (const auto declared : {ServerMessage::kConfigUpdated, ServerMessage::kRestart}) {
+    // Declared server->device types this phase does not handle: restart. (tts_audio is binary and
+    // never arrives here; tts_end is handled above from v1.1, emotion from v2.2 and config_updated
+    // from v2.6.) Answering these with "malformed" would make every later frame look like a broken
+    // server -- and this list shrinking by one per phase is the most compact record of the roadmap
+    // the firmware has.
+    for (const auto declared : {ServerMessage::kRestart}) {
         if (std::strcmp(name, toString(declared)) == 0) {
             frame.result = ParseResult::kUnsupported;
             return frame;

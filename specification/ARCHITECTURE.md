@@ -303,6 +303,37 @@ away from knowing. A gaze that waited for permission would always be looking at 
 been. When the reflex releases, the face returns to the server's gaze rather than to centre: the
 server's instruction did not stop being true while a hand was in the way.
 
+### `config_updated{face_set}` — the one setting the server owns
+
+The only server→device frame that is not about a turn, and the only place the server says what the
+device should **look like** rather than what it should express. `face_set` is one of the five
+declared names — `stackchan · ghost · flame · jelly · cloud` — held on the server as `FACE_SETS` and
+on the device as `pure/skins.h`, with a contract test checking the two agree.
+
+**Refused rather than coerced, on both sides and in both directions.** That is the opposite of
+`emotion{}`, and the contrast is the reasoning: a bad emotion becomes `neutral` and is rendered,
+because a face is not worth dropping a connection over. A bad `face_set` is a disagreement about
+*what faces exist* — the two sides were built from different vocabularies — and accepting one would
+leave the server believing the device wears a skin it has never heard of. An unknown name that is
+quietly ignored is indistinguishable from a switch that worked.
+
+The device reports the face it is wearing on **`hello`**, not in a frame of its own: the question is
+only ever asked at the start of a connection, and a device switched to the ghost and then
+reconnecting says so without the server having to remember across a socket it may never see again.
+The field is omitted rather than sent as null when a device has no skins, which keeps a pre-v2.6
+firmware valid — no opinion is not the same as claiming to be faceless.
+
+**A skin is data, and the renderer holds none of its own** (v2.6). `pure/skin.h` is the schema —
+anchors, colours, a body and an element — derived from `face-prototype.html`'s own argument lists
+rather than invented beside them. The procedural face is a manifest like the four spirits, which is
+what makes *"adding a skin requires no renderer code change"* testable rather than aspirational.
+
+The honest boundary of that claim: `SkinBody` and `SkinElement` are **closed enums**, and drawing
+them is the renderer's vocabulary. A skin combining an existing body, an existing element, its own
+anchors and its own palette costs no renderer code. A skin needing a shape nobody has drawn costs
+one `case` — and the enums are closed precisely so that this announces itself at the moment it is
+written rather than after a renderer has quietly grown four special cases.
+
 ## Interaction — two levels
 
 Every physical input is handled twice, and the two levels never block each other.

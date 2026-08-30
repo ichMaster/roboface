@@ -67,9 +67,12 @@ void Ws::begin(const char* url, const char* device_id, uint32_t now_ms) {
                 Serial.println("[ws] connected");
                 // hello first, always: the server answers any other opening frame with
                 // bad_frame, and a wrong proto_ver with proto_unsupported and a close.
-                client.sendTXT(
-                    roboface::buildHello(active->device_id_, roboface::Caps{}, active->proto_ver_)
-                        .c_str());
+                client.sendTXT(roboface::buildHello(active->device_id_, roboface::Caps{},
+                                                   active->proto_ver_,
+                                                   active->face_set_ != nullptr
+                                                       ? active->face_set_()
+                                                       : nullptr)
+                                   .c_str());
                 if (active->handler_) active->handler_(Event::kConnected, roboface::ServerFrame{});
                 break;
 
@@ -151,6 +154,7 @@ void Ws::handleText(const char* payload, std::size_t length) {
         // "not handled" -- one layer below `main.cpp`, where nobody looking at the face would
         // think to check. v1.1 lost half a session to exactly that, with `tts_end`.
         case roboface::ParseResult::kEmotion:
+        case roboface::ParseResult::kConfigUpdated:
         case roboface::ParseResult::kTtsEnd:
         case roboface::ParseResult::kError:
         case roboface::ParseResult::kPong:

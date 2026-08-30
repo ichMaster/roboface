@@ -23,6 +23,7 @@ from roboface_server.protocol import (
     AUDIO_FMT,
     DEFAULT_INTENSITY,
     DEFAULT_TTL_MS,
+    FACE_SETS,
     MAX_TEXT_FRAME_BYTES,
     PROTO_VERSION,
     Capability,
@@ -244,3 +245,30 @@ def test_the_event_type_vocabulary_is_identical_on_both_sides() -> None:
         if name != "Count"
     ]
     assert firmware == [member.value for member in EventType]
+
+
+def test_the_face_set_vocabulary_is_identical_on_both_sides() -> None:
+    """v2.6. The same guard as the emotion and event enums, and the sharpest case for it yet.
+
+    A `face_set` one side has never heard of is not a degraded reaction — it is a switch that
+    reports success and changes nothing, on the one seam where the server is *telling the device
+    what to look like*. The server would go on believing the device wears the ghost.
+    """
+    header = (Path(__file__).resolve().parents[2] / "firmware/src/pure/skins.h").read_text()
+    firmware = set(re.findall(r'skin\.name = "(\w+)";', header))
+
+    assert firmware == set(FACE_SETS), (
+        f"firmware has {sorted(firmware)}, protocol has {sorted(FACE_SETS)}"
+    )
+
+
+def test_the_firmware_skin_count_matches_the_vocabulary() -> None:
+    """`kSkinCount` sizes the carousel's dot strip and bounds `skinAt`.
+
+    If it disagreed with the number of skins, the carousel would show a dot for a face that does
+    not exist — or hide one that does — and `skinIndexFor` would refuse a name it holds.
+    """
+    header = (Path(__file__).resolve().parents[2] / "firmware/src/pure/skin.h").read_text()
+    declared = re.search(r"kSkinCount = (\d+);", header)
+    assert declared is not None, "kSkinCount moved or was renamed"
+    assert int(declared.group(1)) == len(FACE_SETS)

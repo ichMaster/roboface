@@ -161,9 +161,10 @@ def test_an_unknown_type_is_rejected_as_unknown_not_malformed() -> None:
         decode(json.dumps({"type": "sing_a_song"}))
 
 
-# `listen_start` and `listen_stop` left this list in v1.2, `tts_end` in v1.1, `emotion` in v2.2
-# and `event` in v2.4. A type moving out is what a phase landing looks like from the codec's side.
-@pytest.mark.parametrize("message_type", ["image_in", "config_updated"])
+# `listen_start` and `listen_stop` left this list in v1.2, `tts_end` in v1.1, `emotion` in v2.2,
+# `event` in v2.4 and `config_updated` in v2.6. A type moving out is what a phase landing looks like
+# from the codec's side, and this list shrinking is the most compact record of the roadmap there is.
+@pytest.mark.parametrize("message_type", ["image_in"])
 def test_a_declared_but_unimplemented_type_is_unsupported(message_type: str) -> None:
     """Distinct from unknown: the router answers this with a clean error, not with disdain."""
     with pytest.raises(UnsupportedMessage) as raised:

@@ -190,6 +190,15 @@ class EventType(StrEnum):
     VOICE = "voice"
 
 
+#: The faces a device may wear (v2.6, ROADMAP §v2.6). The firmware's `pure/skins.h` holds the same
+#: five names and `tests/contract/test_firmware_mirror.py` checks the two agree -- a `face_set` one
+#: side has never heard of is a switch that reports success and changes nothing.
+#:
+#: `stackchan` is the procedural face and the fallback; the other four are the spirits.
+FACE_SETS: Final[frozenset[str]] = frozenset(
+    {"stackchan", "ghost", "flame", "jelly", "cloud"}
+)
+
 #: The `kind` vocabulary, per type. ARCHITECTURE §event{} lists exactly these, and the firmware's
 #: `ws_protocol.h` mirrors them -- `tests/contract/test_firmware_mirror.py` checks the two agree,
 #: because a value one side has never heard of is a reaction the character silently never gives.
@@ -317,6 +326,25 @@ class Hello:
     proto_ver: int
     audio_fmt: str
     caps: frozenset[Capability]
+    #: Which face the device is wearing (v2.6), or `None` from a device that predates skins.
+    #:
+    #: **On `hello` rather than in a frame of its own**, because the question it answers is "what am
+    #: I looking at" and that is only ever asked at the start of a connection. A reconnecting device
+    #: that had been switched to the ghost says so, and the server does not have to remember across
+    #: a socket it may never see again.
+    face_set: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigUpdated:
+    """``config_updated{face_set}`` -- the server changing the device's face.
+
+    The one server->device frame that is not about a turn. It is small on purpose: a configuration
+    channel that could carry anything would become the place every later feature was bolted onto,
+    and the roadmap gives v2.6 exactly one setting.
+    """
+
+    face_set: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -488,12 +516,13 @@ class ErrorFrame:
 #: Everything :func:`decode` can return and :func:`encode` accepts.
 Frame = (
     Hello | TextIn | ListenStart | ListenStop | Ping | Pong | Event
-    | AsrPartial | Asr | Reply | EmotionFrame | TtsEnd | ErrorFrame
+    | AsrPartial | Asr | Reply | EmotionFrame | TtsEnd | ErrorFrame | ConfigUpdated
 )
 
 #: Which message type each typed frame is. One table, so encode and the tests agree.
 FRAME_TYPES: Final[dict[type[Frame], DeviceMessage | ServerMessage]] = {
     Hello: DeviceMessage.HELLO,
+    ConfigUpdated: ServerMessage.CONFIG_UPDATED,
     Event: DeviceMessage.EVENT,
     TextIn: DeviceMessage.TEXT_IN,
     ListenStart: DeviceMessage.LISTEN_START,
@@ -527,6 +556,12 @@ def encode(frame: Frame) -> str:
                 "audio_fmt": frame.audio_fmt,
                 "caps": sorted(str(cap) for cap in frame.caps),
             }
+            # Omitted rather than sent as null when the device has no skins. A field that is always
+            # present and usually empty teaches every reader to ignore it.
+            if frame.face_set is not None:
+                payload["face_set"] = frame.face_set
+        case ConfigUpdated():
+            payload["face_set"] = frame.face_set
         case TextIn():
             payload["text"] = frame.text
         case Event():
@@ -767,7 +802,32 @@ def _decode_hello(payload: dict[str, Any]) -> Hello:
         proto_ver=_require_int(payload, "proto_ver"),
         audio_fmt=_require_str(payload, "audio_fmt"),
         caps=parse_caps(payload.get("caps", [])),
+        face_set=_optional_face_set(payload.get("face_set")),
     )
+
+
+def _optional_face_set(raw: object) -> str | None:
+    """A face the device claims to be wearing, or `None`.
+
+    **Refused rather than coerced**, and unlike `emotion{}` this is deliberate for the same reason
+    `event{}` validates: the device is reporting a fact about itself, and a name the contract does
+    not define means the two sides disagree about what faces exist. Silently accepting it would let
+    a firmware typo look exactly like a working switch.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise MalformedFrame(f"'face_set' must be a string, got {type(raw).__name__}")
+    if raw not in FACE_SETS:
+        raise MalformedFrame(f"{raw!r} is not a known face_set")
+    return raw
+
+
+def _decode_config_updated(payload: dict[str, Any]) -> ConfigUpdated:
+    face_set = _require_str(payload, "face_set")
+    if face_set not in FACE_SETS:
+        raise MalformedFrame(f"{face_set!r} is not a known face_set")
+    return ConfigUpdated(face_set=face_set)
 
 
 def _decode_text_in(payload: dict[str, Any]) -> TextIn:
@@ -860,6 +920,7 @@ _DECODERS: Final[dict[DeviceMessage | ServerMessage, _Decoder]] = {
     DeviceMessage.LISTEN_STOP: lambda _payload: ListenStop(),
     DeviceMessage.PING: lambda _payload: Ping(),
     ServerMessage.PONG: lambda _payload: Pong(),
+    ServerMessage.CONFIG_UPDATED: _decode_config_updated,
     ServerMessage.ASR_PARTIAL: lambda payload: AsrPartial(text=_require_str(payload, "text")),
     ServerMessage.ASR: lambda payload: Asr(text=_require_str(payload, "text")),
     ServerMessage.REPLY: _decode_reply,

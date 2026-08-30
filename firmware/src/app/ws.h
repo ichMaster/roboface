@@ -59,6 +59,13 @@ class Ws {
     //: takes strings and an int, and the server refuses a non-numeric `x`.
     bool sendVoiceDirection(float x);
 
+    //: Which face to report in `hello` (v2.6). **A callback rather than a stored string**: `hello`
+    //: is sent on every reconnect, and a value copied in at `begin()` would report the face the
+    //: device booted with for the rest of the session -- which is exactly the state a reconnect is
+    //: supposed to resynchronise.
+    using FaceSetSource = const char* (*)();
+    void onFaceSet(FaceSetSource source) { face_set_ = source; }
+
     // The listening window, and the audio inside it. `sendAudio` is a **binary** frame with no
     // envelope -- its meaning comes from the window being open, which is why these three belong
     // together rather than being three unrelated sends.
@@ -86,6 +93,7 @@ public:
     void setProtoVersionOverride(int proto_ver) { proto_ver_ = proto_ver; }
 
   private:
+    FaceSetSource face_set_ = nullptr;
     void connect(uint32_t now_ms);
     void handleText(const char* payload, std::size_t length);
 

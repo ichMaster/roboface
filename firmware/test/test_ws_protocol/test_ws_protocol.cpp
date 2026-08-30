@@ -243,14 +243,47 @@ static void test_a_declared_but_unhandled_type_is_unsupported_not_malformed() {
     // The distinction the server draws too. Every not-yet-handled frame arriving at this build
     // lands here, and calling them malformed would make a working server look broken.
     //
-    // `tts_end` left this list in v1.1, `asr_partial`/`asr` in v1.3 and `emotion` in v2.2. A type
-    // moving out of here is what "the phase landed" looks like from the parser's side.
-    for (const char* raw : {"{\"type\":\"restart\"}", "{\"type\":\"config_updated\"}"}) {
+    // `tts_end` left this list in v1.1, `asr_partial`/`asr` in v1.3, `emotion` in v2.2 and
+    // `config_updated` in v2.6. A type moving out of here is what "the phase landed" looks like
+    // from the parser's side, and the list shrinking to one is most of the roadmap.
+    for (const char* raw : {"{\"type\":\"restart\"}"}) {
         const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
         TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kUnsupported),
                               static_cast<int>(frame.result));
         TEST_ASSERT_TRUE(!frame.type.empty());
     }
+}
+
+static void test_config_updated_carries_a_face(void) {
+    const char* raw = "{\"type\":\"config_updated\",\"face_set\":\"ghost\"}";
+    const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kConfigUpdated),
+                          static_cast<int>(frame.result));
+    TEST_ASSERT_EQUAL_STRING("ghost", frame.face_set.c_str());
+}
+
+static void test_config_updated_without_a_face_is_malformed() {
+    // **Two checks, two failures.** A frame with no `face_set` is a protocol fault and is refused
+    // here; a frame naming a face this build does not have is a *version disagreement* and is
+    // refused by `skinIndexFor` one layer up. Only the second is worth a legible line in a log,
+    // and collapsing them would lose that.
+    for (const char* raw : {"{\"type\":\"config_updated\"}",
+                            "{\"type\":\"config_updated\",\"face_set\":7}"}) {
+        const ServerFrame frame = parseServerFrame(raw, std::strlen(raw));
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(ParseResult::kMalformed),
+                              static_cast<int>(frame.result));
+    }
+}
+
+static void test_hello_reports_the_face_when_there_is_one() {
+    const std::string with_face = roboface::buildHello("rf-1", roboface::Caps{}, 1, "flame");
+    TEST_ASSERT_TRUE(with_face.find("\"face_set\":\"flame\"") != std::string::npos);
+
+    // And omits it otherwise -- a field always present and usually meaningless teaches every
+    // reader to skip it, and keeps a pre-v2.6 firmware's hello valid.
+    const std::string without = roboface::buildHello("rf-1", roboface::Caps{}, 1);
+    TEST_ASSERT_TRUE(without.find("face_set") == std::string::npos);
 }
 
 static void test_an_oversize_frame_is_refused_before_it_is_parsed() {
@@ -437,6 +470,9 @@ int main(int, char**) {
     RUN_TEST(test_an_emotion_frame_is_never_malformed);
     RUN_TEST(test_intensity_and_gaze_are_clamped);
     RUN_TEST(test_speaking_must_be_literally_true);
+    RUN_TEST(test_config_updated_carries_a_face);
+    RUN_TEST(test_config_updated_without_a_face_is_malformed);
+    RUN_TEST(test_hello_reports_the_face_when_there_is_one);
     RUN_TEST(test_an_oversize_frame_is_refused_before_it_is_parsed);
     RUN_TEST(test_a_frame_at_the_limit_is_still_attempted);
     RUN_TEST(test_an_error_frame_carries_its_code_and_message);

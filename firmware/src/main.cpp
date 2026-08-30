@@ -788,6 +788,24 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
             if (audio.isListening()) endListening("asr");
             return;
 
+        case roboface::ParseResult::kConfigUpdated: {
+            // **The server changing the face** (v2.6). Refused and named if it is a face this build
+            // does not have -- the two sides disagreeing about what skins exist is a version
+            // mismatch, and silently keeping the current face would make it look like a switch that
+            // worked.
+            const std::size_t index = roboface::skinIndexFor(frame.face_set.c_str());
+            if (index >= roboface::kSkinCount) {
+                Serial.printf("\n[skin] сервер просив невідоме обличчя: %s\n",
+                              frame.face_set.empty() ? "(порожньо)" : frame.face_set.c_str());
+                return;
+            }
+            renderer.setSkin(roboface::skinAt(index));
+            render();
+            needs_push = true;
+            Serial.printf("\n[skin] %s (від сервера)\n", renderer.skin().name);
+            return;
+        }
+
         case roboface::ParseResult::kEmotion:
             // **The whole of v2.2 on the device, in three lines.** No rule here decides what the
             // face means; the server decided, and this hands the decision to the renderer.
@@ -1278,6 +1296,10 @@ void setup() {
     // Both channels of every captured frame go to the direction estimate. Registered once, before
     // anything starts recording, so no frame is missed while the first window opens.
     audio.onStereoFrame(&onStereoFrame);
+
+    // Asked at each `hello`, so a reconnect reports the face actually worn rather than the one the
+    // device booted with.
+    ws.onFaceSet([]() -> const char* { return renderer.skin().name; });
 
     if (!renderer.begin()) {
         // A blank screen presented as a working one is worse than an admission. PSRAM is the only
