@@ -118,11 +118,21 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
     // moves between a few positions rather than sliding, and a shape only redraws when it *changes*,
     // where a continuous mouth redraws on every frame.
     //
-    // Added to `mouth_curve` because that is the only mouth control the recipe has, so the shape
-    // rides on top of whatever expression is showing -- the device still smiles while it talks.
+    // The shape sets how far the mouth **opens**, which is separate from how it is curved -- so the
+    // device still smiles while it talks. Driving this through `mouth_curve` was a real mistake and
+    // not a hypothetical one: a face already smiling at 0.70 hit the ceiling on the first shape and
+    // moved two pixels, so the lip-sync ran perfectly and was invisible.
+    roboface::MouthPose mouth;
     if (speaking_mouth_) {
-        frame.mouth_curve += roboface::travelFor(lips_.feed(audio_level_));
-        if (frame.mouth_curve > 1.0f) frame.mouth_curve = 1.0f;
+        const roboface::MouthFrame shape = lips_.feed(audio_level_);
+        mouth = lips_.pose();
+        if (shape != last_mouth_) {
+            last_mouth_ = shape;
+            ++mouth_changes_;
+        }
+        if (!level_seen_ || audio_level_ < level_min_) level_min_ = audio_level_;
+        if (audio_level_ > level_max_) level_max_ = audio_level_;
+        level_seen_ = true;
     }
 
     roboface::FaceGeometry geometry;
@@ -141,12 +151,15 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
     // number change at all.
     const bool moved = !has_drawn_ || crossfade_.isFading() || idle_.isBlinking() ||
                        changedVisibly(frame, last_drawn_) ||
+                       mouth.open != last_mouth_open_ || mouth.width != last_mouth_width_ ||
                        idle.bob_y != 0.0f || idle.gaze_x != 0.0f;
     animating_ = moved;
     if (!moved) return;
 
-    compose(roboface::layout(frame, geometry));
+    compose(roboface::layout(frame, geometry, mouth.open, mouth.width));
     last_drawn_ = frame;
+    last_mouth_open_ = mouth.open;
+    last_mouth_width_ = mouth.width;
     has_drawn_ = true;
 }
 
@@ -192,24 +205,35 @@ void ProceduralRenderer::compose(const roboface::LayerBank& bank) {
         }
     }
 
-    // The mouth, as a quadratic through three control points, walked in segments.
-    int previous_x = bank.mouth.left_x;
-    int previous_y = bank.mouth.left_y;
-    for (int step = 1; step <= kMouthSegments; ++step) {
-        const float t = static_cast<float>(step) / static_cast<float>(kMouthSegments);
-        const float inv = 1.0f - t;
-        const float x = inv * inv * static_cast<float>(bank.mouth.left_x) +
-                        2.0f * inv * t * static_cast<float>(bank.mouth.mid_x) +
-                        t * t * static_cast<float>(bank.mouth.right_x);
-        const float y = inv * inv * static_cast<float>(bank.mouth.left_y) +
-                        2.0f * inv * t * static_cast<float>(bank.mouth.mid_y) +
-                        t * t * static_cast<float>(bank.mouth.right_y);
-        for (int thickness = 0; thickness < 3; ++thickness) {
-            sprite_.drawLine(previous_x, previous_y + thickness, static_cast<int>(x),
-                             static_cast<int>(y) + thickness, ink);
+    // The mouth. Two shapes rather than one, because a closed mouth and an open one are different
+    // things: a line that curves, and an opening with a height. Drawing an open mouth as a thicker
+    // line is what makes lip-sync look like a moustache twitching.
+    if (bank.mouth.open_height > 1) {
+        // Open: a filled ellipse between the corners, its lower edge following the curve so the
+        // mouth still smiles or frowns while it speaks.
+        const int centre_y = (bank.mouth.left_y + bank.mouth.mid_y) / 2;
+        sprite_.fillEllipse(bank.mouth.mid_x, centre_y, bank.mouth.open_half_width,
+                            bank.mouth.open_height, ink);
+    } else {
+        // Closed: a quadratic through the three control points, walked in segments.
+        int previous_x = bank.mouth.left_x;
+        int previous_y = bank.mouth.left_y;
+        for (int step = 1; step <= kMouthSegments; ++step) {
+            const float t = static_cast<float>(step) / static_cast<float>(kMouthSegments);
+            const float inv = 1.0f - t;
+            const float x = inv * inv * static_cast<float>(bank.mouth.left_x) +
+                            2.0f * inv * t * static_cast<float>(bank.mouth.mid_x) +
+                            t * t * static_cast<float>(bank.mouth.right_x);
+            const float y = inv * inv * static_cast<float>(bank.mouth.left_y) +
+                            2.0f * inv * t * static_cast<float>(bank.mouth.mid_y) +
+                            t * t * static_cast<float>(bank.mouth.right_y);
+            for (int thickness = 0; thickness < 3; ++thickness) {
+                sprite_.drawLine(previous_x, previous_y + thickness, static_cast<int>(x),
+                                 static_cast<int>(y) + thickness, ink);
+            }
+            previous_x = static_cast<int>(x);
+            previous_y = static_cast<int>(y);
         }
-        previous_x = static_cast<int>(x);
-        previous_y = static_cast<int>(y);
     }
 }
 

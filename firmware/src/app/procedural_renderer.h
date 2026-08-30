@@ -54,6 +54,26 @@ class ProceduralRenderer : public IFaceRenderer {
     //: Frames actually pushed, for the budget RF-058 measures.
     uint32_t framesPushed() const { return frames_pushed_; }
 
+    //: What the mouth did since this was last called, and the levels that drove it. **A diagnostic,
+    //: and deliberately a cheap one**: three numbers accumulated in `tick` and read by the status
+    //: line every ten seconds. The tempting version -- printing each shape change as it happens --
+    //: is the mistake this project has now made three times: a diagnostic that starves the thing it
+    //: diagnoses. Serial at 115200 costs about 1 ms a line, and the mouth changes several times a
+    //: second while the same loop is feeding the speaker.
+    struct MouthStats {
+        uint32_t changes;    // shape transitions
+        float level_min;     // the quietest level seen while speaking
+        float level_max;     // the loudest
+    };
+    MouthStats takeMouthStats() {
+        const MouthStats stats{mouth_changes_, level_seen_ ? level_min_ : 0.0f, level_max_};
+        mouth_changes_ = 0;
+        level_seen_ = false;
+        level_min_ = 1.0f;
+        level_max_ = 0.0f;
+        return stats;
+    }
+
   private:
     void compose(const roboface::LayerBank& bank);
     static uint16_t dimmed(uint16_t colour, uint8_t brightness);
@@ -68,6 +88,14 @@ class ProceduralRenderer : public IFaceRenderer {
     //: otherwise, but making it explicit keeps a stale value from ever animating a silent face.
     bool speaking_mouth_ = false;
     roboface::LipSync lips_;
+    roboface::MouthFrame last_mouth_ = roboface::MouthFrame::kClosed;
+    float last_mouth_open_ = 0.0f;
+    float last_mouth_width_ = 1.0f;
+
+    uint32_t mouth_changes_ = 0;
+    bool level_seen_ = false;
+    float level_min_ = 1.0f;
+    float level_max_ = 0.0f;
 
     uint32_t last_tick_ms_ = 0;
     bool animating_ = true;

@@ -134,6 +134,29 @@ void the_layer_order_is_the_documented_one() {
 
 }  // namespace
 
+//: Openness and curve are independent. The whole reason `open_height` exists: lip-sync drove the
+//: curve once, a face already smiling sat at the clamp, and the mouth moved two pixels. If these two
+//: ever share a number again, this fails.
+void the_mouth_opens_without_changing_its_curve() {
+    const roboface::FaceRecipe smiling{0.9f, 0.70f, 0.0f, 0.0f, 0.0f};
+    const auto shut = roboface::layout(smiling, {}, 0.0f);
+    const auto wide = roboface::layout(smiling, {}, 1.0f);
+
+    TEST_ASSERT_EQUAL_INT(0, shut.mouth.open_height);
+    TEST_ASSERT_EQUAL_INT(roboface::FaceGeometry{}.mouth_open_travel, wide.mouth.open_height);
+    // The curve is untouched: same corners, same middle.
+    TEST_ASSERT_EQUAL_INT(shut.mouth.mid_y, wide.mouth.mid_y);
+    TEST_ASSERT_EQUAL_INT(shut.mouth.left_y, wide.mouth.left_y);
+}
+
+//: A mid-crossfade or a stray level cannot turn the mouth inside out.
+void mouth_openness_is_clamped() {
+    const roboface::FaceRecipe neutral{};
+    TEST_ASSERT_EQUAL_INT(0, roboface::layout(neutral, {}, -3.0f).mouth.open_height);
+    TEST_ASSERT_EQUAL_INT(roboface::FaceGeometry{}.mouth_open_travel,
+                          roboface::layout(neutral, {}, 9.0f).mouth.open_height);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(every_state_lays_out);
@@ -144,5 +167,7 @@ int main(int, char**) {
     RUN_TEST(brows_tilt_rather_than_slide);
     RUN_TEST(out_of_range_recipes_are_clamped_not_inverted);
     RUN_TEST(the_layer_order_is_the_documented_one);
+    RUN_TEST(the_mouth_opens_without_changing_its_curve);
+    RUN_TEST(mouth_openness_is_clamped);
     return UNITY_END();
 }

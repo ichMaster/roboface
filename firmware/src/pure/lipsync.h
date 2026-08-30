@@ -31,8 +31,16 @@ enum class MouthFrame : uint8_t {
     kClosed,
     kAjar,
     kHalf,
+    kWide,
     kOpen,
     kCount,
+};
+
+//: What to draw: how far open, and how wide. Two numbers rather than one because a mouth that only
+//: changes height is a jaw hinging, and it reads as a puppet. Speech changes both.
+struct MouthPose {
+    float open = 0.0f;   // 0..1 of the geometry's opening travel
+    float width = 1.0f;  // a scale on the mouth's own width; 1.0 is neutral
 };
 
 //: One shape: the level it opens at, the level it falls back below, and how far it moves the mouth.
@@ -47,14 +55,33 @@ struct MouthStep {
     float opens_at;
     float closes_at;
     float travel;
+    //: Two widths for the same opening. Which one is used alternates from syllable to syllable --
+    //: see `LipSync::rounded()`. A spread mouth and a pursed one at the same height are the two
+    //: shapes a viewer reads as different sounds, and alternating them is what makes four shapes
+    //: look like speech instead of a jaw hinging open and shut.
+    float spread_width;
+    float round_width;
 };
 
 //: Index by `MouthFrame`. Adding a shape is adding a row and an enum entry, in that order.
+//: `travel` is how far **open** the mouth goes, 0..1 -- not how far it curves.
+//:
+//: That distinction was a real mistake before it was a design note. Driving the mouth through the
+//: recipe's `mouth_curve` meant a face already smiling at 0.70 hit the 1.0 ceiling on the first
+//: shape and moved two pixels: the lip-sync ran perfectly and was invisible. A talking mouth
+//: **opens**; it does not smile harder.
+//: The thresholds are spread across the range the signal **actually uses**, which was measured
+//: rather than assumed: a reply drives the playback level over 0..95%, and the first version of this
+//: table put its top step at 0.30. The mouth therefore sat on the top shape for almost the entire
+//: reply and changed four times in ten seconds. Spread over the real range it changes twenty to
+//: forty times, which is speech.
 inline constexpr MouthStep kMouthSteps[static_cast<std::size_t>(MouthFrame::kCount)] = {
-    {0.00f, 0.00f, 0.00f},  // kClosed -- the floor; never "opens at" anything
-    {0.06f, 0.04f, 0.18f},  // kAjar
-    {0.14f, 0.10f, 0.34f},  // kHalf
-    {0.30f, 0.22f, 0.55f},  // kOpen
+    //  opens  closes  open  spread  round
+    {0.00f, 0.00f, 0.00f, 1.00f, 1.00f},  // kClosed -- the floor; never "opens at" anything
+    {0.06f, 0.04f, 0.30f, 0.95f, 0.60f},  // kAjar
+    {0.20f, 0.15f, 0.55f, 1.10f, 0.55f},  // kHalf
+    {0.40f, 0.32f, 0.80f, 1.25f, 0.62f},  // kWide
+    {0.65f, 0.55f, 1.00f, 1.15f, 0.72f},  // kOpen  -- emphasis
 };
 
 class LipSync {
@@ -75,11 +102,25 @@ class LipSync {
             ++index;
         }
 
-        frame_ = static_cast<MouthFrame>(index);
+        // Every time the mouth shuts, the next opening takes the other width. That is the whole
+        // alternation: no phonetics, no timer -- the gaps between syllables are already in the
+        // signal, so counting them is free and lands on roughly the right rhythm.
+        const auto next = static_cast<MouthFrame>(index);
+        if (next == MouthFrame::kClosed && frame_ != MouthFrame::kClosed) rounded_ = !rounded_;
+        frame_ = next;
         return frame_;
     }
 
     MouthFrame frame() const { return frame_; }
+
+    //: Which width variant this syllable is using.
+    bool rounded() const { return rounded_; }
+
+    //: The current shape, ready to draw.
+    MouthPose pose() const {
+        const auto& step = kMouthSteps[static_cast<std::size_t>(frame_)];
+        return MouthPose{step.travel, rounded_ ? step.round_width : step.spread_width};
+    }
 
     //: Shut the mouth. Called when speech ends -- left alone it would hold the shape of the last
     //: syllable for as long as the device sat idle afterwards, which is a stranger thing to look at
@@ -88,6 +129,7 @@ class LipSync {
 
   private:
     MouthFrame frame_ = MouthFrame::kClosed;
+    bool rounded_ = false;
 };
 
 //: How much a shape adds to `FaceRecipe::mouth_curve`.

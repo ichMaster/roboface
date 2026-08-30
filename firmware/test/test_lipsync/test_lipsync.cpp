@@ -17,8 +17,9 @@ void silence_keeps_the_mouth_closed() {
 void louder_opens_further() {
     LipSync lips;
     TEST_ASSERT_TRUE(lips.feed(0.07f) == MouthFrame::kAjar);
-    TEST_ASSERT_TRUE(lips.feed(0.20f) == MouthFrame::kHalf);
-    TEST_ASSERT_TRUE(lips.feed(0.50f) == MouthFrame::kOpen);
+    TEST_ASSERT_TRUE(lips.feed(0.22f) == MouthFrame::kHalf);
+    TEST_ASSERT_TRUE(lips.feed(0.50f) == MouthFrame::kWide);
+    TEST_ASSERT_TRUE(lips.feed(0.90f) == MouthFrame::kOpen);
 }
 
 //: And it closes on the way back down, all the way.
@@ -33,11 +34,48 @@ void quieter_closes_again() {
 //: changes -- it costs more than the smooth mouth this replaced.
 void a_level_between_thresholds_does_not_flutter() {
     LipSync lips;
-    lips.feed(0.20f);
+    lips.feed(0.22f);
     const auto settled = lips.frame();
     // Wobble around that level the way a real playback envelope does.
     for (int i = 0; i < 40; ++i) {
         TEST_ASSERT_TRUE(lips.feed(i % 2 == 0 ? 0.195f : 0.205f) == settled);
+    }
+}
+
+//: **The width alternates from syllable to syllable.** Two openings of exactly the same height are
+//: drawn as two different shapes -- a spread mouth and a pursed one -- which is what makes a handful
+//: of shapes read as speech rather than as a jaw hinging.
+void consecutive_syllables_take_different_widths() {
+    LipSync lips;
+    lips.feed(0.9f);
+    const roboface::MouthPose first = lips.pose();
+    lips.feed(0.0f);   // the gap between syllables
+    lips.feed(0.9f);   // and the next one
+    const roboface::MouthPose second = lips.pose();
+
+    TEST_ASSERT_EQUAL_FLOAT(first.open, second.open);          // the same height
+    TEST_ASSERT_TRUE(first.width != second.width);             // a different shape
+}
+
+//: A mouth held open through a long vowel keeps its shape. The alternation is per syllable, not per
+//: frame -- flipping the width on every tick would be a flutter, which is what the hysteresis in
+//: this same class exists to prevent.
+void a_held_vowel_does_not_change_width() {
+    LipSync lips;
+    lips.feed(0.9f);
+    const float width = lips.pose().width;
+    for (int i = 0; i < 30; ++i) {
+        lips.feed(0.9f);
+        TEST_ASSERT_EQUAL_FLOAT(width, lips.pose().width);
+    }
+}
+
+//: Both variants are real shapes, for every step. A zero or a negative width would draw nothing or
+//: draw inverted, and either would be found on the screen rather than here.
+void every_width_is_positive() {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(MouthFrame::kCount); ++i) {
+        TEST_ASSERT_TRUE(roboface::kMouthSteps[i].spread_width > 0.0f);
+        TEST_ASSERT_TRUE(roboface::kMouthSteps[i].round_width > 0.0f);
     }
 }
 
@@ -94,6 +132,9 @@ int main(int, char**) {
     RUN_TEST(louder_opens_further);
     RUN_TEST(quieter_closes_again);
     RUN_TEST(a_level_between_thresholds_does_not_flutter);
+    RUN_TEST(consecutive_syllables_take_different_widths);
+    RUN_TEST(a_held_vowel_does_not_change_width);
+    RUN_TEST(every_width_is_positive);
     RUN_TEST(every_shape_has_hysteresis);
     RUN_TEST(the_table_is_ordered);
     RUN_TEST(a_sudden_loud_moment_opens_fully_at_once);

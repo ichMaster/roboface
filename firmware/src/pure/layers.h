@@ -61,6 +61,18 @@ struct MouthShape {
     int mid_y = 0;  // above the corners for a frown, below for a smile
     int right_x = 0;
     int right_y = 0;
+    //: How far the mouth is open, in pixels, independent of how it is curved. Zero is a line -- a
+    //: closed mouth wearing an expression.
+    //:
+    //: Separate from `mouth_curve` because they are separate things, and conflating them was a real
+    //: mistake rather than a hypothetical one: driving lip-sync through the curve meant a face that
+    //: was already smiling at 0.70 hit the 1.0 ceiling immediately and moved two pixels. A talking
+    //: mouth **opens**; it does not smile harder.
+    int open_height = 0;
+    //: The half-width of the opening, in pixels. Not the same as the distance between the corners:
+    //: an open mouth is spread on some sounds and pursed on others, and drawing every opening at the
+    //: full corner-to-corner width is what makes lip-sync look like a hinge.
+    int open_half_width = 0;
 };
 
 //: The head, and the wash behind it.
@@ -106,6 +118,7 @@ struct FaceGeometry {
     int mouth_offset_y = 42;   // below the face's centre
     int mouth_half_width = 40;
     int mouth_travel = 22;     // how far the middle moves at full curve
+    int mouth_open_travel = 24;  // the half-height at fully open
 
     int max_tilt_px = 14;      // horizontal shift of the features at `tilt == ±1`
 };
@@ -130,7 +143,11 @@ inline constexpr float clampUnit(float value, float low, float high) {
 // Turn a recipe into shapes. Total over every recipe the table can produce: the clamps below are
 // the guarantee, not a defensive habit -- a recipe interpolated mid-crossfade can briefly sit
 // slightly outside 0..1, and a face that inverts for one frame is very visible.
-inline constexpr LayerBank layout(const FaceRecipe& recipe, const FaceGeometry& geometry = {}) {
+//: `mouth_open` is 0..1 and belongs to the lip-sync, not to the recipe: how open the mouth is says
+//: nothing about how the face feels, and a shape that is both would make v2.2's emotion channel and
+//: v2.3's visemes fight over one number.
+inline constexpr LayerBank layout(const FaceRecipe& recipe, const FaceGeometry& geometry = {},
+                                  float mouth_open = 0.0f, float mouth_width = 1.0f) {
     LayerBank bank;
 
     const float openness = detail::clampUnit(recipe.eye_openness, 0.0f, 1.0f);
@@ -172,9 +189,18 @@ inline constexpr LayerBank layout(const FaceRecipe& recipe, const FaceGeometry& 
     // cheerful when it should be sad, which no test of magnitudes alone would catch.
     const int mouth_y = cy + geometry.mouth_offset_y;
     const int mid_offset = detail::roundToInt(-curve * static_cast<float>(geometry.mouth_travel));
+    const int open_height = detail::roundToInt(detail::clampUnit(mouth_open, 0.0f, 1.0f) *
+                                               static_cast<float>(geometry.mouth_open_travel));
+    // Clamped like everything else here: the widths come from a table, but the table is data and a
+    // later skin will edit it. 0.3 keeps a pursed mouth a mouth; 1.4 keeps a spread one inside the
+    // face rather than running off the cheeks.
+    const int open_half_width = detail::roundToInt(detail::clampUnit(mouth_width, 0.3f, 1.4f) *
+                                                   static_cast<float>(geometry.mouth_half_width));
     bank.mouth = MouthShape{cx - geometry.mouth_half_width, mouth_y,
                             cx,                             mouth_y + mid_offset,
-                            cx + geometry.mouth_half_width, mouth_y};
+                            cx + geometry.mouth_half_width, mouth_y,
+                            open_height,
+                            open_half_width};
 
     bank.brightness = static_cast<uint8_t>(detail::roundToInt((1.0f - dim) * 255.0f));
     return bank;

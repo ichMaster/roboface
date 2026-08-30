@@ -43,6 +43,10 @@ roboface::Chrome chrome;
 roboface::LineReader lines;
 roboface::DeviceState state = roboface::DeviceState::kBoot;
 
+//: The server has sent the last of the reply, but the speaker has not yet said it. See the note at
+//: the `frame.final` branch: the gap between those two moments is seconds, not milliseconds.
+bool reply_end_pending = false;
+
 constexpr uint32_t kStatusIntervalMs = 10000;
 
 // Nothing on this screen changes faster than DEVICE_UI's 120 ms chrome fade -- about 8 Hz. 30 Hz is
@@ -233,6 +237,10 @@ void render() {
 }
 
 void apply(roboface::DeviceEvent event) {
+    // Anything else that lands -- a tap to listen, a dropped socket, a fault -- overtakes the wait:
+    // the reply the device was finishing is no longer what it is doing.
+    if (event != roboface::DeviceEvent::kTurnEnded) reply_end_pending = false;
+
     const roboface::Transition result = roboface::transition(state, event);
     if (!result.accepted) return;
 
@@ -428,6 +436,23 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
             if (frame.final) {
                 if (reply_in_progress) Serial.println();
                 reply_in_progress = false;
+                // **The turn ends when the device has finished speaking, not when the server has
+                // finished sending.** Those are seconds apart: the server streams TTS faster than
+                // real time and the device buffers what it cannot play yet -- measured at 244 KB,
+                // which is about eight seconds of voice still to come after this frame arrives.
+                //
+                // Ending the turn here put the face into `idle` while the speaker was mid-sentence:
+                // the drift and the blink came back, and the mouth -- which only follows the audio
+                // while the state is `replying` -- froze open for the rest of the reply. Both were
+                // reported as separate faults; they are this one line.
+                //
+                // The wait is bounded by the drain timeout in `AudioIo`, which releases the bus and
+                // clears `isSpeaking()` even if the speaker never reports going quiet.
+                if (audio.isSpeaking()) {
+                    reply_end_pending = true;
+                    printConsolePrompt();
+                    return;
+                }
                 apply(roboface::DeviceEvent::kTurnEnded);
                 // The turn is over; invite the next one. Only when the console is on -- outside it
                 // the serial session is a log, and a prompt would be noise in it.
@@ -986,6 +1011,12 @@ void loop() {
     renderer.setAudioLevel(audio.outputLevel());
     if (audio.isSpeaking()) needs_push = true;
 
+    // The reply is over now: the last sample has left the speaker.
+    if (reply_end_pending && !audio.isSpeaking()) {
+        reply_end_pending = false;
+        apply(roboface::DeviceEvent::kTurnEnded);
+    }
+
     // Hearing came back after the device finished speaking. Clear the endpointer rather than
     // letting it carry the reply across: the silence during playback is not part of anyone's
     // pause, and the tail of the last sentence is not the start of the next one.
@@ -1075,9 +1106,11 @@ void loop() {
 
     if (now_ms - last_status_ms >= kStatusIntervalMs) {
         last_status_ms = now_ms;
+        const auto mouth_stats = renderer.takeMouthStats();
         Serial.printf(
             "[status] %s · link %s %s · ws %s · batt %d%%%s · fps=%lu mic=%lu cap=%lu · mon=%d "
-            "vad s=%lu e=%lu peak=%d%% zc=%u · audio %s buf=%u q=%u ref=%u drop=%u · up %lus\n",
+            "vad s=%lu e=%lu peak=%d%% zc=%u · audio %s buf=%u q=%u ref=%u drop=%u · "
+            "mouth=%lu lvl=%d..%d%% · up %lus\n",
             roboface::toString(state), net.isUp() ? "up" : "down", net.ipAddress(),
             ws.isConnected() ? "connected" : "disconnected", battery_percent,
             battery_charging ? " (charging)" : "",
@@ -1107,6 +1140,13 @@ void loop() {
             static_cast<unsigned>(audio.bytesQueued()),
             static_cast<unsigned>(audio.chunksRefused()),
             static_cast<unsigned>(audio.bytesDropped()),
+            // The mouth, as two facts rather than a stream of shape changes: how often it actually
+            // moved, and the range of levels it was given. Together they separate the two ways a
+            // mouth stops -- no signal (`lvl=0..0`) from a signal that never varies (`lvl=88..99`),
+            // which is a level pinned at the top and a mouth stuck open.
+            static_cast<unsigned long>(mouth_stats.changes),
+            static_cast<int>(mouth_stats.level_min * 100.0f),
+            static_cast<int>(mouth_stats.level_max * 100.0f),
             static_cast<unsigned long>(now_ms / 1000));
         peak_recent = 0.0f;
         crossings_recent = 0;
