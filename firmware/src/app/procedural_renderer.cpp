@@ -9,9 +9,9 @@ using roboface::kScreenWidth;
 //: The palette. One accent for every feature: this is a character, not a diagram, and a face whose
 //: parts are different colours reads as a control panel. v2.6's skins replace these three values
 //: and nothing else -- which is what "a skin is an asset swap" has to mean in practice.
-constexpr uint16_t kBackground = 0x0000;  // black; the panel's own dark is the room
-constexpr uint16_t kGlow = 0x0104;        // a very dark blue wash behind the head
-constexpr uint16_t kInk = 0x5DFF;         // the features: a soft cyan-white
+// The face's colours moved to `pure/skins.h` in v2.6 -- they are the stackchan manifest's now, and
+// the renderer reads whichever manifest it is wearing. Three constants here were the last thing
+// that made one face special.
 
 //: How far the mouth's curve is drawn as line segments. Twelve is smooth at this size and cheap;
 //: a real quadratic per pixel would be the frame budget spent on something nobody can see.
@@ -58,7 +58,7 @@ bool ProceduralRenderer::begin() {
     if (!ready_) return false;  // say so rather than presenting a blank screen as a working one
 
     crossfade_.setResting(roboface::recipeFor(roboface::DeviceState::kIdle));
-    sprite_.fillSprite(kBackground);
+    sprite_.fillSprite(skin_.background);
     push();
     return true;
 }
@@ -165,6 +165,15 @@ void ProceduralRenderer::setGazeReflex(bool active, float x) {
     animating_ = true;
 }
 
+void ProceduralRenderer::setSkin(const roboface::Skin& skin) {
+    // **Refused rather than drawn** if it cannot be drawn. A manifest whose eyes fall outside the
+    // face area does not crash -- it paints over the battery indicator, and someone notices weeks
+    // later. Keeping the current face is always safe; wearing a broken one never is.
+    if (roboface::validate(skin) != roboface::SkinFault::kNone) return;
+    skin_ = skin;
+    animating_ = true;
+}
+
 void ProceduralRenderer::setGazeVoice(bool present, float x) {
     // **Below a reflex, above the server.** A hand reaching toward the device is a nearer and more
     // specific claim on attention than a voice across the room; and this beats the server's `gaze`
@@ -265,7 +274,9 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
         level_seen_ = true;
     }
 
-    roboface::FaceGeometry geometry;
+    // **The manifest's geometry, not a default-constructed one.** This was the line that made the
+    // renderer own a face: every skin's anchors arrive here now.
+    roboface::FaceGeometry geometry = skin_.geometry;
     geometry.centre_y += static_cast<int>(idle.bob_y);
     geometry.eye_offset_y += static_cast<int>(idle.gaze_y);
     geometry.centre_x += static_cast<int>(idle.gaze_x);
@@ -280,7 +291,8 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
     const float gaze_x = reflex_gaze_  ? reflex_gaze_x_
                          : voice_gaze_ ? voice_gaze_x_
                                        : server_gaze_x_;
-    geometry.centre_x += static_cast<int>(gaze_x * static_cast<float>(geometry.max_tilt_px));
+    geometry.centre_x +=
+        static_cast<int>(gaze_x * static_cast<float>(skin_.gaze_travel_px));
 
     // Skip the compose when nothing moved. **Narrower than it sounds**: the breath is a continuous
     // wave, so this only fires when the idle is *stilled* -- `intensity` at zero, which is what
@@ -315,10 +327,10 @@ void ProceduralRenderer::compose(const roboface::LayerBank& bank) {
     //
     // Which would have been read as the chrome flickering, and looked for in the chrome.
     sprite_.fillRect(roboface::kFaceLeft, roboface::kFaceTop, roboface::kFaceWidth,
-                     roboface::kFaceHeight, kBackground);
+                     roboface::kFaceHeight, skin_.background);
 
-    const uint16_t glow = dimmed(kGlow, bank.brightness);
-    const uint16_t ink = dimmed(kInk, bank.brightness);
+    const uint16_t glow = dimmed(skin_.body_colour, bank.brightness);
+    const uint16_t ink = dimmed(skin_.ink, bank.brightness);
 
     // In the order `Layer` declares, which is the order ARCHITECTURE names. Iterating an enum would
     // be tidier and would also mean a switch nobody reads; the order is visible here instead.

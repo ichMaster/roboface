@@ -28,6 +28,7 @@
 #include "pure/facehold.h"
 #include "pure/idle.h"
 #include "pure/layers.h"
+#include "pure/skins.h"
 #include "pure/layout.h"
 #include "pure/lipsync.h"
 #include "pure/reflex.h"
@@ -53,6 +54,12 @@ class ProceduralRenderer : public IFaceRenderer {
     //: specific claim than someone talking across the room, and the local estimate beats the
     //: server's because it is the same fact without the round trip.
     void setGazeVoice(bool present, float x = 0.0f);
+
+    //: Wear a different face. **The renderer holds no face of its own** (v2.6): stackchan is a
+    //: manifest like the four spirits, which is what makes "adding a skin requires no renderer code
+    //: change" a property rather than an intention.
+    void setSkin(const roboface::Skin& skin);
+    const roboface::Skin& skin() const { return skin_; }
 
     //: Fire a reflex over the current expression. The renderer owns the layer because the layer's
     //: output is a recipe and the renderer is the only thing that draws one.
@@ -141,6 +148,11 @@ class ProceduralRenderer : public IFaceRenderer {
     float reflex_gaze_x_ = 0.0f;
     bool voice_gaze_ = false;
     float voice_gaze_x_ = 0.0f;
+
+    //: The face currently worn. Defaulted to the procedural one so a renderer that is never told
+    //: anything still draws something -- RF-083's fallback is the same idea, arrived at from the
+    //: other direction.
+    roboface::Skin skin_ = roboface::stackchan();
     //: A frame that arrived while the device was still speaking and ends the speaking. Applied
     //: when playback stops, which is the moment it was actually describing.
     roboface::EmotionFrame pending_;

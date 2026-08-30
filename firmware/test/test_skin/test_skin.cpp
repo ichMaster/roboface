@@ -8,6 +8,7 @@
 #include <unity.h>
 
 #include "pure/skin.h"
+#include "pure/skins.h"
 
 using roboface::Emotion;
 using roboface::Skin;
@@ -137,6 +138,65 @@ static void test_every_fault_has_something_to_say() {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// RF-079 — the procedural face, expressed as a manifest
+// ---------------------------------------------------------------------------------------
+
+static void test_stackchan_is_the_face_it_always_was() {
+    // **The regression that would otherwise change the face nobody was looking at.** Moving a face
+    // from constants into data is exactly the kind of refactor that arrives with one number
+    // transcribed wrong, and the symptom -- eyes 4 px too close together -- is invisible unless you
+    // have the old screen beside the new one.
+    //
+    // So the values are spelled here, not read from the manifest: a test that asked the manifest
+    // what it contained would agree with any transcription error it made.
+    const roboface::Skin skin = roboface::stackchan();
+
+    TEST_ASSERT_EQUAL_UINT16(0x5DFF, skin.ink);          // the soft cyan-white
+    TEST_ASSERT_EQUAL_UINT16(0x0104, skin.body_colour);  // the dark blue wash behind the head
+    TEST_ASSERT_EQUAL_UINT16(0x0000, skin.background);   // the panel's own dark is the room
+    TEST_ASSERT_EQUAL_INT(14, skin.gaze_travel_px);      // FaceGeometry::max_tilt_px
+
+    // The geometry is `FaceGeometry`'s documented defaults -- unchanged since v2.1.
+    TEST_ASSERT_EQUAL_INT(62, skin.geometry.eye_spacing);
+    TEST_ASSERT_EQUAL_INT(26, skin.geometry.eye_half_width);
+    TEST_ASSERT_EQUAL_INT(30, skin.geometry.eye_open_height);
+    TEST_ASSERT_EQUAL_INT(-22, skin.geometry.eye_offset_y);
+    TEST_ASSERT_EQUAL_INT(42, skin.geometry.mouth_offset_y);
+    TEST_ASSERT_EQUAL_INT(40, skin.geometry.mouth_half_width);
+}
+
+static void test_stackchan_validates_like_any_other_skin() {
+    // It is not exempt, and being subject to the same check as the spirits is the point of moving
+    // it: a schema the known-good face cannot satisfy is a schema that is wrong.
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(SkinFault::kNone),
+                          static_cast<int>(validate(roboface::stackchan())));
+}
+
+static void test_a_uniform_palette_is_still_total() {
+    // A skin whose element does not follow the emotion still fills its table. A table that is only
+    // sometimes filled in is a table someone will read when it is not.
+    const roboface::EmotionPalette palette = roboface::uniform(0x1234);
+    for (std::size_t i = 0; i < static_cast<std::size_t>(Emotion::kCount); ++i) {
+        TEST_ASSERT_EQUAL_UINT16(0x1234, palette.colour[i]);
+    }
+}
+
+static void test_the_mood_palette_lands_each_colour_on_its_own_emotion() {
+    // Seven positional arguments in enum order: the shape most likely to be silently transposed,
+    // and the one whose symptom is a face that is the wrong colour only when it is sad.
+    const roboface::EmotionPalette palette =
+        roboface::moodPalette(0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007);
+
+    TEST_ASSERT_EQUAL_UINT16(0x0001, palette.at(Emotion::kNeutral));
+    TEST_ASSERT_EQUAL_UINT16(0x0002, palette.at(Emotion::kCalm));
+    TEST_ASSERT_EQUAL_UINT16(0x0003, palette.at(Emotion::kJoy));
+    TEST_ASSERT_EQUAL_UINT16(0x0004, palette.at(Emotion::kThinking));
+    TEST_ASSERT_EQUAL_UINT16(0x0005, palette.at(Emotion::kSurprised));
+    TEST_ASSERT_EQUAL_UINT16(0x0006, palette.at(Emotion::kSad));
+    TEST_ASSERT_EQUAL_UINT16(0x0007, palette.at(Emotion::kError));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_a_sound_manifest_validates);
@@ -149,5 +209,9 @@ int main(int, char**) {
     RUN_TEST(test_the_mouth_may_not_leave_the_face_area_either);
     RUN_TEST(test_eyes_may_not_overlap);
     RUN_TEST(test_every_fault_has_something_to_say);
+    RUN_TEST(test_stackchan_is_the_face_it_always_was);
+    RUN_TEST(test_stackchan_validates_like_any_other_skin);
+    RUN_TEST(test_a_uniform_palette_is_still_total);
+    RUN_TEST(test_the_mood_palette_lands_each_colour_on_its_own_emotion);
     return UNITY_END();
 }
