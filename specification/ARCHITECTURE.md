@@ -328,6 +328,22 @@ anchors, colours, a body and an element — derived from `face-prototype.html`'s
 rather than invented beside them. The procedural face is a manifest like the four spirits, which is
 what makes *"adding a skin requires no renderer code change"* testable rather than aspirational.
 
+**Packs are compiled in, not files — and that is a deliberate narrowing of §v2.6, stated rather
+than quietly done.** The roadmap asks for *"one directory per skin under `assets/`"* and *"load a
+pack into PSRAM at `begin()`"*. What v2.6 ships is the whole of the validating load path —
+`loadSkin` takes a candidate manifest, validates it, and substitutes the procedural face with a
+named reason — and five manifests that reach it as constants rather than as parsed files. Adding a
+filesystem would add a failure surface (a card that is absent, a partition that is unformatted, a
+file half-written) for no difference the person in front of the device could see, and every one of
+those failures resolves to the same fallback this path already implements and tests. When a later
+phase wants user-supplied skins, the seam it needs is the function that is already here.
+
+**A face is never absent**, and that is the definition of the feature rather than an error path. A
+device that cannot draw a face has no way to say so — not that a pack is broken, not that the WiFi
+is down, not that it is listening. Every skin answers for itself in the boot log, healthy or not,
+because v2.4 established that a subsystem which says nothing when it is well cannot be told apart
+from one that says nothing because it never ran.
+
 The honest boundary of that claim: `SkinBody` and `SkinElement` are **closed enums**, and drawing
 them is the renderer's vocabulary. A skin combining an existing body, an existing element, its own
 anchors and its own palette costs no renderer code. A skin needing a shape nobody has drawn costs

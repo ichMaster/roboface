@@ -284,6 +284,74 @@ static void test_each_element_is_used_by_exactly_one_skin() {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// RF-083 — a face is never absent
+// ---------------------------------------------------------------------------------------
+
+static void test_a_good_manifest_is_worn_rather_than_replaced() {
+    // **The mirror-image bug, and the one nobody would notice.** A fallback that fired always would
+    // pass every test about broken packs and leave the device permanently procedural -- looking
+    // exactly like a device whose four spirits had never been written.
+    for (std::size_t i = 0; i < roboface::kSkinCount; ++i) {
+        const roboface::SkinLoad loaded = roboface::loadSkinAt(i);
+        TEST_ASSERT_FALSE(loaded.fell_back);
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(SkinFault::kNone), static_cast<int>(loaded.fault));
+        TEST_ASSERT_EQUAL_STRING(roboface::skinAt(i).name, loaded.skin.name);
+    }
+}
+
+static void test_each_way_a_pack_can_be_broken_falls_back_with_its_own_reason() {
+    // A reason per failure, because "the pack was truncated" and "the eyes are off the screen" need
+    // different things done about them and would otherwise be the same line in a log.
+    struct Case {
+        roboface::Skin skin;
+        SkinFault expected;
+    };
+
+    roboface::Skin nameless = roboface::ghost();
+    nameless.name = "";
+
+    roboface::Skin high = roboface::ghost();
+    high.geometry.eye_offset_y = -200;
+
+    roboface::Skin low = roboface::ghost();
+    low.geometry.mouth_offset_y = 200;
+
+    roboface::Skin crossed = roboface::ghost();
+    crossed.geometry.eye_spacing = 4;
+
+    roboface::Skin hole = roboface::flame();
+    hole.element_palette.colour[static_cast<std::size_t>(Emotion::kSad)] = 0;
+
+    const Case cases[] = {
+        {nameless, SkinFault::kNoName},
+        {high, SkinFault::kEyesOutsideFace},
+        {low, SkinFault::kMouthOutsideFace},
+        {crossed, SkinFault::kEyesOverlap},
+        {hole, SkinFault::kElementPaletteMissing},
+    };
+
+    for (const auto& item : cases) {
+        const roboface::SkinLoad loaded = roboface::loadSkin(item.skin);
+        TEST_ASSERT_TRUE(loaded.fell_back);
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(item.expected), static_cast<int>(loaded.fault));
+        TEST_ASSERT_EQUAL_STRING("stackchan", loaded.skin.name);
+    }
+}
+
+static void test_an_index_nothing_answers_to_is_a_missing_pack() {
+    const roboface::SkinLoad loaded = roboface::loadSkinAt(roboface::kSkinCount + 3);
+    TEST_ASSERT_TRUE(loaded.fell_back);
+    TEST_ASSERT_EQUAL_STRING("stackchan", loaded.skin.name);
+}
+
+static void test_the_fallback_itself_always_validates() {
+    // The one that must never fail. If the procedural face could be invalid there would be nothing
+    // to fall back *to*, and a device with no face has no way to say so.
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(SkinFault::kNone),
+                          static_cast<int>(validate(roboface::loadSkin(roboface::Skin{}).skin)));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_a_sound_manifest_validates);
@@ -307,5 +375,9 @@ int main(int, char**) {
     RUN_TEST(test_an_unknown_name_is_refused_rather_than_defaulted);
     RUN_TEST(test_the_spirits_kept_the_prototypes_anchors);
     RUN_TEST(test_each_element_is_used_by_exactly_one_skin);
+    RUN_TEST(test_a_good_manifest_is_worn_rather_than_replaced);
+    RUN_TEST(test_each_way_a_pack_can_be_broken_falls_back_with_its_own_reason);
+    RUN_TEST(test_an_index_nothing_answers_to_is_a_missing_pack);
+    RUN_TEST(test_the_fallback_itself_always_validates);
     return UNITY_END();
 }

@@ -196,4 +196,49 @@ inline std::size_t skinIndexFor(const char* name) {
     return kSkinCount;
 }
 
+//: What loading a skin produced.
+struct SkinLoad {
+    Skin skin;
+    SkinFault fault = SkinFault::kNone;
+    //: Whether the procedural face was substituted. **Distinct from `fault != kNone`** so a caller
+    //: cannot conflate "the pack was fine" with "the pack was broken and we coped": the second one
+    //: needs a line in a log, and telling them apart is exactly what v2.4's proximity sensor could
+    //: not do.
+    bool fell_back = false;
+};
+
+//: Take a manifest, or fall back to the procedural face.
+//:
+//: **A face is never absent, and that is the definition of the feature rather than an error path.**
+//: A device that cannot draw a face has no way to tell anyone anything -- not that a pack is
+//: broken, not that the WiFi is down, not that it is listening. So there is no failure mode here
+//: in which nothing is worn; there is only "what was asked for" and "the one that always works".
+//:
+//: The fault is carried out rather than swallowed. v2.4's lesson, literally: `begin()` must not
+//: report success for something it did not load, and asking whether a thing exists is a different
+//: question from asking whether it validated.
+inline SkinLoad loadSkin(const Skin& candidate) {
+    SkinLoad loaded;
+    loaded.fault = validate(candidate);
+    if (loaded.fault == SkinFault::kNone) {
+        loaded.skin = candidate;
+        return loaded;
+    }
+    loaded.skin = stackchan();
+    loaded.fell_back = true;
+    return loaded;
+}
+
+//: The same, by index -- an index nothing answers to is as much a missing pack as a corrupt file.
+inline SkinLoad loadSkinAt(std::size_t index) {
+    if (index >= kSkinCount) {
+        SkinLoad loaded;
+        loaded.skin = stackchan();
+        loaded.fault = SkinFault::kNoName;
+        loaded.fell_back = true;
+        return loaded;
+    }
+    return loadSkin(skinAt(index));
+}
+
 }  // namespace roboface

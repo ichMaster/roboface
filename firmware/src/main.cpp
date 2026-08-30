@@ -358,8 +358,15 @@ bool storeCapturedFrame(const uint8_t* data, std::size_t length) {
 //: skin -- the carousel, `/skin` and `config_updated` -- must not each grow their own idea of what
 //: changing a skin involves.
 void wearSkin(std::size_t index, uint32_t now_ms, bool announce) {
-    if (index >= roboface::kSkinCount) return;
-    renderer.setSkin(roboface::skinAt(index));
+    // **Through the loader, always** -- so the fallback is the ordinary path rather than an
+    // exceptional one, and a broken manifest is a face plus a line in the log instead of a blank
+    // screen. `setSkin` refuses an invalid manifest too; this reports *why*.
+    const roboface::SkinLoad loaded = roboface::loadSkinAt(index);
+    if (loaded.fell_back) {
+        Serial.printf("\n[skin] пакет непридатний (%s) — процедурне обличчя\n",
+                      roboface::toString(loaded.fault));
+    }
+    renderer.setSkin(loaded.skin);
     if (announce) {
         toast_text = renderer.skin().name;
         toast_until_ms = now_ms + roboface::kToastMs;
@@ -1342,6 +1349,15 @@ void setup() {
     // Asked at each `hello`, so a reconnect reports the face actually worn rather than the one the
     // device booted with.
     ws.onFaceSet([]() -> const char* { return renderer.skin().name; });
+
+    // **Every pack, checked at boot and reported either way.** v2.4's rule, applied to skins: a
+    // subsystem that says nothing when it is healthy cannot be told apart from one that says
+    // nothing because it never ran. So each face answers for itself here, once, in the boot log.
+    for (std::size_t i = 0; i < roboface::kSkinCount; ++i) {
+        const roboface::SkinLoad loaded = roboface::loadSkinAt(i);
+        Serial.printf("[skin] %-10s %s\n", roboface::skinAt(i).name,
+                      loaded.fell_back ? roboface::toString(loaded.fault) : "ok");
+    }
 
     if (!renderer.begin()) {
         // A blank screen presented as a working one is worse than an admission. PSRAM is the only
