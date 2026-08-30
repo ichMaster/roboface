@@ -158,14 +158,30 @@ fi
 PYTHONPATH=server nohup .venv/bin/python -m roboface_server.app >> var/server.log 2>&1 &
 echo $! > var/server.pid
 
-# Wait for the socket rather than reporting success off a fork that may already have died on a
-# bad key or a taken port.
+# Wait for **our own** socket, not for any socket.
+#
+# The previous version waited for a listener on the port and reported success as soon as it saw
+# one. When an older server was still holding the port -- a stray process with no PID file, which
+# is the normal aftermath of a reboot or a manual start -- that check passed on its first
+# iteration: the script said "started", the new process died on bind moments later, and the box
+# went on serving the old code. That is the worst outcome available, because it is a confident
+# success message over a stale deployment, and it is how a board ran a build four releases old
+# while every deploy reported fine.
+mine="$(cat var/server.pid)"
 for _ in $(seq 1 40); do
-    if (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | grep -q ":$RF_PORT "; then
-        echo "  started (pid $(cat var/server.pid)), listening on :$RF_PORT"
-        exit 0
+    owner="$( (ss -ltnp 2>/dev/null || true) | grep ":$RF_PORT " | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2 )"
+    if [[ -n "$owner" ]]; then
+        if [[ "$owner" == "$mine" ]]; then
+            echo "  started (pid $mine), listening on :$RF_PORT"
+            exit 0
+        fi
+        echo "  :$RF_PORT is held by pid $owner, which is not the server just started" >&2
+        pgrep -af 'roboface_server.app' | sed 's/^/    /' >&2
+        kill "$mine" 2>/dev/null || true
+        rm -f var/server.pid
+        exit 1
     fi
-    kill -0 "$(cat var/server.pid)" 2>/dev/null || {
+    kill -0 "$mine" 2>/dev/null || {
         echo "  the process exited during startup; last lines:" >&2
         tail -15 var/server.log >&2
         rm -f var/server.pid
@@ -173,7 +189,7 @@ for _ in $(seq 1 40); do
     }
     sleep 0.25
 done
-echo "  started (pid $(cat var/server.pid)) but nothing is listening on :$RF_PORT yet" >&2
+echo "  started (pid $mine) but nothing is listening on :$RF_PORT yet" >&2
 tail -15 var/server.log >&2
 exit 1
 EOF
@@ -201,15 +217,26 @@ if [[ -f var/server.pid ]]; then
     rm -f var/server.pid
 fi
 
-# A PID file only knows about servers this script started. Anything else holding the port is still
-# in the way, so say so rather than leaving a confusing "stopped" followed by a failing start.
-if pgrep -f 'roboface_server.app' >/dev/null 2>&1; then
-    echo "  note: another roboface_server process is still running:"
-    pgrep -af 'roboface_server.app' | sed 's/^/    /'
-    echo "    stop it with: pkill -f roboface_server.app"
-elif [[ "$stopped" == "0" ]]; then
-    echo "  not running"
-fi
+# **A PID file is a hint, not the authority.** What this script manages is "the RoboFace server on
+# this box", and a server process with no PID file -- left by a reboot, a manual start, or a
+# previous version of this script -- is still that. The earlier version only *noted* such a process
+# and left it running, which meant `restart` could report success while the old code kept the port.
+# On a single-purpose box that caution bought nothing and cost a great deal.
+#
+# Matched by executable rather than by command line alone: `pgrep -f roboface_server.app` also
+# matches the shell running this very heredoc, whose command line contains the string.
+for pid in $(pgrep -f 'roboface_server.app' 2>/dev/null || true); do
+    [[ "$pid" == "$$" || "$pid" == "$PPID" ]] && continue
+    readlink -f "/proc/$pid/exe" 2>/dev/null | grep -q python || continue
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 40); do kill -0 "$pid" 2>/dev/null || break; sleep 0.25; done
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+    echo "  stopped an unmanaged server (pid $pid)"
+    stopped=1
+done
+
+[[ "$stopped" == "0" ]] && echo "  not running"
+exit 0
 EOF
 }
 
