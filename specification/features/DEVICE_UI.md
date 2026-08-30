@@ -58,6 +58,33 @@ The face is the button. Gestures split into two families: **affection**, which t
 | Swipe down from the top edge | — | control | the **status sheet** (below) |
 | Swipe up / tap outside | — | control | dismiss the sheet |
 | Tap the mic button | top-left corner | control | mute / unmute the microphone, with an audible click |
+| Hold 1.2 s without speaking | the face | control | opens the **skin carousel**: slide to choose, release to confirm |
+
+> **The carousel is the only gesture that takes something back, and it is built to make that cheap**
+> (v2.6). A hold is push-to-talk from the first millisecond — that is the common case and must not
+> wait — so by the time 1.2 s of silence converts it, a listening window has been opened and is then
+> taken away. The device closes it explicitly rather than leaving it open behind the strip: a
+> microphone left on by a gesture that was reinterpreted is a microphone nobody knows is on.
+>
+> Everything else about the carousel follows from that cost. It **previews** as the finger slides,
+> because five dots say nothing about what the faces look like and choosing blind is not choosing.
+> Releasing **outside** the strip cancels rather than snapping to the nearest dot, because a person
+> who has changed their mind must be able to say so. And an interrupted gesture — a state change
+> under the finger, a dropped socket — restores rather than keeping the preview: a face chosen by a
+> gesture the device interrupted is a face nobody chose.
+>
+> While the strip is open the finger belongs to it and to nothing else. Feeding those samples to the
+> affection classifier as well would tickle the face on every release and report a tap to the
+> server — the same leak the mute gesture kept springing, in a new place.
+>
+> **The bottom band, in order: carousel > fault > toast > level meter.** The roadmap orders it
+> "carousel > toast > level meter" and says nothing about the fault, because the fault's own rule is
+> stronger than any of them and is stated separately: the one thing a person must not miss is the
+> one thing that cannot disappear on its own. So a toast waits for a fault to be resolved.
+>
+> The toast is **the one place chrome carries a word**, and it is a name rather than a state — "the
+> ghost" is not something the device is doing, it is what the person just chose, and confirming a
+> choice by naming it is the whole point of a confirmation. It stands 2.2 s and goes.
 
 > **Mute is a button, not a gesture — and it took three attempts to get there.** This table said
 > "two-finger tap" from the start and v2.4 implemented it, but on the board it never fired: the

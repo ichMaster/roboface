@@ -50,7 +50,8 @@ uint8_t fadeAlpha(bool visible, uint32_t settled_for_ms) {
 
 }  // namespace
 
-void ChromeView::draw(M5Canvas* canvas, const roboface::Chrome& chrome, float level) {
+void ChromeView::draw(M5Canvas* canvas, const roboface::Chrome& chrome, float level,
+                      std::size_t selected, std::size_t skins) {
     if (canvas == nullptr) return;
 
     const roboface::ChromeVisibility shown = chrome.visibility();
@@ -81,6 +82,8 @@ void ChromeView::draw(M5Canvas* canvas, const roboface::Chrome& chrome, float le
 
     if (shown.band == roboface::BandTenant::kFault) drawFaultLine(*canvas, chrome.fault());
     if (shown.band == roboface::BandTenant::kLevel) drawLevelMeter(*canvas, level);
+    if (shown.band == roboface::BandTenant::kCarousel) drawCarousel(*canvas, selected, skins);
+    if (shown.band == roboface::BandTenant::kToast) drawToast(*canvas, chrome.toastText());
 }
 
 void ChromeView::drawLink(M5Canvas& canvas, roboface::LinkState state, uint8_t alpha) {
@@ -186,6 +189,39 @@ void ChromeView::drawLevelMeter(M5Canvas& canvas, float level) {
             static_cast<std::size_t>(index) < lit ? kIndicatorColour : kMeterIdleColour;
         canvas.fillRect(x, base - height, bar_width, height, colour);
     }
+}
+
+void ChromeView::drawCarousel(M5Canvas& canvas, std::size_t selected, std::size_t skins) {
+    // A dot per face, the selected one larger and lit. **No names**: DEVICE_UI and MISSION both say
+    // a device state is a face or an indicator and never a word, and the face being previewed above
+    // is a far better label than "jelly" would be.
+    if (skins == 0) return;
+
+    for (std::size_t i = 0; i < skins; ++i) {
+        const int x = roboface::carouselDotX(i, skins);
+        const int y = roboface::kCarouselCentreY;
+        if (i == selected) {
+            canvas.fillCircle(x, y, roboface::kCarouselSelectedRadius, kIndicatorColour);
+        } else {
+            canvas.drawCircle(x, y, roboface::kCarouselDotRadius, kMeterIdleColour);
+        }
+    }
+}
+
+void ChromeView::drawToast(M5Canvas& canvas, const char* text) {
+    // **The one place chrome carries a word, and it is a name rather than a state.** DEVICE_UI's
+    // rule is that a device state is never text; "the ghost" is not a state, it is what the person
+    // just chose, and confirming a choice by naming it is the whole point of a confirmation.
+    if (text == nullptr) return;
+
+    canvas.setTextColor(kIndicatorColour, kBandBackground);
+    // Set the face explicitly. The sprite keeps whatever the console last set, which in v0.5 left
+    // a 20 px Cyrillic face drawing into a 28 px band for the rest of the session.
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextSize(1);
+    canvas.setTextDatum(middle_center);
+    canvas.drawString(text, roboface::kScreenWidth / 2,
+                      roboface::kFaceBottom + roboface::kBandHeight / 2);
 }
 
 }  // namespace app

@@ -48,6 +48,7 @@ enum class BandTenant {
     kLevel,     // v1 — the input-level meter
     kFault,     // this version — the enumerated error code
     kCarousel,  // v2.6 — the skin carousel
+    kToast,     // v2.6 — the whisper confirmation after a skin changes
 };
 
 // The device-local facts chrome is drawn from.
@@ -56,6 +57,14 @@ struct ChromeFacts {
     int battery_percent = 100;
     bool charging = false;
     bool fault_active = false;
+    //: When the confirmation toast stops being shown. **An expiry rather than a flag**, for the
+    //: reason v2.2's `FaceHold` had to learn twice: a boolean someone must remember to clear is a
+    //: boolean that stays set, and a toast that never went away would hold the band against the
+    //: level meter for the rest of the session.
+    uint32_t toast_until_ms = 0;
+    //: What the toast says -- the skin's name. Not owned: it points at a manifest's `name`, which
+    //: is a string literal with static lifetime.
+    const char* toast_text = nullptr;
     ErrorCode fault = ErrorCode::kUnknown;
     // v1 / v2.6 set these; declared now so the band arbitration is complete rather than growing a
     // branch per version.
@@ -136,6 +145,12 @@ class Chrome {
         // rule. It is also what makes the fading safe for everything else: the one thing a person
         // must not miss is the one thing that cannot disappear on its own.
         if (facts_.fault_active) return BandTenant::kFault;
+        // **Above the meter, below a fault** (v2.6). ROADMAP §v2.6 orders it "carousel > toast >
+        // level meter" and does not mention the fault, because the fault's rule is stated
+        // separately and is stronger than any of them: the one thing a person must not miss is the
+        // one thing that cannot disappear on its own. So a toast waits for a fault to be resolved,
+        // and a fault is never displaced by a confirmation.
+        if (facts_.toast_until_ms > now_ms_) return BandTenant::kToast;
         if (facts_.level_meter_wanted) return BandTenant::kLevel;
         return BandTenant::kNothing;
     }
@@ -149,6 +164,7 @@ class Chrome {
     int batteryPercent() const { return facts_.battery_percent; }
     bool charging() const { return facts_.charging; }
     bool micMuted() const { return facts_.mic_muted; }
+    const char* toastText() const { return facts_.toast_text; }
 
     // How long the current indicator state has been settled -- the drawing code uses this to place
     // itself within the 120 ms in / 400 ms out fade rather than tracking its own clock.

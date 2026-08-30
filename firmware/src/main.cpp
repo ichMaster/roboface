@@ -21,6 +21,7 @@
 #include "app/sensors.h"
 #include "app/ws.h"
 #include "config.h"
+#include "pure/carousel.h"
 #include "pure/chrome.h"
 #include "pure/direction.h"
 #include "pure/console.h"
@@ -46,6 +47,12 @@ app::ProceduralRenderer renderer;
 app::ChromeView chrome_view;
 app::ConsoleView console_view;
 app::AudioIo audio;
+
+//: The skin carousel, and the confirmation that follows a change. v2.6.
+roboface::Carousel carousel;
+uint32_t toast_until_ms = 0;
+const char* toast_text = nullptr;
+
 app::Imu imu;
 app::Proximity proximity;
 roboface::Chrome chrome;
@@ -290,7 +297,8 @@ void render() {
         // render would restart the frame's ttl on every repaint and it would never expire.
         renderer.show(state);
     }
-    chrome_view.draw(renderer.canvas(), chrome, audio.inputLevel());
+    chrome_view.draw(renderer.canvas(), chrome, audio.inputLevel(), carousel.selected(),
+                     roboface::kSkinCount);
     if (debug_line && renderer.canvas() != nullptr) {
         renderer.canvas()->setTextColor(0x39E7, 0x0000);
         // Explicit, for the same reason chrome_view.cpp is: this line inherited the console's font
@@ -317,6 +325,11 @@ void apply(roboface::DeviceEvent event) {
     // just after would merge into a multi-tap the person never performed, and the server would be
     // told so.
     gestures.reset();
+    // And the carousel, for the same reason one layer up: a face chosen by a gesture the device
+    // interrupted is a face nobody chose. `abandon` restores rather than keeping the preview.
+    if (carousel.abandon() == roboface::CarouselOutcome::kCancelled) {
+        renderer.setSkin(roboface::skinAt(carousel.selected()));
+    }
     Serial.printf("\n[state] %s\n", roboface::toString(state));
     render();
     needs_push = true;
@@ -339,6 +352,20 @@ bool sendCapturedFrame(const uint8_t* data, std::size_t length) {
 // The loopback sink: the same frames, into the playback buffer instead of onto the wire.
 bool storeCapturedFrame(const uint8_t* data, std::size_t length) {
     return audio.captureToBacklog(data, length) == length;
+}
+
+//: Wear a face, and say so in the band. One function, because the three things that change a
+//: skin -- the carousel, `/skin` and `config_updated` -- must not each grow their own idea of what
+//: changing a skin involves.
+void wearSkin(std::size_t index, uint32_t now_ms, bool announce) {
+    if (index >= roboface::kSkinCount) return;
+    renderer.setSkin(roboface::skinAt(index));
+    if (announce) {
+        toast_text = renderer.skin().name;
+        toast_until_ms = now_ms + roboface::kToastMs;
+    }
+    render();
+    needs_push = true;
 }
 
 //: Where a voice is, and what has been told to the server about it. v2.5.
@@ -577,6 +604,22 @@ void onTouchGesture(const roboface::TouchResult& touched, uint32_t now_ms) {
         return;  // control is local UI and is deliberately not reported (DEVICE_UI §Input)
     }
 
+    // **The carousel's gesture finally has a consumer** (v2.6). `kHeldSilent` has been produced by
+    // `pure/touch.h` since v2.4 and used by nothing; DEVICE_UI §Input always said it converts a
+    // silent hold into the face chooser.
+    if (touched.gesture == roboface::TouchGesture::kHeldSilent) {
+        if (carousel.open(roboface::skinIndexFor(renderer.skin().name), roboface::kSkinCount,
+                          now_ms) == roboface::CarouselOutcome::kOpened) {
+            // The hold opened a listening window 1.2 s ago and the person meant something else.
+            // Give it back before drawing anything: a microphone left open by a gesture that was
+            // reinterpreted is a microphone nobody knows is on.
+            if (audio.isListening()) endListening("carousel");
+            audio.click();
+            needs_push = true;
+        }
+        return;
+    }
+
     const roboface::Reflex reflex = reflexFor(touched.gesture);
     if (reflex != roboface::Reflex::kNone) {
         if (touched.gesture == roboface::TouchGesture::kTap ||
@@ -655,6 +698,9 @@ void updateChrome(uint32_t now_ms, bool fault_active, roboface::ErrorCode fault)
     // The meter is wanted exactly while the microphone is open. The band arbitrates -- a fault
     // outranks it, per DEVICE_UI -- so this states a want rather than a decision.
     facts.level_meter_wanted = audio.isListening();
+    facts.carousel_wanted = carousel.isOpen();
+    facts.toast_until_ms = toast_until_ms;
+    facts.toast_text = toast_text;
     facts.mic_muted = !active_listening;
     chrome.update(now_ms, facts);
 
@@ -799,9 +845,7 @@ void onSocketEvent(app::Ws::Event event, const roboface::ServerFrame& frame) {
                               frame.face_set.empty() ? "(порожньо)" : frame.face_set.c_str());
                 return;
             }
-            renderer.setSkin(roboface::skinAt(index));
-            render();
-            needs_push = true;
+            wearSkin(index, millis(), true);
             Serial.printf("\n[skin] %s (від сервера)\n", renderer.skin().name);
             return;
         }
@@ -1137,9 +1181,7 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
             Serial.printf("\n[skin] немає такого: %s (спробуйте /skins)\n", name.c_str());
             return;
         }
-        renderer.setSkin(roboface::skinAt(index));
-        render();
-        needs_push = true;
+        wearSkin(index, now_ms, true);
         Serial.printf("\n[skin] %s\n", renderer.skin().name);
         return;
     }
@@ -1393,6 +1435,27 @@ void serviceTouch() {
     // control from driving the microphone it controls.
     //
     // Latched at the down edge, so sliding off the button cannot hand the rest of the press to PTT.
+    // **While the carousel is open the finger belongs to it**, and to nothing else. Letting the
+    // gesture classifier see these samples too would tickle the face on every release and report a
+    // tap to the server -- the same leak the mute gesture kept springing, in a new place.
+    if (carousel.isOpen()) {
+        was_pressed = pressed;
+        if (pressed) {
+            if (carousel.moved(detail.x, detail.y) == roboface::CarouselOutcome::kMoved) {
+                wearSkin(carousel.selected(), now_ms, false);  // preview: no toast yet
+            }
+            return;
+        }
+        const roboface::CarouselOutcome outcome = carousel.released();
+        // Confirmed *or* cancelled, the face is set from `selected()` -- a cancel has already put
+        // the original back there. One path, so a cancel cannot forget to restore.
+        wearSkin(carousel.selected(), now_ms,
+                 outcome == roboface::CarouselOutcome::kConfirmed);
+        if (outcome == roboface::CarouselOutcome::kConfirmed) audio.click();
+        needs_push = true;
+        return;
+    }
+
     if (!pressed) {
         press_began_on_button = false;
     } else if (!was_pressed) {
@@ -1622,7 +1685,8 @@ void loop() {
                                                         : kMinPushIntervalMs;
     if (needs_push && now_ms - last_push_ms >= push_interval) {
         if (console.isOn()) console_view.draw(renderer.canvas(), transcript);
-        chrome_view.draw(renderer.canvas(), chrome, audio.inputLevel());
+        chrome_view.draw(renderer.canvas(), chrome, audio.inputLevel(), carousel.selected(),
+                     roboface::kSkinCount);
         // Either side of the 153 KB push -- the single most expensive thing the loop does, and
         // therefore the widest gap a finger can fall into.
         serviceTouch();
