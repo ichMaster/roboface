@@ -1,3 +1,17 @@
+Version 2.6.1 (2026-08-30)
+---------------------------
+- config_updated has a sender. The frame was defined, encoded, decoded,
+  contract-tested and mirrored to the firmware, and nothing on the server
+  ever emitted one -- so "switchable both ways" was half false. POST
+  /face/{face_set} fixes it, with an integration test that starts from an
+  HTTP request rather than from the frame.
+- The carousel tells the gesture classifier it has lost the finger. Without
+  it the next touch was measured from where the previous hold began, and a
+  distance past the stroke threshold caressed the face on behalf of nobody.
+- The carousel is no longer abandoned while the finger is still on it. Its
+  own opening closes a listening window, the server answers the fragment,
+  and that reply used to take the strip out from under the person's hand.
+
 Version 2.6.0 (2026-08-30)
 ---------------------------
 - Five faces, one contract: stackchan plus ghost, flame, jellyfish and cloud,
