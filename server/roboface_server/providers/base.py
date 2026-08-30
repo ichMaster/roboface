@@ -22,6 +22,7 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
+from roboface_server.emotion import ModelReport
 from roboface_server.protocol import ErrorCode
 
 #: Who said a thing. `model` rather than `assistant`: it is the vendor-neutral word, and the
@@ -60,6 +61,26 @@ class ProviderError(Exception):
         self.code = code
 
 
+@dataclass(frozen=True, slots=True)
+class ReplyText:
+    """One piece of the model's answer, ready to send."""
+
+    text: str
+
+
+#: What a chat stream can produce. From v2.2 a reply is not only text: the model reports its own
+#: emotional state alongside it, and the two arrive **interleaved on one connection**.
+#:
+#: A union rather than a second method, and the reason is latency rather than taste. A separate
+#: call asking "how do you feel about what you just said?" would cost a second round trip on every
+#: turn — and by then the device has already spoken the answer with the wrong face.
+#:
+#: :class:`~roboface_server.emotion.ModelReport` is reused rather than re-declared: the provider
+#: produces exactly what the emotion engine consumes, and two structurally identical types would
+#: drift the first time one of them gained a field.
+LLMEvent = ReplyText | ModelReport
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     """Chat completion, streamed.
@@ -70,13 +91,21 @@ class LLMProvider(Protocol):
     for a second chat vendor: that is a non-goal, not a backlog item.
     """
 
-    def stream(self, system: str, messages: Sequence[Message]) -> AsyncIterator[str]:
-        """Yield reply deltas as they arrive.
+    def stream(self, system: str, messages: Sequence[Message]) -> AsyncIterator[LLMEvent]:
+        """Yield reply deltas and the model's self-report as they arrive.
 
         Not ``async def``: the method itself returns the iterator, so a caller can await the
-        *first* delta under its own budget (ARCHITECTURE §Budgets and abort semantics) without
+        *first* event under its own budget (ARCHITECTURE §Budgets and abort semantics) without
         awaiting the whole call first. An ``async def`` returning an iterator would defer that
         choice to the implementation, which is exactly where it must not live.
+
+        **Order is part of the contract**: the report, when there is one, comes before the text it
+        describes. The device should change expression as it begins to speak, not after — and the
+        only way to guarantee that is for the report to be the first thing the model produces,
+        which is why the response schema puts it first (see `gemini.py`).
+
+        A stream may carry no report at all. That is not a failure: the model answered, which is
+        what a turn is for, and the emotion engine falls back to `neutral`.
         """
         ...
 

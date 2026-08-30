@@ -30,12 +30,14 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from roboface_server.emotion import ModelReport
 from roboface_server.logging import chars, log
 from roboface_server.prompt import build_system_prompt
 from roboface_server.protocol import ErrorCode
 from roboface_server.providers.base import (
     ASRProvider,
     ASRSession,
+    LLMEvent,
     LLMProvider,
     Message,
     ProviderError,
@@ -72,6 +74,48 @@ DEFAULT_FIRST_AUDIO_BUDGET_S: Final = 3.0
 #: usually needs only its endpointing window. A breach here means recognition is running in batch
 #: somewhere, which is the failure this phase is designed to make impossible.
 DEFAULT_ASR_BUDGET_S: Final = 5.0
+
+
+class _ReplyStream:
+    """The provider's union stream, seen as text with the report kept to one side.
+
+    From v2.2 :meth:`LLMProvider.stream` yields two kinds of thing. Every consumer downstream --
+    the phrase splitter, the history, the deltas on the wire -- wants only one of them, and
+    threading `isinstance` through each of those sites would put the union in five places to serve
+    one purpose.
+
+    So it is unwrapped once, here. What comes out is text; what was set aside is on :attr:`report`.
+
+    **The first-token budget still measures the right thing.** It is applied to the first item this
+    iterator produces, which is the first *text* -- a report arriving promptly followed by a stalled
+    reply is still a stalled reply, and a budget satisfied by the report would have stopped
+    protecting the thing it exists to protect.
+    """
+
+    def __init__(self, source: AsyncIterator[LLMEvent]) -> None:
+        self._source = source
+        #: What the model said about its own state, or ``None`` if it never said. Populated as the
+        #: stream is consumed -- read it after the first delta, not before.
+        self.report: ModelReport | None = None
+
+    def __aiter__(self) -> _ReplyStream:
+        return self
+
+    async def __anext__(self) -> str:
+        while True:
+            event = await self._source.__anext__()
+            if isinstance(event, ModelReport):
+                # Last one wins. The schema produces exactly one, so a second would mean the model
+                # revised itself mid-answer -- in which case the later word is the better one.
+                self.report = event
+                continue
+            return event.text
+
+    async def aclose(self) -> None:
+        """Close the underlying stream. An abandoned turn leaves an open HTTP response otherwise."""
+        closer = getattr(self._source, "aclose", None)
+        if closer is not None:
+            await closer()
 
 
 class TurnAborted(Exception):
@@ -153,7 +197,10 @@ class Orchestrator:
         self._remember(session_id, user_message)
         history = self._history[session_id]
 
-        stream = self.provider.stream(self.system_prompt, tuple(history))
+        # The provider yields text *and* the model's self-report, interleaved. `_ReplyStream`
+        # separates them so everything below stays about the turn rather than about the union --
+        # and so the report is in hand by the time RF-062 needs to put it on the wire.
+        stream = _ReplyStream(self.provider.stream(self.system_prompt, tuple(history)))
         collected: list[str] = []
         # A turn has exactly two endings: it completes, or it rolls back. Abandonment -- a
         # consumer that stops iterating -- was silently a third, leaving the user message

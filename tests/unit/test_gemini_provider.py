@@ -10,15 +10,41 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
 from roboface_server.protocol import ErrorCode
-from roboface_server.providers import LLMProvider, Message, ProviderError
+from roboface_server.providers import (
+    LLMProvider,
+    Message,
+    ModelReport,
+    ProviderError,
+    ReplyText,
+)
 from roboface_server.providers.gemini import GeminiProvider
 
+
+def _texts(events: list[Any]) -> list[str]:
+    return [event.text for event in events if isinstance(event, ReplyText)]
+
+
 API_KEY = "AIza-not-a-real-key-0123456789"
+
+
+def _json_chunks(
+    reply_parts: list[str], *, emotion: str = "joy", intensity: float = 0.7
+) -> list[Any]:
+    """The chunks a model answering under the v2.2 response schema actually produces.
+
+    The report first and whole -- that is what the schema's property ordering buys -- then the
+    reply's text arriving in pieces. Written as raw JSON fragments rather than built with
+    `json.dumps`, because the *split points* are the thing under test and generating them would
+    hide exactly the boundary a real network puts in the middle of a word.
+    """
+    head = f'{{"emotion": "{emotion}", "intensity": {intensity}, "reply": "'
+    return [_Chunk(head), *[_Chunk(part) for part in reply_parts], _Chunk('"}')]
 
 
 class _Chunk:
@@ -92,11 +118,56 @@ def test_the_adapter_satisfies_the_provider_protocol() -> None:
 
 @pytest.mark.asyncio
 async def test_chunks_are_yielded_in_order() -> None:
-    models = _FakeModels(_FakeStream([_Chunk("При"), _Chunk("віт"), _Chunk("!")]))
+    models = _FakeModels(_FakeStream(_json_chunks(["При", "віт", "!"])))
 
-    deltas = [delta async for delta in _provider(models).stream("s", [])]
+    events = [event async for event in _provider(models).stream("s", [])]
 
-    assert deltas == ["При", "віт", "!"]
+    assert _texts(events) == ["При", "віт", "!"]
+
+
+@pytest.mark.asyncio
+async def test_the_report_arrives_before_the_first_word() -> None:
+    """The reason the schema declares `emotion` first, checked end to end.
+
+    The head of the JSON object carries the whole report, so it is complete before a single
+    character of the reply exists. The device therefore changes expression as it starts to speak.
+    """
+    models = _FakeModels(_FakeStream(_json_chunks(["Привіт"], emotion="sad", intensity=0.25)))
+
+    events = [event async for event in _provider(models).stream("s", [])]
+
+    assert events[0] == ModelReport(emotion="sad", intensity=0.25)
+    assert all(isinstance(event, ReplyText) for event in events[1:])
+
+
+@pytest.mark.asyncio
+async def test_the_reply_survives_a_chunk_boundary_anywhere() -> None:
+    r"""Fed one character at a time, which is every boundary at once.
+
+    Including inside an escape sequence and inside a multi-byte character. Ukrainian is two bytes
+    a letter and the SDK may hand over \uXXXX escapes, so a boundary landing mid-escape is the
+    ordinary case here rather than the edge one -- and the reassembled text must be identical, not
+    merely similar.
+    """
+    expected = "Привіт! Це «тест» — з \n переносом і 😀."
+    whole = json.dumps({"emotion": "joy", "intensity": 0.5, "reply": expected})
+    models = _FakeModels(_FakeStream([_Chunk(char) for char in whole]))
+
+    events = [event async for event in _provider(models).stream("s", [])]
+
+    assert "".join(_texts(events)) == expected
+
+
+@pytest.mark.asyncio
+async def test_a_response_that_is_not_the_requested_object_is_a_provider_error() -> None:
+    """Coerced everywhere else, reported here -- because this is not a bad *emotion*, it is a
+    response with no reply text in it at all. There is no face to fall back to; there is no turn."""
+    models = _FakeModels(_FakeStream([_Chunk("I'm afraid I can't do that.")]))
+
+    with pytest.raises(ProviderError) as raised:
+        [event async for event in _provider(models).stream("s", [])]
+
+    assert raised.value.code is ErrorCode.LLM_FAILED
 
 
 @pytest.mark.asyncio
@@ -108,29 +179,32 @@ async def test_a_delta_is_yielded_before_the_stream_is_exhausted() -> None:
     the gate is still shut is proof the adapter forwards as it goes.
     """
     gate = asyncio.Event()
-    stream = _FakeStream([_Chunk("a"), _Chunk("b"), _Chunk("c")], gate=gate)
+    stream = _FakeStream(_json_chunks(["a", "b", "c"]), gate=gate)
     models = _FakeModels(stream)
 
     iterator = _provider(models).stream("s", [])
+    report = await anext(iterator)
     first = await anext(iterator)
     second = await anext(iterator)
 
-    assert (first, second) == ("a", "b")
-    assert stream.yielded < 3, "the adapter drained the SDK stream before yielding anything"
+    assert isinstance(report, ModelReport)
+    assert (first, second) == (ReplyText(text="a"), ReplyText(text="b"))
+    assert stream.yielded < 5, "the adapter drained the SDK stream before yielding anything"
 
     gate.set()
-    assert [delta async for delta in iterator] == ["c"]
+    assert _texts([event async for event in iterator]) == ["c"]
 
 
 @pytest.mark.asyncio
 async def test_textless_chunks_are_skipped_not_yielded_as_empty() -> None:
     # A chunk can legitimately carry no text (a safety verdict, a usage-only final chunk).
     # Yielding "" would show the device an empty delta and count as "the model said something".
-    models = _FakeModels(_FakeStream([_Chunk("a"), _Chunk(None), _Chunk(""), _Chunk("b")]))
+    head, a, b, tail = _json_chunks(["a", "b"])
+    models = _FakeModels(_FakeStream([head, a, _Chunk(None), _Chunk(""), b, tail]))
 
-    deltas = [delta async for delta in _provider(models).stream("s", [])]
+    events = [event async for event in _provider(models).stream("s", [])]
 
-    assert deltas == ["a", "b"]
+    assert _texts(events) == ["a", "b"]
 
 
 # ---------------------------------------------------------------------------------------
@@ -140,10 +214,10 @@ async def test_textless_chunks_are_skipped_not_yielded_as_empty() -> None:
 
 @pytest.mark.asyncio
 async def test_thinking_is_disabled_and_the_model_is_the_configured_one() -> None:
-    models = _FakeModels(_FakeStream([_Chunk("ok")]))
+    models = _FakeModels(_FakeStream(_json_chunks(["ok"])))
     provider = _provider(models, model="gemini-2.5-flash")
 
-    [delta async for delta in provider.stream("s", [])]
+    [event async for event in provider.stream("s", [])]
 
     call = models.calls[0]
     assert call["model"] == "gemini-2.5-flash"
@@ -156,7 +230,7 @@ async def test_thinking_is_disabled_and_the_model_is_the_configured_one() -> Non
 async def test_safety_settings_are_explicit_rather_than_defaulted() -> None:
     # A companion that abruptly starts refusing ordinary conversation because a vendor default
     # moved is a failure with no error message attached.
-    models = _FakeModels(_FakeStream([_Chunk("ok")]))
+    models = _FakeModels(_FakeStream(_json_chunks(["ok"])))
 
     [delta async for delta in _provider(models).stream("s", [])]
 
@@ -167,7 +241,7 @@ async def test_safety_settings_are_explicit_rather_than_defaulted() -> None:
 
 @pytest.mark.asyncio
 async def test_the_system_prompt_and_history_are_translated() -> None:
-    models = _FakeModels(_FakeStream([_Chunk("ok")]))
+    models = _FakeModels(_FakeStream(_json_chunks(["ok"])))
     history = [Message(role="user", text="привіт"), Message(role="model", text="вітаю")]
 
     [delta async for delta in _provider(models).stream("SYSTEM", history)]
@@ -273,14 +347,17 @@ async def test_a_failure_part_way_through_the_stream_is_translated() -> None:
                 raise _VendorError(429)
             return await super().__anext__()
 
-    models = _FakeModels(_ExplodingStream([_Chunk("a"), _Chunk("b")]))
-    seen: list[str] = []
+    # The first SDK chunk carries the whole report and opens the reply string; the vendor then
+    # dies. What already left has left -- that is the property under test -- and from v2.2 what
+    # left first is the report, before a single word of the reply existed.
+    models = _FakeModels(_ExplodingStream(_json_chunks(["a"])))
+    seen: list[Any] = []
 
     with pytest.raises(ProviderError) as raised:
-        async for delta in _provider(models).stream("s", []):
-            seen.append(delta)
+        async for event in _provider(models).stream("s", []):
+            seen.append(event)
 
-    assert seen == ["a"]
+    assert seen == [ModelReport(emotion="joy", intensity=0.7)]
     assert raised.value.code is ErrorCode.RATE_LIMITED
 
 
@@ -350,19 +427,19 @@ def test_the_sdk_is_imported_lazily_not_at_module_scope() -> None:
 
 @pytest.mark.asyncio
 async def test_stream_returns_an_async_iterator() -> None:
-    provider = _provider(_FakeModels(_FakeStream([_Chunk("ok")])))
+    provider = _provider(_FakeModels(_FakeStream(_json_chunks(["ok"]))))
 
     stream = provider.stream("s", [])
 
     assert isinstance(stream, AsyncIterator)
-    assert [delta async for delta in stream] == ["ok"]
+    assert _texts([event async for event in stream]) == ["ok"]
 
 
 @pytest.mark.asyncio
 async def test_automatic_function_calling_is_disabled() -> None:
     # No tools are passed, so AFC has nothing to do -- and leaving it on makes the SDK print a
     # recommendation to stderr on every single turn. Observed during the v0.2 DoD check.
-    models = _FakeModels(_FakeStream([_Chunk("ok")]))
+    models = _FakeModels(_FakeStream(_json_chunks(["ok"])))
 
     [delta async for delta in _provider(models).stream("s", [])]
 

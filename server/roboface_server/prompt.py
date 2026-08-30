@@ -45,6 +45,18 @@ BREVITY_INSTRUCTION: Final = (
 )
 
 
+#: The face, from v2.2. The response schema already constrains `emotion` to the enum, so this is
+#: not what makes the value valid -- `protocol.coerce_emotion` is. What it does is tell the model
+#: *what the field is for*, which a bare enum in a schema cannot: that the value drives a face a
+#: person is looking at, and that it should describe the answer being given rather than the topic
+#: being discussed. A model told only "pick one of seven words" picks the one nearest the subject
+#: matter, and reports `sad` for a cheerful explanation of why something broke.
+EMOTION_INSTRUCTION: Final = (
+    "Разом з відповіддю повідомляй, що ти відчуваєш, коли її даєш — це керує твоїм обличчям, "
+    "на яке дивиться людина. Це про твій настрій у цю мить, а не про тему розмови."
+)
+
+
 def build_system_prompt(persona: str | None = None) -> str:
     """Assemble the system prompt for a turn.
 
@@ -55,5 +67,6 @@ def build_system_prompt(persona: str | None = None) -> str:
         persona if persona is not None else PLACEHOLDER_PERSONA,
         LANGUAGE_INSTRUCTION,
         BREVITY_INSTRUCTION,
+        EMOTION_INSTRUCTION,
     )
     return "\n\n".join(section.strip() for section in sections if section.strip())

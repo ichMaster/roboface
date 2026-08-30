@@ -14,28 +14,60 @@ import pytest
 from roboface_server.protocol import ErrorCode
 from roboface_server.providers import (
     DEFAULT_DELTAS,
+    DEFAULT_REPORT,
     Message,
     MockLLMProvider,
     ProviderError,
+    ReplyText,
     SilentLLMProvider,
 )
+
+
+def _texts(events: list[object]) -> list[str]:
+    """The reply deltas out of a stream that also carries the model's self-report."""
+    return [event.text for event in events if isinstance(event, ReplyText)]
 
 
 @pytest.mark.asyncio
 async def test_the_mock_is_deterministic() -> None:
     # A mock that varies is a suite that flakes, and a flaky suite is one nobody reads the
     # failures of.
-    first = [delta async for delta in MockLLMProvider().stream("s", [])]
-    second = [delta async for delta in MockLLMProvider().stream("s", [])]
+    first = [event async for event in MockLLMProvider().stream("s", [])]
+    second = [event async for event in MockLLMProvider().stream("s", [])]
 
-    assert first == second == list(DEFAULT_DELTAS)
+    assert first == second
+    assert _texts(first) == list(DEFAULT_DELTAS)
+
+
+@pytest.mark.asyncio
+async def test_the_report_comes_before_the_first_delta() -> None:
+    """The order the real provider guarantees, mirrored here.
+
+    A mock that reported last would let a first-token-budget test pass for the wrong reason, and
+    would hide the very property the response schema's field order exists to produce: the face
+    changes as the device starts to speak, not after it has finished.
+    """
+    events = [event async for event in MockLLMProvider().stream("s", [])]
+
+    assert events[0] == DEFAULT_REPORT
+    assert all(isinstance(event, ReplyText) for event in events[1:])
+
+
+@pytest.mark.asyncio
+async def test_a_stream_can_carry_no_report_at_all() -> None:
+    """A real case, not a contrived one: a model may answer without reporting, and the emotion
+    engine's fallback to `neutral` has to be reachable from a test."""
+    events = [event async for event in MockLLMProvider(report=None).stream("s", [])]
+
+    assert _texts(events) == list(DEFAULT_DELTAS)
+    assert all(isinstance(event, ReplyText) for event in events)
 
 
 @pytest.mark.asyncio
 async def test_custom_deltas_are_yielded_verbatim() -> None:
-    deltas = [delta async for delta in MockLLMProvider(deltas=["один", "два"]).stream("s", [])]
+    events = [event async for event in MockLLMProvider(deltas=["один", "два"]).stream("s", [])]
 
-    assert deltas == ["один", "два"]
+    assert _texts(events) == ["один", "два"]
 
 
 # ---------------------------------------------------------------------------------------
@@ -57,13 +89,13 @@ async def test_failure_part_way_through_yields_what_came_before() -> None:
     # device must get an error rather than a reply{final: true} that makes half a sentence
     # look finished.
     provider = MockLLMProvider(deltas=["a", "b", "c"], fail_at_index=2)
-    seen: list[str] = []
+    seen: list[object] = []
 
     with pytest.raises(ProviderError):
-        async for delta in provider.stream("s", []):
-            seen.append(delta)
+        async for event in provider.stream("s", []):
+            seen.append(event)
 
-    assert seen == ["a", "b"]
+    assert _texts(seen) == ["a", "b"]
 
 
 @pytest.mark.asyncio
@@ -71,13 +103,13 @@ async def test_failure_after_the_last_delta() -> None:
     # A stream that ends in an error rather than a completion -- a different case from dying
     # part of the way through, and one worth being able to express.
     provider = MockLLMProvider(deltas=["a"], fail_at_index=5)
-    seen: list[str] = []
+    seen: list[object] = []
 
     with pytest.raises(ProviderError):
-        async for delta in provider.stream("s", []):
-            seen.append(delta)
+        async for event in provider.stream("s", []):
+            seen.append(event)
 
-    assert seen == ["a"]
+    assert _texts(seen) == ["a"]
 
 
 @pytest.mark.asyncio
@@ -103,8 +135,15 @@ async def test_a_delay_before_the_first_delta_stalls_the_stream() -> None:
 
     started = time.monotonic()
     stream = provider.stream("s", [])
-    await anext(stream)
+    # The **first text**, not the first event. From v2.2 the report comes first and comes free --
+    # the model produces it before it has written anything -- so a budget satisfied by its arrival
+    # would stop protecting what it exists to protect: a model that starts and then says nothing.
+    # The orchestrator makes the same distinction, in `_ReplyStream`.
+    first = await anext(stream)
+    assert first == DEFAULT_REPORT
+    assert time.monotonic() - started < 0.05
 
+    await anext(stream)
     assert time.monotonic() - started >= 0.05
 
 

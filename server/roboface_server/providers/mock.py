@@ -21,12 +21,29 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 
+from roboface_server.emotion import ModelReport
 from roboface_server.protocol import ErrorCode
-from roboface_server.providers.base import ASRChunk, Message, ProviderError
+from roboface_server.providers.base import (
+    ASRChunk,
+    LLMEvent,
+    Message,
+    ProviderError,
+    ReplyText,
+)
 
 #: What a reply looks like when a test does not care about the words. Several fragments, not
 #: one string: a single-delta mock would let a buffering implementation pass every test here.
 DEFAULT_DELTAS: tuple[str, ...] = ("Привіт", "! ", "Я ", "тут ", "і ", "слухаю ", "тебе.")
+
+#: What the mock reports about itself unless a test says otherwise. `joy` rather than `neutral`,
+#: deliberately: a default that happened to match the fallback would let a test pass whether the
+#: report was read or ignored.
+DEFAULT_REPORT = ModelReport(emotion="joy", intensity=0.7)
+
+#: Distinguishes "the caller said nothing about the report" from "the caller asked for no report".
+#: `None` is a meaningful value here -- a model that answers without reporting is a real case -- so
+#: it cannot also serve as the absent-argument marker.
+_NO_REPORT: ModelReport = ModelReport(emotion="<unset>", intensity=-1.0)
 
 
 class MockLLMProvider:
@@ -44,7 +61,16 @@ class MockLLMProvider:
         delay_before_index: int = 0,
         fail_at_index: int | None = None,
         error: ProviderError | None = None,
+        report: ModelReport | None = _NO_REPORT,
     ) -> None:
+        #: What the model says about its own state, yielded **before** the first delta -- the
+        #: order the real provider guarantees, so a test that depends on it is testing the
+        #: contract rather than an accident of this mock.
+        #:
+        #: The default is a plain, valid report: most tests want a turn that behaves like a turn.
+        #: Passing ``report=None`` gets a stream that reports nothing, which is a case the real
+        #: model produces too and which the emotion engine must survive.
+        self.report = DEFAULT_REPORT if report is _NO_REPORT else report
         self.deltas: tuple[str, ...] = tuple(DEFAULT_DELTAS if deltas is None else deltas)
         self.delay_s = delay_s
         #: Which delta the delay precedes. 0 stalls the *first* token (the budget should
@@ -56,17 +82,23 @@ class MockLLMProvider:
         #: What the last call was given. Assertions read these instead of assuming.
         self.calls: list[tuple[str, tuple[Message, ...]]] = []
 
-    def stream(self, system: str, messages: Sequence[Message]) -> AsyncIterator[str]:
+    def stream(self, system: str, messages: Sequence[Message]) -> AsyncIterator[LLMEvent]:
         self.calls.append((system, tuple(messages)))
         return self._stream()
 
-    async def _stream(self) -> AsyncIterator[str]:
+    async def _stream(self) -> AsyncIterator[LLMEvent]:
+        # Before the first delta and before the first delay: the report is what the real schema
+        # produces first, and a mock that emitted it later would let a first-token-budget test
+        # pass for the wrong reason.
+        if self.report is not None:
+            yield self.report
+
         for index, delta in enumerate(self.deltas):
             if self.fail_at_index is not None and index == self.fail_at_index:
                 raise self.error
             if self.delay_s and index == self.delay_before_index:
                 await asyncio.sleep(self.delay_s)
-            yield delta
+            yield ReplyText(text=delta)
 
         # A failure index past the end means "fail after the last delta" -- a stream that ends
         # in an error rather than a completion, which is a different case from failing part of
@@ -84,10 +116,13 @@ class SilentLLMProvider:
     spurious ``llm_failed``.
     """
 
-    def stream(self, system: str, messages: Sequence[Message]) -> AsyncIterator[str]:
+    def stream(self, system: str, messages: Sequence[Message]) -> AsyncIterator[LLMEvent]:
         return self._stream()
 
-    async def _stream(self) -> AsyncIterator[str]:
+    async def _stream(self) -> AsyncIterator[LLMEvent]:
+        # No report either. Silence is silence: a model that says nothing has said nothing about
+        # how it feels, and inventing a `neutral` report here would make this provider a weaker
+        # test than it is -- the emotion engine's no-report fallback would never be exercised.
         return
         yield  # pragma: no cover -- unreachable; makes this an async generator
 

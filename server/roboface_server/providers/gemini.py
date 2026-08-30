@@ -21,8 +21,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any, Final
 
-from roboface_server.protocol import ErrorCode
-from roboface_server.providers.base import Message, ProviderError
+from roboface_server.emotion import ModelReport
+from roboface_server.jsonstream import Field, MalformedJson, ObjectStream, TextDelta
+from roboface_server.protocol import Emotion, ErrorCode
+from roboface_server.providers.base import LLMEvent, Message, ProviderError, ReplyText
 
 if TYPE_CHECKING:  # pragma: no cover -- typing only; never imported at runtime
     from google.genai import Client
@@ -86,11 +88,52 @@ class GeminiProvider:
             ) from exc
         return genai.Client(api_key=api_key)
 
+    def _response_schema(self) -> Any:
+        """``{emotion, intensity, reply}`` -- and **the order is the design**.
+
+        Gemini emits the object's properties in the order the schema declares them, so putting the
+        report first means it arrives in the model's first chunk: the face can change as the device
+        begins to speak rather than after it has finished. A schema with ``reply`` first would
+        stream the entire answer before the server learned how the model felt about it, which is the
+        same latency mistake as a second API call, spelled differently.
+
+        `property_ordering` is not decoration -- without it the SDK is free to serialise the
+        properties in any order, and the guarantee above quietly stops holding.
+        """
+        from google.genai import types
+
+        return types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "emotion": types.Schema(
+                    type=types.Type.STRING,
+                    enum=[member.value for member in Emotion],
+                    description="How you feel about the answer you are about to give.",
+                ),
+                "intensity": types.Schema(
+                    type=types.Type.NUMBER,
+                    description="How strongly, from 0.0 to 1.0.",
+                ),
+                "reply": types.Schema(
+                    type=types.Type.STRING,
+                    description="What you say. This is the only part the person hears.",
+                ),
+            },
+            required=["emotion", "intensity", "reply"],
+            property_ordering=["emotion", "intensity", "reply"],
+        )
+
     def _config(self, system: str) -> Any:
         from google.genai import types
 
         return types.GenerateContentConfig(
             system_instruction=system,
+            # Structured output, from v2.2. The enum is *declared to the model* here and
+            # *enforced* in `protocol.coerce_emotion` -- a schema is a strong request, not a
+            # guarantee, and the one thing that must never happen is a blank face because a
+            # model returned a word outside its own enum.
+            response_mime_type="application/json",
+            response_schema=self._response_schema(),
             # Thinking off: the documented reason this model was chosen (lowest
             # time-to-first-token). See ARCHITECTURE §Model policy.
             thinking_config=types.ThinkingConfig(thinking_budget=self.thinking_budget),
@@ -124,16 +167,23 @@ class GeminiProvider:
             for message in messages
         ]
 
-    def stream(self, system: str, messages: Sequence[Message]) -> AsyncIterator[str]:
+    def stream(self, system: str, messages: Sequence[Message]) -> AsyncIterator[LLMEvent]:
         return self._stream(system, messages)
 
-    async def _stream(self, system: str, messages: Sequence[Message]) -> AsyncIterator[str]:
-        """Yield each chunk the moment it arrives.
+    async def _stream(self, system: str, messages: Sequence[Message]) -> AsyncIterator[LLMEvent]:
+        """Yield each event the moment it becomes known.
 
         Never ``async for … : collected.append`` then yield the join. That would satisfy the
         type and destroy the property the type exists to express -- and it would not be
         visible in any test that only counts frames.
+
+        **The JSON is read as it arrives**, by `ObjectStream`. The obvious alternative -- collect
+        the whole response and `json.loads` it -- would cost the entire generation time before the
+        device saw one word, which is the exact opposite of what this class is for. That is why
+        v2.2's structured output did not become a latency regression.
         """
+        reader = ObjectStream(stream_keys=frozenset({"reply"}))
+        reported: dict[str, object] = {}
         try:
             stream = await self._client.aio.models.generate_content_stream(
                 model=self.model,
@@ -145,8 +195,31 @@ class GeminiProvider:
                 # A chunk can legitimately carry no text -- a safety verdict, a usage-only
                 # final chunk. Skipping it is right; yielding "" would show the device an
                 # empty delta and, worse, count toward "the model said something".
-                if text:
-                    yield text
+                if not text:
+                    continue
+                for event in reader.feed(text):
+                    match event:
+                        case TextDelta(text=delta):
+                            yield ReplyText(text=delta)
+                        case Field(name=name, value=value):
+                            reported[name] = value
+                            # Both halves of the report are in: hand it over now rather than at
+                            # the end. It arrives before the first word, which is the whole
+                            # reason the schema declares it first.
+                            if "emotion" in reported and "intensity" in reported:
+                                yield ModelReport(
+                                    emotion=reported.pop("emotion"),
+                                    intensity=reported.pop("intensity"),
+                                )
+            for event in reader.finish():
+                if isinstance(event, TextDelta):
+                    yield ReplyText(text=event.text)
+        except MalformedJson as exc:
+            # The response was not the shape we asked for, which means the *reply text* is
+            # unavailable -- not merely the emotion. That is a turn that cannot happen, so it is
+            # reported rather than coerced, unlike everything about the emotion itself.
+            raise ProviderError(f"the model's response was not the requested object: {exc}",
+                                ErrorCode.LLM_FAILED) from exc
         except ProviderError:
             raise
         except Exception as exc:

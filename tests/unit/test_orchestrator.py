@@ -17,7 +17,13 @@ from roboface_server.orchestrator import (
     TurnAborted,
 )
 from roboface_server.protocol import ErrorCode
-from roboface_server.providers import Message, MockLLMProvider, ProviderError, SilentLLMProvider
+from roboface_server.providers import (
+    Message,
+    MockLLMProvider,
+    ProviderError,
+    ReplyText,
+    SilentLLMProvider,
+)
 from roboface_server.turn import ReplyDelta
 
 
@@ -354,7 +360,7 @@ class _ClosableProvider:
     async def _stream(self):  # type: ignore[no-untyped-def]
         try:
             for delta in self.deltas:
-                yield delta
+                yield ReplyText(text=delta)
         finally:
             self.closed = True
 

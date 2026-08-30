@@ -1,9 +1,14 @@
 """Contract test for the **`LLMProvider`** seam.
 
 Written against the behaviour, not the annotations. `typing.get_type_hints` would happily agree
-that `stream` returns an `AsyncIterator[str]` while the implementation collected the whole
+that `stream` returns an `AsyncIterator[LLMEvent]` while the implementation collected the whole
 reply and yielded it once — so every claim here is checked by *consuming* a stream and looking
 at what actually came out.
+
+**v2.2 changed this seam.** A reply is no longer only text: the model reports its own emotional
+state alongside it, and the two arrive interleaved on one connection. The union is what makes the
+report free — a second call asking "how do you feel about that?" would cost a round trip on every
+turn, and by then the device has already spoken with the wrong face.
 
 This file changes only when the seam changes. Authority: ARCHITECTURE.md §Providers and seams,
 §Model policy — Gemini only, and §Streaming is the architecture, not an optimisation.
@@ -20,9 +25,15 @@ from roboface_server.providers import (
     LLMProvider,
     Message,
     MockLLMProvider,
+    ModelReport,
     ProviderError,
+    ReplyText,
     SilentLLMProvider,
 )
+
+
+def _texts(events: list[object]) -> list[str]:
+    return [event.text for event in events if isinstance(event, ReplyText)]
 
 # ---------------------------------------------------------------------------------------
 # The shape of the seam
@@ -54,20 +65,58 @@ async def test_stream_yields_deltas_one_at_a_time() -> None:
 
     # Pulled individually, not collected: the assertion is that a delta is available before
     # the stream is exhausted, which is the whole property the seam exists to guarantee.
-    first = await anext(stream)
-    assert first == "a"
+    # The report first -- see `test_the_report_precedes_the_text_it_describes`.
+    assert isinstance(await anext(stream), ModelReport)
 
-    rest = [delta async for delta in stream]
-    assert rest == ["b", "c"]
+    first = await anext(stream)
+    assert first == ReplyText(text="a")
+
+    rest = [event async for event in stream]
+    assert rest == [ReplyText(text="b"), ReplyText(text="c")]
+
+
+@pytest.mark.asyncio
+async def test_the_report_precedes_the_text_it_describes() -> None:
+    """**Order is part of the contract.**
+
+    The device should change expression as it begins to speak, not after it has finished. The only
+    way to guarantee that is for the report to be the first thing the model produces -- which is
+    why `gemini.py` declares `emotion` first in its response schema and pins the property ordering.
+    A report that arrived last would be correct, useless, and impossible to notice.
+    """
+    events = [event async for event in MockLLMProvider(deltas=["a", "b"]).stream("s", [])]
+
+    assert isinstance(events[0], ModelReport)
+    assert _texts(events) == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_a_stream_may_carry_no_report() -> None:
+    """Not a failure. The model answered, which is what a turn is for; the emotion engine falls
+    back to `neutral`. A seam that required a report would fail turns over a face."""
+    events = [event async for event in MockLLMProvider(report=None, deltas=["a"]).stream("s", [])]
+
+    assert events == [ReplyText(text="a")]
+
+
+def test_the_report_is_untyped_because_it_is_untrusted() -> None:
+    """`ModelReport`'s fields are `object`, and that is the contract rather than laziness.
+
+    Giving them their intended types here would be a claim that something has already checked
+    them. Nothing has: this is raw model output, and `EmotionFrame.from_model` is where it becomes
+    renderable. A seam that promised `Emotion` would be promising something no provider can keep.
+    """
+    report = ModelReport(emotion="not an emotion", intensity="not a number")
+    assert report.emotion == "not an emotion"
 
 
 @pytest.mark.asyncio
 async def test_a_normal_reply_is_more_than_one_delta() -> None:
     # A single-delta default would let a buffering implementation pass every streaming test
     # in this repository.
-    deltas = [delta async for delta in MockLLMProvider().stream("s", [])]
+    events = [event async for event in MockLLMProvider().stream("s", [])]
 
-    assert len(deltas) > 1
+    assert len(_texts(events)) > 1
 
 
 def test_stream_takes_a_system_prompt_and_a_message_sequence() -> None:

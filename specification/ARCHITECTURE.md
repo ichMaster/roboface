@@ -279,7 +279,7 @@ Five seams carry the whole system. Each is pinned by a contract test, and each h
 |---|---|---|
 | WS protocol | `server/…/protocol.py` + `firmware/…/ws_protocol.h` | message set, binary-frame rules, error codes |
 | `EmotionFrame` | protocol + `IFaceRenderer` | the entire face channel |
-| `LLMProvider` | `server/…/providers/` | Gemini (the only real impl) — streams reply deltas |
+| `LLMProvider` | `server/…/providers/` | Gemini (the only real impl) — streams reply deltas **and the model's emotion report** |
 | `ASRProvider` / `TTSProvider` | `server/…/providers/` | Deepgram (WS, interims + endpointing) / ElevenLabs (stream endpoint, `pcm_16000`) — both yield chunks as they arrive |
 | `IFaceRenderer` + skin manifest | `firmware/` + `assets/` | which skin draws the frame |
 
@@ -287,7 +287,9 @@ The two streaming provider seams share one shape, and it is deliberate:
 
 ```python
 class LLMProvider(Protocol):
-    def stream(self, system: str, messages: Sequence[Message]) -> AsyncIterator[str]: ...
+    def stream(self, system: str, messages: Sequence[Message]) -> AsyncIterator[LLMEvent]: ...
+
+LLMEvent = ReplyText | ModelReport      # from v2.2: a reply is not only text
 
 class TTSProvider(Protocol):          # from v1.1
     def synthesize(self, text: str) -> AsyncIterator[bytes]: ...   # PCM16, 16 kHz, mono
@@ -295,6 +297,17 @@ class TTSProvider(Protocol):          # from v1.1
 class ASRProvider(Protocol):          # from v1.3
     def open(self) -> ASRSession: ...                              # a session, not a call
 ```
+
+**`LLMProvider` yields a union because the model reports its own emotion alongside the reply, and
+the two arrive interleaved on one connection (v2.2).** A separate call asking "how do you feel about
+what you just said?" would cost a round trip on every turn — and by then the device has already
+spoken the answer with the wrong face. The response schema declares `emotion` and `intensity`
+**before** `reply`, so the report arrives in the model's first chunk and the expression changes as
+the device begins to speak; the JSON is read incrementally (`jsonstream.py`) rather than collected,
+because collecting it would cost the entire generation time before the first word. **The report is
+untrusted**: `ModelReport`'s fields are typed `object`, and `EmotionFrame.from_model` is where they
+become renderable. A stream may carry no report at all — that is not a failure, and the emotion
+engine falls back to `neutral`.
 
 **`ASRProvider` is a session because recognition must run *during* speech.** Audio is pushed in
 while transcripts are read out, so at the moment the person stops the transcript already exists. A
