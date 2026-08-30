@@ -117,6 +117,7 @@ bool AudioIo::startMonitoring(FrameObserver observer) {
     monitoring_ = true;
     // `stereo = true`: both ES7210 channels, interleaved. v2.5 -- the second microphone was
     // wired all along and the device listened with one of them.
+    source_chooser_.reset();
     M5.Mic.record(capture_[0], roboface::kStereoFrameSamples, roboface::kCaptureSampleRate, true);
     M5.Mic.record(capture_[1], roboface::kStereoFrameSamples, roboface::kCaptureSampleRate, true);
     return true;
@@ -168,6 +169,7 @@ bool AudioIo::startListening(FrameSink sink) {
     // loop's job is only to drain and re-arm the slot that freed.
     // `stereo = true`: both ES7210 channels, interleaved. v2.5 -- the second microphone was
     // wired all along and the device listened with one of them.
+    source_chooser_.reset();
     M5.Mic.record(capture_[0], roboface::kStereoFrameSamples, roboface::kCaptureSampleRate, true);
     M5.Mic.record(capture_[1], roboface::kStereoFrameSamples, roboface::kCaptureSampleRate, true);
     return true;
@@ -264,7 +266,7 @@ void AudioIo::tick(uint32_t now_ms) {
             // clip and halves the uncorrelated noise between them, or one channel alone when the
             // other is obstructed. The frame size does not change and must not -- the server sees
             // exactly the stream it always did.
-            mono_source_ = roboface::chooseSource(levels_);
+            mono_source_ = source_chooser_.choose(levels_);
             roboface::downmix(left_, right_, roboface::kCaptureFrameSamples, mono_, mono_source_);
 
             const float peak = roboface::peakLevel(mono_, roboface::kCaptureFrameSamples);

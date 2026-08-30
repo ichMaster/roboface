@@ -29,7 +29,7 @@ import time
 import wave
 from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -627,7 +627,7 @@ class Router:
                 conn.listening = opener() if opener is not None else None
                 # The one state change the orchestrator cannot see: no turn exists yet. From v2.2
                 # attention is a face rather than a word on the screen, so it is sent from here.
-                await self._send_emotion(transport, frame_for(TurnState.LISTENING))
+                await self._send_emotion(transport, frame_for(TurnState.LISTENING), conn)
                 log("listen.start", device_id=conn.device_id, session_id=conn.session_id)
             case ListenStop():
                 if conn.utterance_settled:
@@ -745,7 +745,9 @@ class Router:
             async for event in self.responder.respond(conn.session_id, text):
                 match event:
                     case EmotionEvent():
-                        await self._send_emotion(transport, event.frame)
+                        # The orchestrator's frames too -- it does not hold the connection, which
+                        # is exactly why the gaze is attached here rather than at each `frame_for`.
+                        await self._send_emotion(transport, event.frame, conn)
                     case ReplyDelta():
                         if deltas == 0 and since is not None:
                             # The second of the three legs the DoD compares. Logged separately
@@ -784,7 +786,7 @@ class Router:
             # The error face **before** the error frame, and both before returning. DEVICE_UI
             # renders a fault as its enumerated code; the face is what a person across the room
             # sees, and it must not be left showing `thinking` for the ttl while a fault stands.
-            await self._send_emotion(transport, frame_for(TurnState.FAILED))
+            await self._send_emotion(transport, frame_for(TurnState.FAILED), conn)
             await self._send_error(transport, exc.code, str(exc))
             return
         except Exception as exc:
@@ -806,7 +808,7 @@ class Router:
                 level="error",
             )
             await self._close_speaking(conn, transport)
-            await self._send_emotion(transport, frame_for(TurnState.FAILED))
+            await self._send_emotion(transport, frame_for(TurnState.FAILED), conn)
             await self._send_error(
                 transport, ErrorCode.INTERNAL, f"the turn failed: {type(exc).__name__}"
             )
@@ -823,7 +825,7 @@ class Router:
         # seconds of audio this server finished sending, so *when* to apply it is the device's
         # decision. Same division as v2.1.2, where taking the server's word for "the reply is over"
         # put the face back to idle mid-sentence.
-        await self._send_emotion(transport, frame_for(TurnState.IDLE))
+        await self._send_emotion(transport, frame_for(TurnState.IDLE), conn)
         await transport.send(encode(Reply(text="", final=True)))
         log("turn.streamed", deltas=deltas, chunks=chunks)
 
@@ -859,9 +861,9 @@ class Router:
                     emotion=face,
                     intensity=BASE_INTENSITY[TurnState.IDLE] + 0.35,
                     accent_color=ACCENTS[face],
-                    gaze=conn.gaze,
                     ttl_ms=TTL_MS[TurnState.IDLE],
                 ),
+                conn,
             )
 
         if prompt is None:
@@ -876,7 +878,9 @@ class Router:
 
         await self._stream_reply(prompt, conn, transport)
 
-    async def _send_emotion(self, transport: Transport, frame: EmotionFrame) -> None:
+    async def _send_emotion(
+        self, transport: Transport, frame: EmotionFrame, conn: Connection | None = None
+    ) -> None:
         """Send one ``emotion{}``.
 
         A method rather than a call site repeated six times, because every one of them is a state
@@ -886,7 +890,20 @@ class Router:
         **Not sent for `boot`, `wifi_connecting` or `offline`.** Those are device facts -- in the
         offline case, by definition facts about this server being unreachable -- and a server
         opinion about them would create two authorities for one screen.
+
+        **The connection's gaze is attached here, and only here** (code review #2). `frame_for`
+        takes a `gaze` and had no caller passing one, so every in-turn frame carried `gaze: None`
+        and erased the direction the device had just reported. It did not show, because the
+        device's own estimate outranks the server's -- right up until that estimate lapses 1.5 s
+        after the voice stops, at which point the face returned to centre rather than to the
+        direction the server was holding.
+
+        Attaching it at the one place every frame passes through is what makes it impossible for
+        the next caller to forget. A frame that already carries a gaze keeps it: a later phase with
+        a real opinion about where to look (the vision turn) must outrank a remembered voice.
         """
+        if conn is not None and frame.gaze is None and conn.gaze is not None:
+            frame = replace(frame, gaze=conn.gaze)
         await transport.send(encode(frame))
 
     async def _close_speaking(self, conn: Connection, transport: Transport) -> bool:

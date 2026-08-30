@@ -110,6 +110,19 @@ inline StereoLevels measure(const int16_t* left, const int16_t* right, std::size
 //: a covered one costs half the signal.
 inline constexpr float kObstructedChannelRatio = 0.20f;
 
+//: And back above this before both channels are used again. The gap is the hysteresis, and it is
+//: not optional here (code review #1): the choice is remade every 20 ms, so a ratio sitting on a
+//: single threshold -- a hand resting *near* a microphone rather than over it -- would alternate
+//: the uplink between two different signals fifty times a second. Each switch is a step
+//: discontinuity in level and phase, so the stream would carry a click every 20 ms, mid-word, while
+//: every level meter and VAD number on the device looked entirely normal.
+inline constexpr float kObstructedReleaseRatio = 0.35f;
+
+//: Below this the question is not asked at all. In near-silence `louder` and `quieter` are two
+//: independent noise floors and their ratio is arbitrary -- so a silent room would pick a channel
+//: for no reason, and the first frame of speech would arrive on whichever one silence chose.
+inline constexpr float kSourceDecisionFloor = 0.004f;
+
 //: Which channel or channels the uplink should be made from.
 enum class MonoSource : uint8_t {
     kBoth,   // averaged
@@ -117,16 +130,42 @@ enum class MonoSource : uint8_t {
     kRight,  // the left one is obstructed
 };
 
-//: Decide before mixing. Separated from the mixing itself so the decision can be tested against
-//: levels alone, and so the reason a frame was built from one microphone is inspectable.
-inline MonoSource chooseSource(const StereoLevels& levels) {
-    const float louder = levels.left > levels.right ? levels.left : levels.right;
-    if (louder <= 0.0f) return MonoSource::kBoth;
+// Which microphones to build the uplink from — **a decision with memory**.
+//
+// It was a free function until code review #1, which is the shape that made it wrong: a threshold
+// crossed every 20 ms with nothing holding it. Every other threshold in this project pairs an enter
+// and a release value (`lipsync.h`, `motion.h`, `proximity.h`), and this one now does too, which
+// means it needs somewhere to keep the current answer.
+class SourceChooser {
+  public:
+    MonoSource choose(const StereoLevels& levels) {
+        const float louder = levels.left > levels.right ? levels.left : levels.right;
+        const float quieter = levels.left > levels.right ? levels.right : levels.left;
 
-    const float quieter = levels.left > levels.right ? levels.right : levels.left;
-    if (quieter / louder >= kObstructedChannelRatio) return MonoSource::kBoth;
-    return levels.left > levels.right ? MonoSource::kLeft : MonoSource::kRight;
-}
+        // Too quiet to have an opinion: keep whatever was already chosen rather than picking one
+        // from noise. Holding is deliberately not the same as resetting to `kBoth` -- a pause in
+        // the middle of a sentence must not switch microphones back and forth around each word.
+        if (louder < kSourceDecisionFloor) return current_;
+
+        const float ratio = quieter / louder;
+        if (current_ == MonoSource::kBoth) {
+            if (ratio >= kObstructedChannelRatio) return current_;
+            current_ = levels.left > levels.right ? MonoSource::kLeft : MonoSource::kRight;
+        } else if (ratio >= kObstructedReleaseRatio) {
+            current_ = MonoSource::kBoth;
+        }
+        return current_;
+    }
+
+    MonoSource current() const { return current_; }
+
+    //: Start each listening window from the average. A microphone obstructed during the last
+    //: conversation is not evidence about this one.
+    void reset() { current_ = MonoSource::kBoth; }
+
+  private:
+    MonoSource current_ = MonoSource::kBoth;
+};
 
 //: Two channels into the one the uplink carries.
 //:

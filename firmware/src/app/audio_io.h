@@ -241,6 +241,7 @@ class AudioIo {
     //: obstructed. Its own buffer rather than mixing in place, because `left_` is still wanted --
     //: the direction estimate reads both channels after the mix has been made.
     int16_t mono_[roboface::kCaptureFrameSamples] = {};
+    roboface::SourceChooser source_chooser_;
     roboface::MonoSource mono_source_ = roboface::MonoSource::kBoth;
 
     //: The furthest the balance has swung each way since boot. **Signed extremes, not a magnitude**

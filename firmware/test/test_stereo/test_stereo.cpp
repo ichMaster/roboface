@@ -194,8 +194,68 @@ static void test_a_source_to_one_side_is_still_averaged() {
     const auto both = interleave(tone(320, 12000), tone(320, 6000));
     deinterleave(both.data(), 320, l.data(), r.data());
 
+    roboface::SourceChooser chooser;
     TEST_ASSERT_EQUAL_INT(static_cast<int>(roboface::MonoSource::kBoth),
-                          static_cast<int>(roboface::chooseSource(measure(l.data(), r.data(), 320))));
+                          static_cast<int>(chooser.choose(measure(l.data(), r.data(), 320))));
+}
+
+static void test_the_choice_does_not_flap_across_the_threshold() {
+    // **Code review #1.** The choice is remade every 20 ms. Without hysteresis a ratio hovering on
+    // the threshold -- a hand resting near a microphone rather than over it -- alternates the
+    // uplink between two different signals fifty times a second, and each switch is a step
+    // discontinuity in level and phase: a click every 20 ms, mid-word, while every meter on the
+    // device reads normal.
+    //
+    // The old test could not have caught this: it fed single static level pairs, and the defect
+    // exists only in a *sequence* that crosses the boundary.
+    roboface::SourceChooser chooser;
+    int changes = 0;
+    roboface::MonoSource previous = chooser.current();
+
+    for (int step = 0; step < 60; ++step) {
+        // A ratio walking back and forth over 0.20 -- 0.18, 0.22, 0.18, ...
+        const int16_t quiet = static_cast<int16_t>(step % 2 == 0 ? 2160 : 2640);
+        std::vector<int16_t> l(320), r(320);
+        const auto both = interleave(tone(320, 12000), tone(320, quiet));
+        deinterleave(both.data(), 320, l.data(), r.data());
+
+        const roboface::MonoSource now = chooser.choose(measure(l.data(), r.data(), 320));
+        if (now != previous) ++changes;
+        previous = now;
+    }
+
+    // It may settle once. It may not oscillate.
+    TEST_ASSERT_TRUE(changes <= 1);
+}
+
+static void test_silence_keeps_whatever_was_chosen_rather_than_picking_from_noise() {
+    // Two independent noise floors have an arbitrary ratio. Choosing from it would mean the first
+    // frame of speech arriving on whichever channel silence happened to select.
+    roboface::SourceChooser chooser;
+    std::vector<int16_t> hiss_l(320), hiss_r(320);
+    for (int i = 0; i < 320; ++i) {
+        hiss_l[static_cast<std::size_t>(i)] = static_cast<int16_t>((i % 11) - 5);
+        hiss_r[static_cast<std::size_t>(i)] = static_cast<int16_t>((i % 3) - 1);
+    }
+    for (int step = 0; step < 50; ++step) {
+        TEST_ASSERT_EQUAL_INT(
+            static_cast<int>(roboface::MonoSource::kBoth),
+            static_cast<int>(chooser.choose(measure(hiss_l.data(), hiss_r.data(), 320))));
+    }
+}
+
+static void test_a_window_starts_from_the_average() {
+    roboface::SourceChooser chooser;
+    std::vector<int16_t> l(320), r(320);
+    const auto both = interleave(tone(320, 12000), tone(320, 300));
+    deinterleave(both.data(), 320, l.data(), r.data());
+    chooser.choose(measure(l.data(), r.data(), 320));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(roboface::MonoSource::kLeft),
+                          static_cast<int>(chooser.current()));
+
+    chooser.reset();
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(roboface::MonoSource::kBoth),
+                          static_cast<int>(chooser.current()));
 }
 
 static void test_an_obstructed_channel_is_dropped_rather_than_averaged_in() {
@@ -204,7 +264,8 @@ static void test_an_obstructed_channel_is_dropped_rather_than_averaged_in() {
     const auto both = interleave(tone(320, 12000), tone(320, 300));
     deinterleave(both.data(), 320, l.data(), r.data());
 
-    const roboface::MonoSource source = roboface::chooseSource(measure(l.data(), r.data(), 320));
+    roboface::SourceChooser chooser;
+    const roboface::MonoSource source = chooser.choose(measure(l.data(), r.data(), 320));
     TEST_ASSERT_EQUAL_INT(static_cast<int>(roboface::MonoSource::kLeft), static_cast<int>(source));
 
     std::vector<int16_t> out(320);
@@ -214,9 +275,10 @@ static void test_an_obstructed_channel_is_dropped_rather_than_averaged_in() {
 
 static void test_silence_does_not_pick_a_channel() {
     std::vector<int16_t> zeros(320, 0);
+    roboface::SourceChooser chooser;
     TEST_ASSERT_EQUAL_INT(
         static_cast<int>(roboface::MonoSource::kBoth),
-        static_cast<int>(roboface::chooseSource(measure(zeros.data(), zeros.data(), 320))));
+        static_cast<int>(chooser.choose(measure(zeros.data(), zeros.data(), 320))));
 }
 
 static void test_the_uplink_frame_is_the_same_size_it_always_was() {
@@ -241,6 +303,9 @@ int main(int, char**) {
     RUN_TEST(test_the_downmix_cannot_clip);
     RUN_TEST(test_a_full_scale_channel_beside_a_silent_one_halves_rather_than_clipping);
     RUN_TEST(test_a_source_to_one_side_is_still_averaged);
+    RUN_TEST(test_the_choice_does_not_flap_across_the_threshold);
+    RUN_TEST(test_silence_keeps_whatever_was_chosen_rather_than_picking_from_noise);
+    RUN_TEST(test_a_window_starts_from_the_average);
     RUN_TEST(test_an_obstructed_channel_is_dropped_rather_than_averaged_in);
     RUN_TEST(test_silence_does_not_pick_a_channel);
     RUN_TEST(test_the_uplink_frame_is_the_same_size_it_always_was);
