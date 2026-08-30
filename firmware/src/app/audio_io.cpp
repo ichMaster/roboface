@@ -115,8 +115,10 @@ bool AudioIo::startMonitoring(FrameObserver observer) {
     if (!M5.Mic.begin()) return false;
     capture_slot_ = 0;
     monitoring_ = true;
-    M5.Mic.record(capture_[0], roboface::kCaptureFrameSamples, roboface::kCaptureSampleRate);
-    M5.Mic.record(capture_[1], roboface::kCaptureFrameSamples, roboface::kCaptureSampleRate);
+    // `stereo = true`: both ES7210 channels, interleaved. v2.5 -- the second microphone was
+    // wired all along and the device listened with one of them.
+    M5.Mic.record(capture_[0], roboface::kStereoFrameSamples, roboface::kCaptureSampleRate, true);
+    M5.Mic.record(capture_[1], roboface::kStereoFrameSamples, roboface::kCaptureSampleRate, true);
     return true;
 }
 
@@ -164,8 +166,10 @@ bool AudioIo::startListening(FrameSink sink) {
     // notices and re-arms -- a gap in every frame. Measured, that cost a quarter of the audio: a
     // three-second window produced 2260 ms. With both armed the recorder never stops, and the
     // loop's job is only to drain and re-arm the slot that freed.
-    M5.Mic.record(capture_[0], roboface::kCaptureFrameSamples, roboface::kCaptureSampleRate);
-    M5.Mic.record(capture_[1], roboface::kCaptureFrameSamples, roboface::kCaptureSampleRate);
+    // `stereo = true`: both ES7210 channels, interleaved. v2.5 -- the second microphone was
+    // wired all along and the device listened with one of them.
+    M5.Mic.record(capture_[0], roboface::kStereoFrameSamples, roboface::kCaptureSampleRate, true);
+    M5.Mic.record(capture_[1], roboface::kStereoFrameSamples, roboface::kCaptureSampleRate, true);
     return true;
 }
 
@@ -238,28 +242,38 @@ void AudioIo::tick(uint32_t now_ms) {
         // Fewer than two queued means one has completed, and the slots complete in the order they
         // were armed -- so the one that freed is `capture_slot_`.
         if (M5.Mic.isRecording() < 2) {
-            const auto* frame = reinterpret_cast<const uint8_t*>(capture_[capture_slot_]);
             const std::size_t completed = capture_slot_;
             capture_slot_ = capture_slot_ == 0 ? 1 : 0;
 
             // Re-arm the freed slot **before** sending it onward, so the microphone is back to two
             // queued while this frame is on the wire. Sending first would leave the queue one deep
             // for the duration of the send, which is the same gap in a smaller form.
-            M5.Mic.record(capture_[completed], roboface::kCaptureFrameSamples,
-                          roboface::kCaptureSampleRate);
+            M5.Mic.record(capture_[completed], roboface::kStereoFrameSamples,
+                          roboface::kCaptureSampleRate, true);
 
-            const float peak =
-                roboface::peakLevel(capture_[completed], roboface::kCaptureFrameSamples);
+            // **The frame stops being interleaved before anything asks it a question.** Level,
+            // VAD, direction and the uplink all want one channel at a time or a combination of
+            // them, and none of them want `L R L R`.
+            roboface::deinterleave(capture_[completed], roboface::kCaptureFrameSamples, left_,
+                                   right_);
+            levels_ = roboface::measure(left_, right_, roboface::kCaptureFrameSamples);
+            if (levels_.balance < balance_min_) balance_min_ = levels_.balance;
+            if (levels_.balance > balance_max_) balance_max_ = levels_.balance;
+
+            const float peak = roboface::peakLevel(left_, roboface::kCaptureFrameSamples);
             if (peak > peak_seen_) peak_seen_ = peak;
             level_ = roboface::decayToward(level_, peak);
 
             if (observer_ != nullptr) {
-                observer_(capture_[completed], roboface::kCaptureFrameSamples,
-                          roboface::kCaptureFrameMs);
+                observer_(left_, roboface::kCaptureFrameSamples, roboface::kCaptureFrameMs);
             }
 
             if (listening_) {
-                if (sink_ != nullptr && sink_(frame, roboface::kCaptureFrameBytes)) {
+                // **The uplink stays mono and stays exactly this many bytes** -- part of the v2.5
+                // DoD. RF-076 replaces "the left channel" with a real downmix; what must not change
+                // either way is the frame size, so it is spelled from the mono constant.
+                const auto* mono = reinterpret_cast<const uint8_t*>(left_);
+                if (sink_ != nullptr && sink_(mono, roboface::kCaptureFrameBytes)) {
                     tally_.recordFrame(roboface::kCaptureFrameBytes);
                 }
             } else {

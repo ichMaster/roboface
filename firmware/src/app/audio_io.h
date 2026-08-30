@@ -31,6 +31,7 @@
 #include "pure/envelope.h"
 #include "pure/level.h"
 #include "pure/pcm_ring.h"
+#include "pure/stereo.h"
 
 namespace app {
 
@@ -192,6 +193,15 @@ class AudioIo {
     std::size_t backlogCapacity() const { return backlog_.capacity(); }
     uint32_t bytesQueued() const { return bytes_queued_; }
     uint32_t chunksRefused() const { return chunks_refused_; }
+    //: What the two channels last measured, and the widest imbalance since boot. `/mic-levels`.
+    const roboface::StereoLevels& stereoLevels() const { return levels_; }
+    float balanceMin() const { return balance_min_; }
+    float balanceMax() const { return balance_max_; }
+    void resetBalanceRange() {
+        balance_min_ = 0.0f;
+        balance_max_ = 0.0f;
+    }
+
     //: Audio that had nowhere to go. Non-zero means the backlog never allocated, and the device
     //: is mute for a reason it can state rather than for no visible reason at all.
     uint32_t bytesDropped() const { return bytes_dropped_; }
@@ -204,7 +214,25 @@ class AudioIo {
     //: Two capture frames, alternating: the microphone records into one while the other is being
     //: sent. A single buffer would either drop the samples arriving during the send or make the
     //: send wait for the next frame, and both show up as gaps in the middle of words.
-    int16_t capture_[2][roboface::kCaptureFrameSamples] = {};
+    //:
+    //: **Interleaved stereo since v2.5** -- twice the samples for the same 20 ms. The duration is
+    //: what stays constant; a version of this that kept the sample count would silently halve every
+    //: timing downstream and still look reasonable.
+    int16_t capture_[2][roboface::kStereoFrameSamples] = {};
+
+    //: Where a frame goes after it stops being interleaved. Members rather than locals because they
+    //: are filled every 20 ms and the stack in the audio path is not the place to find that out.
+    int16_t left_[roboface::kCaptureFrameSamples] = {};
+    int16_t right_[roboface::kCaptureFrameSamples] = {};
+    roboface::StereoLevels levels_;
+
+    //: The furthest the balance has swung each way since boot. **Signed extremes, not a magnitude**
+    //: -- "some imbalance happened" is a much weaker claim than "it went both ways", and only the
+    //: second one distinguishes two microphones from one noisy channel. The person making a noise on
+    //: one side of the board and the person reading serial are not the same person, so the number
+    //: has to survive until someone can look at it: the same reason `/touch` keeps a ring.
+    float balance_min_ = 0.0f;
+    float balance_max_ = 0.0f;
     std::size_t capture_slot_ = 0;
     bool listening_ = false;
     bool monitoring_ = false;

@@ -1037,6 +1037,21 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
     // `on` / `off` as well as a bare toggle. **A script must be able to set a state, not flip
     // one** -- it cannot see the indicator, so a toggle leaves it guessing, and guessing wrong
     // means every scripted line afterwards is refused with `[busy] not idle`.
+    if (line.text == "/mic-levels") {
+        // **RF-073's whole point.** `/mic-info` says `stereo=1`, which is a configuration flag and
+        // proves nothing about how many microphones are wired -- exactly the shape of claim that
+        // cost v2.4 three defects. This reports what the two channels actually measured.
+        const roboface::StereoLevels& levels = audio.stereoLevels();
+        Serial.printf("\n[mic-levels] left=%.4f right=%.4f balance=%+.3f\n", levels.left,
+                      levels.right, levels.balance);
+        Serial.printf("[mic-levels] діапазон від старту: %+.3f .. %+.3f (розмах %.3f)\n",
+                      audio.balanceMin(), audio.balanceMax(),
+                      audio.balanceMax() - audio.balanceMin());
+        Serial.println("[mic-levels] розмах 0.000 = один канал; обидва знаки = два мікрофони");
+        audio.resetBalanceRange();
+        return;
+    }
+
     if (line.text == "/sensors") {
         // Asked on demand rather than only at boot. A test that has to catch a reboot is a test
         // that races the person running it -- and `/probe`, which the v2.4 script reached for, is
