@@ -1,3 +1,50 @@
+Version 2.4.0 (2026-08-30)
+---------------------------
+v2.4 -- touch, motion and proximity: the two-level reaction model. The device
+reacts to being touched instantly and in character, and the two are separate
+mechanisms because they have different deadlines. A reflex answers the body in
+under 100 ms without asking anyone; the event that follows lets the character
+answer in its own time, or not at all.
+
+- Touch zones and the gesture vocabulary DEVICE_UI names: tap, multi-tap,
+  stroke, poke, and the hold's two outcomes. The zones are derived from the
+  face's own geometry, so moving the eyes moves the poke zone -- writing the
+  coordinates twice is exactly how that breaks silently.
+- The IMU: tilt, shake, picked up, upside down, free fall, all as pure logic
+  over the raw stream. Every threshold carries the physical number it came
+  from: free fall at 0.35 g because a real drop tumbles rather than reading a
+  clean zero, 120 ms because a desk is 70 cm and a fall lasts 380.
+- Proximity: an approach wakes the face and pulls its gaze. `gaze` has been
+  parsed since v2.2 and ignored ever since; this is its first consumer, and the
+  order of authority is now documented -- a local reflex wins while active,
+  because the device can see a hand and the server is a round trip away from
+  knowing.
+- The reflex layer: five short overlays composited over whatever the face is
+  doing. A reflex never touches the mouth while the device speaks, and it
+  expires on its own -- it is the only animation here whose normal state is
+  "not running".
+- `event{}` on the wire, with its kinds pinned from both sides. It **refuses**
+  an unknown kind, which is the opposite of what `emotion{}` does: a face is not
+  worth dropping a connection over, but an event is the device making a claim
+  about the physical world, and coercing a claim the contract does not define
+  would turn a firmware bug into a wrong reaction.
+- The server answers -- sometimes. Most of the reaction table is silence: a
+  device picked up and put down again does not need a line, and a character that
+  remarks on every touch is one nobody wants on a desk.
+- The single tap is affection again and mute is the two-finger tap, which
+  DEVICE_UI always specified. The stop-gap ran from v1.4 to v2.4.
+
+Fixed during the review:
+
+- Proximity read the external I2C bus while the sensor sits on the internal one,
+  so it could never fire -- and begin() reported success anyway, because it
+  checked that a bus existed rather than that a sensor answered. A feature that
+  silently did nothing on a board that reported itself healthy.
+- The two-finger mute also read as an ordinary single tap: the face tickled and
+  the server was told it had been petted. The character was delighted by being
+  silenced.
+- A reset written for a documented case was never called.
+
 Version 2.3.0 (2026-08-30)
 ---------------------------
 v2.3 -- lip-sync. The mouth moves with the voice, and the server sends nothing
