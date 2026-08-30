@@ -42,6 +42,11 @@ class ProceduralRenderer : public IFaceRenderer {
     void setAudioLevel(float level) override;
     void tick(uint32_t now_ms) override;
 
+    //: Pull the gaze toward something, or release it. **A local reflex, and it outranks the
+    //: server's `gaze`** -- ARCHITECTURE §Gaze says so: the field arrives from the server and is
+    //: "overridden locally by a reflex". The device can see a hand; the server cannot.
+    void setGazeReflex(bool active, float x = 0.0f);
+
     //: Whether the device's own speaker is running. **This, not the frame's `speaking` flag, is
     //: what keeps the mouth moving**: the server is seconds ahead of the speaker because the
     //: device is still draining audio the server finished sending, and `v2.1.2` was exactly the
@@ -118,6 +123,10 @@ class ProceduralRenderer : public IFaceRenderer {
     //: state. Zero means no server frame is in force -- which is what a device-local face leaves
     //: behind, because `boot` and `offline` are not things that expire.
     roboface::FaceHold hold_;
+    //: The server's gaze, from the last `EmotionFrame`, and the local reflex that may override it.
+    float server_gaze_x_ = 0.0f;
+    bool reflex_gaze_ = false;
+    float reflex_gaze_x_ = 0.0f;
     //: A frame that arrived while the device was still speaking and ends the speaking. Applied
     //: when playback stops, which is the moment it was actually describing.
     roboface::EmotionFrame pending_;

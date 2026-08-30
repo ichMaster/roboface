@@ -278,6 +278,14 @@ Indicators, notifications and input affordances are specified in **[features/DEV
 
 `gaze` arrives from the server (voice direction in v2.5, the vision turn in v3) and is overridden locally by reflexes: the proximity sensor pulls the gaze toward an approaching hand; a touch pulls it to the touched zone; the IMU rolls the eyes against a tilt to keep the horizon.
 
+**The order of authority, from v2.4 where the field acquired its first consumer:** a local reflex
+wins while it is active; otherwise the server's last `gaze`; and the idle loop's drift composes with
+either, because it is a wander rather than a look. The reflex wins for a reason that is not about
+layering — the device can see a hand and the server cannot, being one round trip and a model call
+away from knowing. A gaze that waited for permission would always be looking at where the hand had
+been. When the reflex releases, the face returns to the server's gaze rather than to centre: the
+server's instruction did not stop being true while a hand was in the way.
+
 ## Interaction — two levels
 
 Every physical input is handled twice, and the two levels never block each other.

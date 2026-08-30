@@ -11,6 +11,7 @@
 #include <M5Unified.h>
 
 #include "pure/motion.h"
+#include "pure/proximity.h"
 
 namespace app {
 
@@ -62,6 +63,51 @@ class Imu {
     }
 
     roboface::MotionDetector detector_;
+    bool ready_ = false;
+    uint32_t last_read_ms_ = 0;
+};
+
+//: How often the proximity sensor is read.
+//:
+//: 100 Hz would be pointless: a hand reaching for a desk object takes 300-500 ms, and the settle
+//: time in `pure/proximity.h` is 150. 50 ms samples that three times over, which is enough to
+//: confirm without the loop paying for readings nothing looks at.
+constexpr uint32_t kProximityIntervalMs = 50;
+
+class Proximity {
+  public:
+    //: Start the sensor. Returns false if the board has none -- a variant without it is a device
+    //: that does not wake to a hand, not a device that fails to boot.
+    bool begin() {
+        ready_ = M5.Ex_I2C.begin();
+        return ready_;
+    }
+
+    bool isReady() const { return ready_; }
+
+    roboface::Presence tick(uint32_t now_ms) {
+        if (!ready_) return roboface::Presence::kNone;
+        if (now_ms - last_read_ms_ < kProximityIntervalMs) return roboface::Presence::kNone;
+        last_read_ms_ = now_ms;
+        return detector_.feed(read(), now_ms);
+    }
+
+    bool isNear() const { return detector_.isNear(); }
+
+  private:
+    //: The LTR-553's proximity register, read over the shared I2C bus. A count, not a distance --
+    //: see the note in `pure/proximity.h` about why the thresholds are stated in counts.
+    uint16_t read() {
+        constexpr uint8_t kAddress = 0x23;
+        constexpr uint8_t kProximityDataRegister = 0x8D;
+        uint8_t bytes[2] = {0, 0};
+        if (!M5.Ex_I2C.readRegister(kAddress, kProximityDataRegister, bytes, 2, 100000)) {
+            return 0;
+        }
+        return static_cast<uint16_t>(bytes[0] | ((bytes[1] & 0x07) << 8));
+    }
+
+    roboface::ProximityDetector detector_;
     bool ready_ = false;
     uint32_t last_read_ms_ = 0;
 };

@@ -144,8 +144,24 @@ void ProceduralRenderer::apply(const roboface::EmotionFrame& frame) {
     // server sends one on each state change. What it bounds is the connection dying between two of
     // them, leaving a `thinking` face standing over a turn that will never finish.
     hold_.hold(frame.ttl_ms);
+    // Remembered rather than applied: a reflex may be overriding it, and when the reflex releases
+    // the face should return to what the server last asked for rather than to centre.
+    server_gaze_x_ = frame.has_gaze ? frame.gaze_x : 0.0f;
 
     crossfade_.target(roboface::withIntensity(roboface::recipeFor(frame.emotion), frame.intensity));
+    animating_ = true;
+}
+
+void ProceduralRenderer::setGazeReflex(bool active, float x) {
+    // **The local reflex wins while it is active**, which ARCHITECTURE §Gaze specifies and this is
+    // the first code to depend on: the field has been parsed since v2.2 and ignored until now.
+    //
+    // The reason is not politeness about layering. The device can see a hand approaching and the
+    // server cannot -- it is one round trip and a model call away from knowing, by which time the
+    // hand has arrived. A gaze that waited for permission would be a gaze that always looked at
+    // where the hand had been.
+    reflex_gaze_ = active;
+    reflex_gaze_x_ = x < -1.0f ? -1.0f : (x > 1.0f ? 1.0f : x);
     animating_ = true;
 }
 
@@ -234,6 +250,12 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
     geometry.centre_y += static_cast<int>(idle.bob_y);
     geometry.eye_offset_y += static_cast<int>(idle.gaze_y);
     geometry.centre_x += static_cast<int>(idle.gaze_x);
+
+    // The gaze, in the documented order of authority: a local reflex if one is active, otherwise
+    // whatever the server last asked for. The idle drift above is a third source and the smallest
+    // -- it is a wander, not a look, and it composes with either.
+    const float gaze_x = reflex_gaze_ ? reflex_gaze_x_ : server_gaze_x_;
+    geometry.centre_x += static_cast<int>(gaze_x * static_cast<float>(geometry.max_tilt_px));
 
     // Skip the compose when nothing moved. **Narrower than it sounds**: the breath is a continuous
     // wave, so this only fires when the idle is *stilled* -- `intensity` at zero, which is what
