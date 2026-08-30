@@ -84,6 +84,10 @@ class ProceduralRenderer : public IFaceRenderer {
     }
 
   private:
+    //: Put a frame into force. Separate from `show` because a frame that ends the speaking is
+    //: **held** until the speaker stops -- see the note there.
+    void apply(const roboface::EmotionFrame& frame);
+
     void compose(const roboface::LayerBank& bank);
     static uint16_t dimmed(uint16_t colour, uint8_t brightness);
 
@@ -104,6 +108,10 @@ class ProceduralRenderer : public IFaceRenderer {
     //: state. Zero means no server frame is in force -- which is what a device-local face leaves
     //: behind, because `boot` and `offline` are not things that expire.
     roboface::FaceHold hold_;
+    //: A frame that arrived while the device was still speaking and ends the speaking. Applied
+    //: when playback stops, which is the moment it was actually describing.
+    roboface::EmotionFrame pending_;
+    bool has_pending_ = false;
     roboface::LipSync lips_;
     roboface::MouthFrame last_mouth_ = roboface::MouthFrame::kClosed;
     float last_mouth_open_ = 0.0f;

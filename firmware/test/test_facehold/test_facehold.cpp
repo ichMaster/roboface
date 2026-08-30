@@ -10,6 +10,7 @@
 #include "pure/facehold.h"
 
 using roboface::FaceHold;
+using roboface::appliesNow;
 using roboface::mouthRuns;
 
 // ---------------------------------------------------------------------------------------
@@ -120,6 +121,61 @@ static void test_a_playing_speaker_with_no_permission_is_not_the_character_talki
     TEST_ASSERT_FALSE(mouthRuns(false, true));
 }
 
+// ---------------------------------------------------------------------------------------
+// appliesNow -- the half of the rule that was missing (code review #1)
+// ---------------------------------------------------------------------------------------
+
+static void test_a_frame_that_grants_permission_always_applies_at_once() {
+    // The face should change as the device *begins* to speak. That ordering is what the response
+    // schema's field order and the orchestrator's yield order are both arranged around, and a
+    // frame held here would undo all of it.
+    TEST_ASSERT_TRUE(appliesNow(true, false));
+    TEST_ASSERT_TRUE(appliesNow(true, true));
+}
+
+static void test_a_frame_with_nothing_playing_applies_at_once() {
+    TEST_ASSERT_TRUE(appliesNow(false, false));
+}
+
+static void test_a_frame_that_ends_the_speaking_waits_for_the_speaker() {
+    // **The bug this function exists for.** The server sends `speaking: false` when it has finished
+    // the turn; the device still holds seconds of audio. Applied on arrival it shuts the mouth and
+    // restarts the drift mid-sentence -- both of the faults `v2.1.2` fixed, arriving through the
+    // server channel this time.
+    TEST_ASSERT_FALSE(appliesNow(false, true));
+}
+
+static void test_the_whole_end_of_turn_sequence_keeps_the_mouth_running() {
+    // The failure walked end to end, in the order the wire actually produces it. This is the test
+    // that would have caught code review #1: `mouthRuns` was right the whole time and was being
+    // asked about a permission that had already been withdrawn.
+    bool permission = false;
+    bool playing = false;
+
+    // 1. The reply's frame arrives: `speaking: true`, before the first word.
+    TEST_ASSERT_TRUE(appliesNow(true, playing));
+    permission = true;
+
+    // 2. The speaker starts.
+    playing = true;
+    TEST_ASSERT_TRUE(mouthRuns(permission, playing));
+
+    // 3. The server finishes the turn and sends `speaking: false` -- while the device is still
+    //    holding seconds of audio. Held, not applied.
+    TEST_ASSERT_FALSE(appliesNow(false, playing));
+    TEST_ASSERT_TRUE(mouthRuns(permission, playing));
+
+    // 4. Several frames of playback later, the mouth is still moving.
+    for (int tick = 0; tick < 100; ++tick) {
+        TEST_ASSERT_TRUE(mouthRuns(permission, playing));
+    }
+
+    // 5. The speaker stops. Now the held frame applies, and the mouth shuts.
+    playing = false;
+    permission = false;  // what the held frame carries
+    TEST_ASSERT_FALSE(mouthRuns(permission, playing));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_a_fresh_hold_is_not_held);
@@ -132,5 +188,9 @@ int main(int, char**) {
     RUN_TEST(test_the_mouth_needs_both_the_permission_and_the_fact);
     RUN_TEST(test_the_server_saying_the_reply_ended_does_not_stop_a_playing_speaker);
     RUN_TEST(test_a_playing_speaker_with_no_permission_is_not_the_character_talking);
+    RUN_TEST(test_a_frame_that_grants_permission_always_applies_at_once);
+    RUN_TEST(test_a_frame_with_nothing_playing_applies_at_once);
+    RUN_TEST(test_a_frame_that_ends_the_speaking_waits_for_the_speaker);
+    RUN_TEST(test_the_whole_end_of_turn_sequence_keeps_the_mouth_running);
     return UNITY_END();
 }

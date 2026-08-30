@@ -85,6 +85,17 @@ void ProceduralRenderer::show(roboface::DeviceState state) {
     idle_.setBlinking(state != roboface::DeviceState::kListening);
     speaking_mouth_ = state == roboface::DeviceState::kReplying;
     if (!speaking_mouth_) lips_.reset();  // the mouth shuts when the reply ends
+
+    // **The device has taken its face back, so nothing the server said is still in force**
+    // (code review #2). Without this the last frame's ttl keeps running underneath: a link dropped
+    // mid-reply shows the `offline` face, and up to sixty seconds later that face silently
+    // crossfades to `neutral` and starts blinking over a device that is still offline -- with the
+    // chrome's fault indicator arguing with it. The window is the length of whatever ttl happened
+    // to be standing, so the symptom is intermittent by construction.
+    //
+    // A held instruction goes with it: it came from a connection that is no longer there.
+    hold_.release();
+    has_pending_ = false;
     // Sets a target; the drawing happens in `tick`. A `show` that drew would make a state change
     // cost a frame at the moment the device is busiest -- which is exactly when states change.
     crossfade_.target(roboface::recipeFor(state));
@@ -96,15 +107,38 @@ void ProceduralRenderer::show(const roboface::EmotionFrame& frame) {
     // side: no rule here decides what the face means, only how long the instruction stands and
     // whether the mouth is allowed to move.
     //
-    // The idle loop runs unless the server says a reply is being spoken. `listening` is no longer
-    // special-cased by state, because there is no state to case on -- what arrives is `calm`, and a
-    // calm face that breathes is right. What must not breathe is a face that is talking, where the
-    // mouth is already the thing being watched.
+    // **A frame that ends the speaking is about a moment that has not arrived yet.**
+    //
+    // The server sends `emotion{neutral, speaking: false}` when *it* has finished the turn. The
+    // device is seconds behind that -- 244 KB of buffered audio, about eight seconds of voice --
+    // so applying it on arrival shuts the mouth and restarts the breathing drift in the middle of a
+    // sentence the device is still saying. That is exactly the pair of faults `v2.1.2` fixed,
+    // arriving through the server channel instead of the device's own state machine (code review
+    // #1), and the pure `mouthRuns` test does not catch it because the rule is right and what feeds
+    // the rule was wrong.
+    //
+    // ARCHITECTURE §EmotionFrame already says which half decides: *"`speaking` is a permission, not
+    // a duration … what stops the mouth is the device's own playback state."* So the instruction is
+    // **held** and applied when the speaker actually stops. A frame that grants permission, or any
+    // frame arriving with nothing playing, applies at once.
+    if (!roboface::appliesNow(frame.speaking, playing_)) {
+        pending_ = frame;
+        has_pending_ = true;
+        return;
+    }
+    apply(frame);
+}
+
+void ProceduralRenderer::apply(const roboface::EmotionFrame& frame) {
+    // The idle loop runs unless a reply is being spoken. `listening` is no longer special-cased by
+    // state, because there is no state to case on -- what arrives is `calm`, and a calm face that
+    // breathes is right. What must not breathe is a face that is talking, where the mouth is
+    // already the thing being watched.
     idle_.setIntensity(frame.speaking ? 0.0f : 1.0f);
     idle_.setBlinking(!frame.speaking);
 
     speaking_allowed_ = frame.speaking;
-    if (!frame.speaking && !playing_) lips_.reset();
+    if (!frame.speaking) lips_.reset();
 
     // The ttl is restarted by every frame, which is why it never expires in normal operation: the
     // server sends one on each state change. What it bounds is the connection dying between two of
@@ -116,10 +150,21 @@ void ProceduralRenderer::show(const roboface::EmotionFrame& frame) {
 }
 
 void ProceduralRenderer::setPlaying(bool playing) {
+    const bool was_playing = playing_;
     playing_ = playing;
-    // The mouth shuts when the speaker actually stops -- not when the server said the reply was
-    // over, which it did seconds earlier.
-    if (!playing && !speaking_allowed_) lips_.reset();
+    if (playing || !was_playing) return;
+
+    // The speaker has stopped, which is the moment a held instruction was waiting for. The mouth
+    // shuts here -- not when the server said the reply was over, which it did seconds earlier.
+    if (has_pending_) {
+        has_pending_ = false;
+        apply(pending_);
+        return;
+    }
+    // Nothing held: playback ended without the server saying so -- a drained buffer after a dropped
+    // link, or a `/loopback` recording. The mouth still shuts.
+    lips_.reset();
+    speaking_allowed_ = false;
 }
 
 void ProceduralRenderer::setAudioLevel(float level) {

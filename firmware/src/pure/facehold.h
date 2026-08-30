@@ -68,4 +68,22 @@ inline constexpr bool mouthRuns(bool server_permits, bool speaker_playing) {
     return server_permits && speaker_playing;
 }
 
+// Should an arriving frame be put into force now, or held until the speaker stops?
+//
+// The other half of the same rule, and the half that was missing. `mouthRuns` says the mouth needs
+// the device's own playback to be running; this says the **permission must not be withdrawn while
+// it still is**. Without it the server's end-of-turn frame arrives seconds early — it describes a
+// turn the server has finished and the device has not — and applying it shuts the mouth and
+// restarts the breathing drift in the middle of a sentence.
+//
+// That is not a hypothetical ordering: it is what every single completed turn does. The server
+// sends `emotion{neutral, speaking: false}` the moment it stops streaming, while the device still
+// holds seconds of audio it has been given. Held, the instruction is right; applied, it is early.
+//
+// A frame that *grants* permission always applies at once — the face should change as the device
+// begins to speak, which is the ordering the whole response schema is arranged around.
+inline constexpr bool appliesNow(bool frame_speaking, bool speaker_playing) {
+    return frame_speaking || !speaker_playing;
+}
+
 }  // namespace roboface
