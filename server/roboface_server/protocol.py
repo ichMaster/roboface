@@ -35,7 +35,7 @@ import json
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Final
 
@@ -176,6 +176,30 @@ class Emotion(StrEnum):
     SURPRISED = "surprised"
     SAD = "sad"
     ERROR = "error"
+
+
+class EventType(StrEnum):
+    """What kind of thing happened to the device (ARCHITECTURE §event{})."""
+
+    TOUCH = "touch"
+    MOTION = "motion"
+    PROXIMITY = "proximity"
+
+
+#: The `kind` vocabulary, per type. ARCHITECTURE §event{} lists exactly these, and the firmware's
+#: `ws_protocol.h` mirrors them -- `tests/contract/test_firmware_mirror.py` checks the two agree,
+#: because a value one side has never heard of is a reaction the character silently never gives.
+EVENT_KINDS: Final[dict[EventType, frozenset[str]]] = {
+    EventType.TOUCH: frozenset({"tap", "multi_tap", "stroke", "poke_eye", "long_press"}),
+    EventType.MOTION: frozenset({"tilt", "shake", "picked_up", "upside_down", "free_fall"}),
+    EventType.PROXIMITY: frozenset({"approach", "leave"}),
+}
+
+#: The largest `meta` an event may carry, in **entries**. `meta` is free-form by design -- a touch
+#: reports a zone and a count, a motion reports an axis, and pinning that would mean a protocol
+#: change per sensor. Free-form is not unbounded, though: the device is trusted to be ours and the
+#: network is not, and a cap that is never reached costs nothing.
+MAX_EVENT_META_ENTRIES: Final = 8
 
 
 class ErrorCode(StrEnum):
@@ -364,6 +388,25 @@ class TtsEnd:
 
 
 @dataclass(frozen=True, slots=True)
+class Event:
+    """``event{type, kind, meta}`` -- the second level of the reaction model, device -> server.
+
+    The reflex has already fired locally by the time this is sent; this tells the *character* it
+    happened, and the server may answer with an emotion, a spoken line, or nothing at all.
+
+    **An unknown `kind` is refused, which is the opposite of what `emotion{}` does.** The contrast
+    is deliberate. A face is not worth dropping a connection over, so a bad emotion is coerced to
+    `neutral` and rendered. But an event is the *device making a claim* about the physical world,
+    and a claim the contract does not define is a firmware bug: coercing it would turn that bug
+    into a wrong reaction from the character, which is far harder to trace than a refused frame.
+    """
+
+    type: EventType
+    kind: str
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class Gaze:
     """Where the face is looking: ``x`` and ``y`` in −1..1, centre at the origin.
 
@@ -439,13 +482,14 @@ class ErrorFrame:
 
 #: Everything :func:`decode` can return and :func:`encode` accepts.
 Frame = (
-    Hello | TextIn | ListenStart | ListenStop | Ping | Pong
+    Hello | TextIn | ListenStart | ListenStop | Ping | Pong | Event
     | AsrPartial | Asr | Reply | EmotionFrame | TtsEnd | ErrorFrame
 )
 
 #: Which message type each typed frame is. One table, so encode and the tests agree.
 FRAME_TYPES: Final[dict[type[Frame], DeviceMessage | ServerMessage]] = {
     Hello: DeviceMessage.HELLO,
+    Event: DeviceMessage.EVENT,
     TextIn: DeviceMessage.TEXT_IN,
     ListenStart: DeviceMessage.LISTEN_START,
     ListenStop: DeviceMessage.LISTEN_STOP,
@@ -480,6 +524,16 @@ def encode(frame: Frame) -> str:
             }
         case TextIn():
             payload["text"] = frame.text
+        case Event():
+            # **Nested under `event`, not spread into the envelope.** ARCHITECTURE §event{} shows
+            # `{"type": "touch", "kind": …}` and that is the *inner* object: the envelope's own
+            # `type` names the message, a rule every other frame follows and `decode_envelope`
+            # depends on. Spreading them collides -- the event's type overwrites the message's, and
+            # the frame decodes as an unknown message called "touch".
+            inner: dict[str, Any] = {"type": str(frame.type), "kind": frame.kind}
+            if frame.meta:
+                inner["meta"] = dict(frame.meta)
+            payload["event"] = inner
         case AsrPartial() | Asr():
             payload["text"] = frame.text
         case Reply():
@@ -719,6 +773,40 @@ def _decode_reply(payload: dict[str, Any]) -> Reply:
     return Reply(text=_require_str(payload, "text"), final=_require_bool(payload, "final"))
 
 
+def _decode_event(payload: dict[str, Any]) -> Event:
+    """Decode ``event{}`` -- **validating, not coercing**, which is the opposite of `emotion{}`.
+
+    Both decisions are right and the contrast is the content of each. A face is not worth dropping a
+    connection over, so a bad emotion becomes `neutral` and is rendered. An event is the device
+    making a *claim about the physical world*; a claim the contract does not define is a firmware
+    bug, and coercing it would turn that bug into a wrong reaction from the character -- far harder
+    to trace than a refused frame, and arriving as "why did it do that" rather than as an error.
+    """
+    inner = payload.get("event")
+    if not isinstance(inner, dict):
+        raise MalformedFrame("'event' must be an object")
+
+    raw_type = _require_str(inner, "type")
+    try:
+        event_type = EventType(raw_type)
+    except ValueError as exc:
+        raise MalformedFrame(f"unknown event type {raw_type!r}") from exc
+
+    kind = _require_str(inner, "kind")
+    if kind not in EVENT_KINDS[event_type]:
+        raise MalformedFrame(f"{kind!r} is not a {raw_type} event")
+
+    meta = inner.get("meta", {})
+    if not isinstance(meta, dict):
+        raise MalformedFrame(f"'meta' must be an object, got {type(meta).__name__}")
+    if len(meta) > MAX_EVENT_META_ENTRIES:
+        raise MalformedFrame(
+            f"'meta' has {len(meta)} entries; the limit is {MAX_EVENT_META_ENTRIES}"
+        )
+
+    return Event(type=event_type, kind=kind, meta=dict(meta))
+
+
 def _decode_emotion(payload: dict[str, Any]) -> EmotionFrame:
     """Decode ``emotion{}`` -- **coercing, not validating**.
 
@@ -762,6 +850,7 @@ _Decoder = Callable[[dict[str, Any]], Frame]
 _DECODERS: Final[dict[DeviceMessage | ServerMessage, _Decoder]] = {
     DeviceMessage.HELLO: _decode_hello,
     DeviceMessage.TEXT_IN: _decode_text_in,
+    DeviceMessage.EVENT: _decode_event,
     DeviceMessage.LISTEN_START: lambda _payload: ListenStart(),
     DeviceMessage.LISTEN_STOP: lambda _payload: ListenStop(),
     DeviceMessage.PING: lambda _payload: Ping(),

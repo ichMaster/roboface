@@ -29,6 +29,7 @@ from roboface_server.protocol import (
     DeviceMessage,
     Emotion,
     ErrorCode,
+    EventType,
     Hello,
     Ping,
     ServerMessage,
@@ -227,3 +228,19 @@ def test_the_frame_defaults_are_identical_on_both_sides() -> None:
 
     assert int(ttl.group(1)) == DEFAULT_TTL_MS
     assert float(intensity.group(1)) == DEFAULT_INTENSITY
+
+
+def test_the_event_type_vocabulary_is_identical_on_both_sides() -> None:
+    """`event{}`'s `type` enum, checked across the two languages — the same guard the emotion enum
+    got in v2.2, and for the same reason: a value one side has never heard of is a reaction the
+    character silently never gives."""
+    header = (Path(__file__).resolve().parents[2] / "firmware/src/pure/ws_protocol.h").read_text()
+    block = re.search(r"enum class EventType : uint8_t \{(.*?)\};", header, re.S)
+    assert block is not None, "the firmware's EventType enum moved or was renamed"
+
+    firmware = [
+        name[0].lower() + name[1:]
+        for name in re.findall(r"\bk([A-Z]\w*)", block.group(1))
+        if name != "Count"
+    ]
+    assert firmware == [member.value for member in EventType]

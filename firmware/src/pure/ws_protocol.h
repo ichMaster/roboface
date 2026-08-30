@@ -32,6 +32,27 @@
 
 namespace roboface {
 
+//: What kind of thing happened to the device (ARCHITECTURE §event{}). Mirrors the server's
+//: `EventType`; `tests/contract/test_firmware_mirror.py` checks the two agree, because a value one
+//: side has never heard of is a reaction the character silently never gives.
+enum class EventType : uint8_t {
+    kTouch,
+    kMotion,
+    kProximity,
+    kCount,
+};
+
+inline constexpr const char* toString(EventType type) {
+    switch (type) {
+        case EventType::kTouch: return "touch";
+        case EventType::kMotion: return "motion";
+        case EventType::kProximity: return "proximity";
+        case EventType::kCount: break;
+    }
+    return "touch";
+}
+
+
 // ---------------------------------------------------------------------------------------
 // Constants — mirrored from the released protocol.py
 // ---------------------------------------------------------------------------------------
@@ -234,6 +255,33 @@ inline std::string buildTextIn(const char* text) {
     JsonDocument doc;
     doc["type"] = toString(DeviceMessage::kTextIn);
     doc["text"] = text;
+    std::string out;
+    serializeJson(doc, out);
+    return out;
+}
+
+// `event{}` -- the second level of the reaction model (v2.4).
+//
+// **The event's own type is nested under `event`**, not spread into the envelope: the envelope's
+// `type` names the *message*, which every frame here follows, and spreading them would produce a
+// frame the server decodes as an unknown message called `touch`. ARCHITECTURE §event{} shows the
+// inner object and now says so explicitly.
+//
+// `meta` is optional and free-form -- a touch reports a zone and a count, a motion an axis --
+// because pinning it would mean a protocol change per sensor. The server caps its size.
+inline std::string buildEvent(EventType type, const char* kind,
+                              const char* meta_key = nullptr, const char* meta_value = nullptr,
+                              const char* count_key = nullptr, int count = 0) {
+    JsonDocument doc;
+    doc["type"] = toString(DeviceMessage::kEvent);
+    JsonObject event = doc["event"].to<JsonObject>();
+    event["type"] = toString(type);
+    event["kind"] = kind;
+    if (meta_key != nullptr || count_key != nullptr) {
+        JsonObject meta = event["meta"].to<JsonObject>();
+        if (meta_key != nullptr && meta_value != nullptr) meta[meta_key] = meta_value;
+        if (count_key != nullptr) meta[count_key] = count;
+    }
     std::string out;
     serializeJson(doc, out);
     return out;

@@ -50,6 +50,7 @@ from roboface_server.protocol import (
     EmotionFrame,
     ErrorCode,
     ErrorFrame,
+    Event,
     Frame,
     Hello,
     ListenStart,
@@ -666,6 +667,21 @@ class Router:
 
                 await transport.send(encode(Asr(text=heard)))
                 await self._stream_reply(heard, conn, transport, since=stopped_at)
+            case Event():
+                # **Accepted while a turn is running, and that is the point.** Being stroked during
+                # a reply is the common case for a desk companion, not an edge one: rejecting it as
+                # out-of-state would make this phase's whole premise unreachable.
+                #
+                # What it must not do is start a second turn -- half-duplex has nowhere to put a
+                # second answer. RF-072 decides the reaction; this only carries it.
+                log(
+                    "event.received",
+                    device_id=conn.device_id,
+                    session_id=conn.session_id,
+                    kind=frame.kind,
+                    event_type=str(frame.type),
+                )
+                await self._react_to_event(frame, conn, transport)
             case Hello():
                 await self._send_error(
                     transport, ErrorCode.BAD_FRAME, "'hello' was already negotiated"
@@ -775,6 +791,17 @@ class Router:
         await self._send_emotion(transport, frame_for(TurnState.IDLE))
         await transport.send(encode(Reply(text="", final=True)))
         log("turn.streamed", deltas=deltas, chunks=chunks)
+
+    async def _react_to_event(
+        self, event: Event, conn: Connection, transport: Transport
+    ) -> None:
+        """What the character makes of being touched.
+
+        A placeholder in RF-068 -- the frame has to arrive and be logged before anything can decide
+        what to do with it, and a handler written before the wire exists would be a handler nobody
+        had ever fed. RF-072 gives it the reaction path.
+        """
+        del event, conn, transport
 
     async def _send_emotion(self, transport: Transport, frame: EmotionFrame) -> None:
         """Send one ``emotion{}``.

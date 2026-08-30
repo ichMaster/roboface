@@ -101,8 +101,15 @@ every state change does not bury the field that actually moved.
 The second level of the reaction model. The reflex already fired locally; this tells the character it happened.
 
 ```json
-{ "type": "touch", "kind": "stroke", "meta": {"zone": "cheek", "count": 3} }
+{ "type": "event",
+  "event": { "type": "touch", "kind": "stroke", "meta": {"zone": "cheek", "count": 3} } }
 ```
+
+**The event's own type is nested, and the nesting is not decoration.** The envelope's `type` names
+the *message* — a rule every frame in this protocol follows and `decode_envelope` depends on — so an
+event that spread its fields into the envelope would overwrite it, and the frame would decode as an
+unknown message called `touch`. Earlier revisions of this section showed only the inner object; that
+was the object being described, not the frame on the wire.
 
 `kind` is a small enum per type — touch: `tap · multi_tap · stroke · poke_eye · long_press`; motion: `tilt · shake · picked_up · upside_down · free_fall`; proximity: `approach · leave`. The server may answer with an `emotion` frame, a spoken line, or nothing at all.
 
