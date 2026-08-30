@@ -1,3 +1,53 @@
+Version 2.2.0 (2026-08-30)
+---------------------------
+v2.2 -- the emotion channel. The server decides how the face feels; the device
+renders what it is given. This is the last decision to leave the device.
+
+- The model reports its own state alongside the reply. Gemini answers with
+  {emotion, intensity, reply} under a response schema that declares the report
+  FIRST and pins the property ordering, so it arrives in the model's first chunk
+  and the face changes as the device begins to speak -- not after it has
+  finished.
+- The JSON is read as it arrives. Collecting the response and parsing it whole
+  would have cost the entire generation time before the first word, turning
+  structured output into a latency regression. The incremental reader is fed the
+  same document at every chunk size from one character upward, with boundaries
+  inside escapes and between the halves of a surrogate pair, and reassembles the
+  text byte for byte.
+- `emotion{}` is the one frame neither side ever calls malformed. An emotion
+  outside the enum becomes neutral, intensity clamps, a malformed gaze or colour
+  is dropped -- on the server AND on the device, because the two are separately
+  releasable and neither may assume the other sanitised what it sent. A face is
+  not worth dropping a connection over.
+- An emotion frame is sent for every turn and every state change: calm when
+  listening opens, thinking when the model is asked, the model's own emotion
+  before the first word, the error face on a fault, and a relax-to-neutral when
+  the turn ends.
+- The device's recipe table is now keyed by emotion, with intensity blending
+  toward neutral rather than scaling toward blank -- a barely-sad face is a
+  slightly sad face, not one with its eyes shut. A frame stands for its ttl_ms
+  and then the face relaxes on its own, which is what stops a `thinking` face
+  standing over a connection that died mid-turn.
+- boot, wifi_connecting, offline and a local fault keep their own faces. Those
+  are facts about the link -- one of them by definition a fact about the server
+  being unreachable -- so a device that waited to be told how to look while
+  disconnected would have no face at all.
+
+Fixed during the review, all three found by reading rather than by running:
+
+- The end-of-turn frame stopped the mouth and restarted the drift WHILE THE
+  DEVICE WAS STILL SPEAKING -- the v2.1.2 faults arriving through the server
+  channel this time. The server is seconds ahead of the speaker, so such a frame
+  describes a moment that has not arrived; it is now held until playback ends.
+  The existing regression test could not catch it: the rule was right and what
+  fed the rule was wrong, one layer up.
+- A server frame's ttl kept running after the device took its face back, so an
+  offline face silently became neutral up to a minute later, with the fault
+  indicator still lit beside it.
+- A model report arriving after the first delta was dropped, leaving the face on
+  neutral for a reply the model had labelled -- invisibly, with a plausible face
+  and a complete answer.
+
 Version 2.1.2 (2026-08-30)
 ---------------------------
 - The mouth moves while the device speaks. Four -- now five -- discrete shapes
