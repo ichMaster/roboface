@@ -153,6 +153,79 @@ static void test_rms_of_nothing_is_nothing() {
     TEST_ASSERT_EQUAL_FLOAT(0.0f, channelRms(zeros.data(), 0));
 }
 
+// ---------------------------------------------------------------------------------------
+// Downmix — RF-076
+// ---------------------------------------------------------------------------------------
+
+static void test_two_identical_channels_survive_the_downmix_unchanged() {
+    const auto signal = tone(320, 9000);
+    std::vector<int16_t> out(320);
+    roboface::downmix(signal.data(), signal.data(), 320, out.data());
+
+    for (std::size_t i = 0; i < 320; ++i) {
+        TEST_ASSERT_INT16_WITHIN(1, signal[i], out[i]);
+    }
+}
+
+static void test_the_downmix_cannot_clip() {
+    // **The reason it averages rather than sums.** Two correlated channels at full scale summed are
+    // 6 dB over, and int16 would wrap -- turning the loudest half of every word into noise, audibly
+    // and only for loud speakers, which is the worst possible way to find out.
+    std::vector<int16_t> left(320, 32767), right(320, 32767);
+    std::vector<int16_t> out(320);
+    roboface::downmix(left.data(), right.data(), 320, out.data());
+    for (std::size_t i = 0; i < 320; ++i) TEST_ASSERT_EQUAL_INT16(32767, out[i]);
+
+    std::vector<int16_t> min_l(320, -32768), min_r(320, -32768);
+    roboface::downmix(min_l.data(), min_r.data(), 320, out.data());
+    for (std::size_t i = 0; i < 320; ++i) TEST_ASSERT_EQUAL_INT16(-32768, out[i]);
+}
+
+static void test_a_full_scale_channel_beside_a_silent_one_halves_rather_than_clipping() {
+    std::vector<int16_t> loud(320, 30000), silent(320, 0), out(320);
+    roboface::downmix(loud.data(), silent.data(), 320, out.data());
+    for (std::size_t i = 0; i < 320; ++i) TEST_ASSERT_EQUAL_INT16(15000, out[i]);
+}
+
+static void test_a_source_to_one_side_is_still_averaged() {
+    // A voice off to the left is not a broken microphone, and mistaking one for the other would
+    // throw away half the array on every off-centre speaker.
+    std::vector<int16_t> l(320), r(320);
+    const auto both = interleave(tone(320, 12000), tone(320, 6000));
+    deinterleave(both.data(), 320, l.data(), r.data());
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(roboface::MonoSource::kBoth),
+                          static_cast<int>(roboface::chooseSource(measure(l.data(), r.data(), 320))));
+}
+
+static void test_an_obstructed_channel_is_dropped_rather_than_averaged_in() {
+    // A hand over one microphone. Averaging it in would halve the signal for no benefit.
+    std::vector<int16_t> l(320), r(320);
+    const auto both = interleave(tone(320, 12000), tone(320, 300));
+    deinterleave(both.data(), 320, l.data(), r.data());
+
+    const roboface::MonoSource source = roboface::chooseSource(measure(l.data(), r.data(), 320));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(roboface::MonoSource::kLeft), static_cast<int>(source));
+
+    std::vector<int16_t> out(320);
+    roboface::downmix(l.data(), r.data(), 320, out.data(), source);
+    for (std::size_t i = 0; i < 320; ++i) TEST_ASSERT_EQUAL_INT16(l[i], out[i]);
+}
+
+static void test_silence_does_not_pick_a_channel() {
+    std::vector<int16_t> zeros(320, 0);
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(roboface::MonoSource::kBoth),
+        static_cast<int>(roboface::chooseSource(measure(zeros.data(), zeros.data(), 320))));
+}
+
+static void test_the_uplink_frame_is_the_same_size_it_always_was() {
+    // Part of the v2.5 DoD, asserted rather than assumed: the stereo work is the device's and the
+    // server sees exactly the stream it always did.
+    TEST_ASSERT_EQUAL_UINT32(640, roboface::kCaptureFrameBytes);
+    TEST_ASSERT_EQUAL_UINT32(roboface::kCaptureFrameSamples * 2, roboface::kCaptureFrameBytes);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_deinterleaving_is_exact);
@@ -164,5 +237,12 @@ int main(int, char**) {
     RUN_TEST(test_silence_is_not_a_direction);
     RUN_TEST(test_balance_does_not_depend_on_how_loud_the_source_is);
     RUN_TEST(test_rms_of_nothing_is_nothing);
+    RUN_TEST(test_two_identical_channels_survive_the_downmix_unchanged);
+    RUN_TEST(test_the_downmix_cannot_clip);
+    RUN_TEST(test_a_full_scale_channel_beside_a_silent_one_halves_rather_than_clipping);
+    RUN_TEST(test_a_source_to_one_side_is_still_averaged);
+    RUN_TEST(test_an_obstructed_channel_is_dropped_rather_than_averaged_in);
+    RUN_TEST(test_silence_does_not_pick_a_channel);
+    RUN_TEST(test_the_uplink_frame_is_the_same_size_it_always_was);
     return UNITY_END();
 }

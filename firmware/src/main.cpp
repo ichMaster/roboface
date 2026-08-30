@@ -1110,6 +1110,11 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
                       audio.balanceMin(), audio.balanceMax(),
                       audio.balanceMax() - audio.balanceMin());
         Serial.println("[mic-levels] розмах 0.000 = один канал; обидва знаки = два мікрофони");
+        const roboface::MonoSource source = audio.monoSource();
+        Serial.printf("[mic-levels] на сервер іде: %s\n",
+                      source == roboface::MonoSource::kBoth   ? "середнє двох"
+                      : source == roboface::MonoSource::kLeft ? "лише лівий (правий перекритий)"
+                                                              : "лише правий (лівий перекритий)");
         audio.resetBalanceRange();
         return;
     }

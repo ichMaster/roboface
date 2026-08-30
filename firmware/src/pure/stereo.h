@@ -100,4 +100,67 @@ inline StereoLevels measure(const int16_t* left, const int16_t* right, std::size
     return levels;
 }
 
+//: How much quieter one channel must be than the other before it is treated as obstructed rather
+//: than merely further away.
+//:
+//: A hand, a case or a desk edge over one microphone drops it far below the other -- a factor of
+//: five or more. A source genuinely to one side gives a ratio well under two, which is the whole
+//: basis of `balance` and must not be mistaken for a fault. 0.20 sits between those, closer to the
+//: obstruction end, because averaging in a merely-quieter channel costs nothing while averaging in
+//: a covered one costs half the signal.
+inline constexpr float kObstructedChannelRatio = 0.20f;
+
+//: Which channel or channels the uplink should be made from.
+enum class MonoSource : uint8_t {
+    kBoth,   // averaged
+    kLeft,   // the right one is obstructed
+    kRight,  // the left one is obstructed
+};
+
+//: Decide before mixing. Separated from the mixing itself so the decision can be tested against
+//: levels alone, and so the reason a frame was built from one microphone is inspectable.
+inline MonoSource chooseSource(const StereoLevels& levels) {
+    const float louder = levels.left > levels.right ? levels.left : levels.right;
+    if (louder <= 0.0f) return MonoSource::kBoth;
+
+    const float quieter = levels.left > levels.right ? levels.right : levels.left;
+    if (quieter / louder >= kObstructedChannelRatio) return MonoSource::kBoth;
+    return levels.left > levels.right ? MonoSource::kLeft : MonoSource::kRight;
+}
+
+//: Two channels into the one the uplink carries.
+//:
+//: **Averaged, not summed.** Summing two correlated channels adds 6 dB and clips a loud speaker
+//: into a square wave -- and the two channels here are correlated almost by construction, being
+//: 40 mm apart. Averaging cannot clip, and the 3 dB it "loses" against a sum is not a loss at all:
+//: it is the sum's gain, which was never wanted.
+//:
+//: The noise argument is the actual reason to combine rather than to pick: averaging two channels
+//: of the same signal keeps the signal and halves the uncorrelated noise between them, which is
+//: 3 dB of free signal-to-noise. That is the whole benefit of the second microphone to ASR.
+inline void downmix(const int16_t* left, const int16_t* right, std::size_t count, int16_t* out,
+                    MonoSource source = MonoSource::kBoth) {
+    if (out == nullptr) return;
+    if (left == nullptr || right == nullptr) return;
+
+    switch (source) {
+        case MonoSource::kLeft:
+            for (std::size_t i = 0; i < count; ++i) out[i] = left[i];
+            return;
+        case MonoSource::kRight:
+            for (std::size_t i = 0; i < count; ++i) out[i] = right[i];
+            return;
+        case MonoSource::kBoth:
+            break;
+    }
+
+    for (std::size_t i = 0; i < count; ++i) {
+        // In int32 before the halving. Two int16 values summed overflow int16 by exactly one bit,
+        // and the compiler would be within its rights to wrap -- turning the loudest half of every
+        // word into noise, audibly and only for loud speakers.
+        const int32_t sum = static_cast<int32_t>(left[i]) + static_cast<int32_t>(right[i]);
+        out[i] = static_cast<int16_t>(sum / 2);
+    }
+}
+
 }  // namespace roboface

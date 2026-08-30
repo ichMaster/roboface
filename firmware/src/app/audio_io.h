@@ -203,6 +203,10 @@ class AudioIo {
 
     //: What the two channels last measured, and the widest imbalance since boot. `/mic-levels`.
     const roboface::StereoLevels& stereoLevels() const { return levels_; }
+    //: Which microphones the last uplink frame was made from. `/mic-levels` reports it: a frame
+    //: built from one channel is a fact worth being able to see, since the symptom of a covered
+    //: microphone is otherwise just "it hears me a bit worse".
+    roboface::MonoSource monoSource() const { return mono_source_; }
     float balanceMin() const { return balance_min_; }
     float balanceMax() const { return balance_max_; }
     void resetBalanceRange() {
@@ -233,6 +237,11 @@ class AudioIo {
     int16_t left_[roboface::kCaptureFrameSamples] = {};
     int16_t right_[roboface::kCaptureFrameSamples] = {};
     roboface::StereoLevels levels_;
+    //: What the uplink actually carries: both channels averaged, or the live one when the other is
+    //: obstructed. Its own buffer rather than mixing in place, because `left_` is still wanted --
+    //: the direction estimate reads both channels after the mix has been made.
+    int16_t mono_[roboface::kCaptureFrameSamples] = {};
+    roboface::MonoSource mono_source_ = roboface::MonoSource::kBoth;
 
     //: The furthest the balance has swung each way since boot. **Signed extremes, not a magnitude**
     //: -- "some imbalance happened" is a much weaker claim than "it went both ways", and only the

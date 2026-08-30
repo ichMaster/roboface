@@ -260,12 +260,21 @@ void AudioIo::tick(uint32_t now_ms) {
             if (levels_.balance < balance_min_) balance_min_ = levels_.balance;
             if (levels_.balance > balance_max_) balance_max_ = levels_.balance;
 
-            const float peak = roboface::peakLevel(left_, roboface::kCaptureFrameSamples);
+            // **The uplink is made from both microphones now** (RF-076): averaged, which cannot
+            // clip and halves the uncorrelated noise between them, or one channel alone when the
+            // other is obstructed. The frame size does not change and must not -- the server sees
+            // exactly the stream it always did.
+            mono_source_ = roboface::chooseSource(levels_);
+            roboface::downmix(left_, right_, roboface::kCaptureFrameSamples, mono_, mono_source_);
+
+            const float peak = roboface::peakLevel(mono_, roboface::kCaptureFrameSamples);
             if (peak > peak_seen_) peak_seen_ = peak;
             level_ = roboface::decayToward(level_, peak);
 
             if (observer_ != nullptr) {
-                observer_(left_, roboface::kCaptureFrameSamples, roboface::kCaptureFrameMs);
+                // The VAD hears what the server hears. Feeding it one channel while sending the
+                // mix would mean the endpointer deciding about a signal nobody else has.
+                observer_(mono_, roboface::kCaptureFrameSamples, roboface::kCaptureFrameMs);
             }
             if (stereo_observer_ != nullptr) {
                 stereo_observer_(left_, right_, roboface::kCaptureFrameSamples, now_ms);
@@ -275,7 +284,7 @@ void AudioIo::tick(uint32_t now_ms) {
                 // **The uplink stays mono and stays exactly this many bytes** -- part of the v2.5
                 // DoD. RF-076 replaces "the left channel" with a real downmix; what must not change
                 // either way is the frame size, so it is spelled from the mono constant.
-                const auto* mono = reinterpret_cast<const uint8_t*>(left_);
+                const auto* mono = reinterpret_cast<const uint8_t*>(mono_);
                 if (sink_ != nullptr && sink_(mono, roboface::kCaptureFrameBytes)) {
                     tally_.recordFrame(roboface::kCaptureFrameBytes);
                 }
