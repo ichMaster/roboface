@@ -47,6 +47,7 @@ from roboface_server.logging import bind_device, chars, connection_context, log
 from roboface_server.orchestrator import TurnAborted
 from roboface_server.protocol import (
     FRAME_TYPES,
+    MAX_TTS_FRAME_BYTES,
     MAX_UTTERANCE_BYTES,
     Accepted,
     Asr,
@@ -803,7 +804,21 @@ class Router:
                                 ),
                             )
                         conn.binary_phase = BinaryPhase.SPEAKING
-                        await transport.send_bytes(event.data)
+                        # **Split before sending.** The provider yields whatever the network handed
+                        # it -- `aiter_bytes()` with no size, so tens of kilobytes at a time -- and
+                        # the device's WebSocket library reassembles a whole frame before calling
+                        # its handler. Measured on the board: one 173 ms receive during which the
+                        # firmware could not feed its speaker even once, against a playback buffer
+                        # of 64 ms. That is a reply breaking up, and no amount of care on the device
+                        # can fix it: the device is not running during the gap.
+                        #
+                        # So the frame size is the server's responsibility, and it is bounded here
+                        # rather than in the provider: every provider's chunking is the transport's
+                        # accident, and only this line knows what the device can swallow.
+                        for offset in range(0, len(event.data), MAX_TTS_FRAME_BYTES):
+                            await transport.send_bytes(
+                                event.data[offset : offset + MAX_TTS_FRAME_BYTES]
+                            )
                         chunks += 1
         except TurnAborted as exc:
             await self._close_speaking(conn, transport)

@@ -66,6 +66,17 @@ int tap_y = 0;
 //: caused the gap someone heard.
 uint32_t last_audio_tick_ms = 0;
 uint32_t worst_audio_gap_ms = 0;
+//: The strip of screen a moving mouth can occupy: the mouth anchor's travel plus margin, across
+//: the whole face width because the mouth widens as well as opens. Derived from the geometry rather
+//: than picked, so a skin whose mouth sits lower cannot fall outside the region that gets sent.
+inline constexpr int kMouthBandTop = roboface::kFaceTop + roboface::kFaceHeight / 2;
+inline constexpr int kMouthBandHeight = roboface::kFaceBottom - kMouthBandTop;
+
+//: What chrome looked like at the last repaint, so a change to it can force a full push.
+roboface::ChromeVisibility last_chrome;
+
+uint32_t partial_pushes = 0;
+uint32_t full_pushes = 0;
 uint32_t worst_loop_ms = 0;
 uint32_t loop_started_ms = 0;
 
@@ -219,7 +230,11 @@ void serviceAudio() {
     // wrong the moment drains started happening inside the WebSocket receive: it reported 93 ms
     // while the speaker was in fact being fed several times within that window. A measurement that
     // cannot see the fix is a measurement that will argue against it.
-    if (last_audio_tick_ms != 0) {
+    // **Only while the speaker is actually running.** A gap when nothing is playing is not a gap
+    // anyone hears -- and the largest one in a reply happens before playback starts, while the I2S
+    // bus is handed from the microphone to the speaker. Counting it made the number look terrible
+    // and pointed at the wrong second of the turn.
+    if (last_audio_tick_ms != 0 && audio.isSpeaking()) {
         const uint32_t gap = now - last_audio_tick_ms;
         if (gap > worst_audio_gap_ms) worst_audio_gap_ms = gap;
     }
@@ -366,6 +381,17 @@ void render() {
         // turn is targeted when the server's frame arrives, not here -- calling `show` every
         // render would restart the frame's ttl on every repaint and it would never expire.
         renderer.show(state);
+    }
+    // **A chrome change is a reason to send the whole screen.** The partial push covers the mouth
+    // band only, so without this a fault appearing mid-reply would wait for the reply to end -- and
+    // an unresolved fault is the one thing this device promises never to hide.
+    {
+        const roboface::ChromeVisibility shown = chrome.visibility();
+        if (shown.link != last_chrome.link || shown.battery != last_chrome.battery ||
+            shown.mic_muted != last_chrome.mic_muted || shown.band != last_chrome.band) {
+            renderer.markDirty();
+        }
+        last_chrome = shown;
     }
     chrome_view.draw(renderer.canvas(), chrome, audio.inputLevel(), carousel.selected(),
                      roboface::kSkinCount);
@@ -1918,7 +1944,18 @@ void loop() {
                                                         : kMinPushIntervalMs;
     if (needs_push && now_ms - last_push_ms >= push_interval) {
         if (console.isOn()) console_view.draw(renderer.canvas(), transcript);
-        chrome_view.draw(renderer.canvas(), chrome, audio.inputLevel(), carousel.selected(),
+        // **A chrome change is a reason to send the whole screen.** The partial push covers the mouth
+    // band only, so without this a fault appearing mid-reply would wait for the reply to end -- and
+    // an unresolved fault is the one thing this device promises never to hide.
+    {
+        const roboface::ChromeVisibility shown = chrome.visibility();
+        if (shown.link != last_chrome.link || shown.battery != last_chrome.battery ||
+            shown.mic_muted != last_chrome.mic_muted || shown.band != last_chrome.band) {
+            renderer.markDirty();
+        }
+        last_chrome = shown;
+    }
+    chrome_view.draw(renderer.canvas(), chrome, audio.inputLevel(), carousel.selected(),
                      roboface::kSkinCount);
         // Either side of the 153 KB push -- the single most expensive thing the loop does, and
         // therefore the widest gap a finger can fall into.
@@ -1926,7 +1963,18 @@ void loop() {
         // the widest gap the speaker can fall into.
         serviceAudio();
         serviceTouch();
-        RF_TIME(sect_push, renderer.push());
+        // **Only the mouth, when only the mouth moved.** While a reply plays the idle drift is
+        // stilled and nothing else on the face changes, so sending the whole 153 KB sprite spends
+        // half the speaker's buffer redrawing pixels that are already correct. The renderer
+        // answers conservatively: anything it is unsure about is a full push.
+        if (renderer.onlyMouthChanged() && audio.isSpeaking()) {
+            ++partial_pushes;
+            RF_TIME(sect_push, renderer.pushRegion(roboface::kFaceLeft, kMouthBandTop,
+                                                   roboface::kFaceWidth, kMouthBandHeight));
+        } else {
+            ++full_pushes;
+            RF_TIME(sect_push, renderer.push());
+        }
         serviceAudio();
         serviceTouch();
         last_push_ms = now_ms;
@@ -1940,7 +1988,7 @@ void loop() {
             "[status] %s · link %s %s · ws %s · batt %d%%%s · fps=%lu mic=%lu cap=%lu · mon=%d "
             "vad s=%lu e=%lu peak=%d%% zc=%u · audio %s buf=%u q=%u ref=%u drop=%u · "
             "mouth=%lu lvl=%d..%d%% · loop %lums (ws %lu rend %lu touch %lu audio %lu push %lu "
-            "sens %lu) gap %lums · up %lus\n",
+            "sens %lu) gap %lums push %lu/%lu · up %lus\n",
             roboface::toString(state), net.isUp() ? "up" : "down", net.ipAddress(),
             ws.isConnected() ? "connected" : "disconnected", battery_percent,
             battery_charging ? " (charging)" : "",
@@ -1982,10 +2030,12 @@ void loop() {
             static_cast<unsigned long>(sect_audio), static_cast<unsigned long>(sect_push),
             static_cast<unsigned long>(sect_sens),
             static_cast<unsigned long>(worst_audio_gap_ms),
+            static_cast<unsigned long>(partial_pushes), static_cast<unsigned long>(full_pushes),
             static_cast<unsigned long>(now_ms / 1000));
         // Peaks, reset each line: a mean would hide exactly the iteration that caused the gap.
         worst_loop_ms = worst_audio_gap_ms = 0;
         sect_ws = sect_render = sect_touch = sect_audio = sect_push = sect_sens = 0;
+        partial_pushes = full_pushes = 0;
         peak_recent = 0.0f;
         crossings_recent = 0;
         frames_at_status = renderer.framesPushed();

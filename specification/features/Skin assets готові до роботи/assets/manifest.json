@@ -1,0 +1,31 @@
+{
+  "panel": { "width": 320, "height": 240, "format": "RGB565", "chromeBand": 28, "safeArea": [28, 28, 292, 212] },
+  "anchors": {
+    "eyes":  { "x": 76,  "y": 64,  "w": 168, "h": 88, "gazeShiftMax": 14 },
+    "mouth": { "x": 100, "y": 132, "w": 120, "h": 72, "gazeShiftMax": 14 }
+  },
+  "note": "All five bodies were drawn to the spec anchors above; no per-body override needed. Bodies flame/jelly/cloud are neutral mid-tone (shading carried by lightness) for runtime multiply-tint.",
+  "skins": [
+    { "id": "stackchan", "body": "body-stackchan.png", "ink": "#5DFFFF", "tinted": false, "overlays": [] },
+    { "id": "ghost", "body": "body-ghost.png", "ink": "#242A45", "tinted": false, "overlays": [
+      { "file": "elem-ghost-blush.png", "x": 76,  "y": 146, "w": 168, "h": 40, "on": ["joy", "neutral", "surprised"] },
+      { "file": "elem-ghost-tear.png",  "x": 214, "y": 148, "w": 24,  "h": 40, "on": ["sad"] }
+    ] },
+    { "id": "flame", "body": "body-flame.png", "ink": "#3B1600", "tinted": true, "overlays": [],
+      "tint": { "neutral": "#FF7A1A", "calm": "#FFA400", "joy": "#FFD24A", "thinking": "#FF8C42", "surprised": "#FFC46B", "sad": "#B25A2E", "error": "#F80000" } },
+    { "id": "jelly", "body": "body-jelly.png", "ink": "#2B0F3D", "tinted": true, "overlays": [
+      { "file": "elem-jelly-glow.png", "x": 60, "y": 40, "w": 200, "h": 120, "on": ["*"] }
+    ],
+      "tint": { "neutral": "#C77BE8", "calm": "#8FA8FF", "joy": "#FF8AC4", "thinking": "#9B7BE8", "surprised": "#E0A6FF", "sad": "#5B6FB0", "error": "#F80000" } },
+    { "id": "cloud", "body": "body-cloud.png", "ink": "#39465B", "tinted": true, "overlays": [
+      { "file": "elem-cloud-sun.png",  "x": 216, "y": 36,  "w": 72,  "h": 72, "on": ["joy"] },
+      { "file": "elem-cloud-rain.png", "x": 60,  "y": 152, "w": 200, "h": 60, "on": ["sad"] }
+    ],
+      "tint": { "neutral": "#EDEFF2", "calm": "#DCE6F0", "joy": "#FFFFFF", "thinking": "#D3D8E0", "surprised": "#F2F4F8", "sad": "#A9B4C2", "error": "#8A8F96" } }
+  ],
+  "features": {
+    "eyes":  ["neutral", "calm", "joy", "thinking", "surprised", "sad", "error", "closed"],
+    "mouths": ["neutral", "calm", "joy", "thinking", "surprised", "sad", "error"],
+    "visemes": { "closed": "mouth-neutral.png", "ajar": "mouth-ajar.png", "half": "mouth-half.png", "wide": "mouth-wide.png", "open": "mouth-open.png" }
+  }
+}

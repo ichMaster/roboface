@@ -149,6 +149,7 @@ void ProceduralRenderer::apply(const roboface::EmotionFrame& frame) {
     server_gaze_x_ = frame.has_gaze ? frame.gaze_x : 0.0f;
 
     emotion_ = frame.emotion;
+    dirty_all_ = true;
     crossfade_.target(roboface::withIntensity(roboface::recipeFor(frame.emotion), frame.intensity));
     animating_ = true;
 }
@@ -163,6 +164,7 @@ void ProceduralRenderer::setGazeReflex(bool active, float x) {
     // where the hand had been.
     reflex_gaze_ = active;
     reflex_gaze_x_ = x < -1.0f ? -1.0f : (x > 1.0f ? 1.0f : x);
+    dirty_all_ = true;
     animating_ = true;
 }
 
@@ -172,6 +174,7 @@ void ProceduralRenderer::setSkin(const roboface::Skin& skin) {
     // later. Keeping the current face is always safe; wearing a broken one never is.
     if (roboface::validate(skin) != roboface::SkinFault::kNone) return;
     skin_ = skin;
+    dirty_all_ = true;
     animating_ = true;
 }
 
@@ -184,6 +187,7 @@ void ProceduralRenderer::setGazeVoice(bool present, float x) {
     if (present == voice_gaze_ && clamped == voice_gaze_x_) return;
     voice_gaze_ = present;
     voice_gaze_x_ = clamped;
+    dirty_all_ = true;
     animating_ = true;
 }
 
@@ -308,6 +312,15 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
                        changedVisibly(frame, last_drawn_) ||
                        mouth.open != last_mouth_open_ || mouth.width != last_mouth_width_ ||
                        idle.bob_y != 0.0f || idle.gaze_x != 0.0f;
+
+    // **Everything except the mouth moving is a reason to repaint the whole screen.** Stated as the
+    // complement rather than as a list of mouth cases: a new item in the recipe, a new idle motion,
+    // a new layer would each otherwise default to "a partial push is fine" and be found later as a
+    // face that half-updated.
+    if (!has_drawn_ || crossfade_.isFading() || idle_.isBlinking() ||
+        changedVisibly(frame, last_drawn_) || idle.bob_y != 0.0f || idle.gaze_x != 0.0f) {
+        dirty_all_ = true;
+    }
     animating_ = moved;
     if (!moved) return;
 
@@ -526,6 +539,15 @@ uint16_t ProceduralRenderer::dimmed(uint16_t colour, uint8_t brightness) {
 void ProceduralRenderer::push() {
     if (!ready_) return;
     sprite_.pushSprite(0, 0);
+    dirty_all_ = false;
+    ++frames_pushed_;
+}
+
+void ProceduralRenderer::pushRegion(int x, int y, int w, int h) {
+    if (!ready_) return;
+    M5.Display.setClipRect(x, y, w, h);
+    sprite_.pushSprite(0, 0);
+    M5.Display.clearClipRect();
     ++frames_pushed_;
 }
 

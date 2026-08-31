@@ -209,6 +209,18 @@ EVENT_KINDS: Final[dict[EventType, frozenset[str]]] = {
     EventType.VOICE: frozenset({"direction"}),
 }
 
+#: The largest single `tts_audio` frame the server will put on the wire.
+#:
+#: **Not a bandwidth limit -- a limit on how long the device is unable to do anything else.** The
+#: firmware's WebSocket client reassembles an entire frame before it calls its handler, and the
+#: handler is where the speaker gets fed. So a frame is a window during which the device is deaf to
+#: its own playback, and the speaker holds only 64 ms.
+#:
+#: 4 KB is 128 ms of PCM16 at 16 kHz: small enough that reassembly is a few milliseconds on a link
+#: that carries a conversation, large enough that the per-frame overhead stays irrelevant. Measured
+#: before it existed: unsplit frames from ElevenLabs blocked the device for 173 ms at a stretch.
+MAX_TTS_FRAME_BYTES: Final = 4096
+
 #: The largest `meta` an event may carry, in **entries**. `meta` is free-form by design -- a touch
 #: reports a zone and a count, a motion reports an axis, and pinning that would mean a protocol
 #: change per sensor. Free-form is not unbounded, though: the device is trusted to be ours and the

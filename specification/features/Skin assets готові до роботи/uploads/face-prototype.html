@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RoboFace — Face Renderer Prototype</title>
+<!--
+  RoboFace face renderer prototype (reference for the firmware implementation).
+
+  Contract: the server sends EmotionFrame{emotion, intensity, gaze, accent_color,
+  speaking, ttl_ms}; the device only renders it. This page mirrors that model:
+
+    renderFace(skin, frame) -> SVG string        // pure, like the firmware renderer
+    skins: stackchan | ghost | flame | jelly | cloud   (switchable, same frame)
+    emotions: neutral | joy | thinking | surprised | sad | error
+    gaze: {x: -1..1} -> eye offset (demo of the gaze channel)
+    speaking: true -> mouth animates (on-device this is driven by the TTS
+                     amplitude envelope, ~15-20 FPS)
+
+  Blink and idle motion are local reflexes (the device does them on its own,
+  no server involvement) — here they are CSS animations.
+  Each 4:3 screen simulates the Core S3 320x240 display.
+-->
+<style>
+  :root { --bg:#12121a; --card:#1c1c28; --text:#e8e8f0; --muted:#9a9ab0; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text);
+         font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; padding:28px 20px 48px; }
+  h1 { font-size:22px; margin-bottom:4px; }
+  .sub { color:var(--muted); margin-bottom:14px; font-size:14px; max-width:78ch; }
+  .controls { margin:0 0 10px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .lbl { color:var(--muted); font-size:13px; margin-right:2px; }
+  button { background:#2e2e44; color:var(--text); border:1px solid #44445e; border-radius:8px;
+           padding:7px 14px; font-size:14px; cursor:pointer; }
+  button:hover { background:#3a3a55; }
+  button.active { background:#3f6fae; border-color:#5f8fd0; }
+  .stage { max-width:560px; margin-top:10px; }
+  .screen { width:100%; aspect-ratio:4/3; border-radius:10px; display:block; border:4px solid #34344a; }
+  .framejson { margin-top:10px; background:#16161f; border:1px solid #2c2c3e; border-radius:8px;
+               padding:10px 12px; font:13px/1.5 ui-monospace,Menlo,Consolas,monospace; color:#9fd4a5;
+               white-space:pre; overflow-x:auto; }
+
+  .blinkable { animation: blink 4.4s infinite; transform-box:fill-box; transform-origin:center; }
+  @keyframes blink { 0%,93%,100% { transform:scaleY(1); } 96% { transform:scaleY(0.06); } }
+  body.talking .mouth { animation: talk .32s infinite alternate ease-in-out;
+                        transform-box:fill-box; transform-origin:center; }
+  @keyframes talk { from { transform:scale(1,.5); } to { transform:scale(1.06,1.8); } }
+  .float { animation: floaty 3.4s infinite ease-in-out; transform-box:fill-box; transform-origin:center; }
+  @keyframes floaty { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-7px); } }
+  .float2 { animation: floaty 4.6s infinite ease-in-out; transform-box:fill-box; transform-origin:center; }
+  .flick { animation: flicker 1.1s infinite; transform-box:fill-box; transform-origin:50% 100%; }
+  @keyframes flicker { 0%,100% { transform:scale(1,1); } 30% { transform:scale(1.03,.96) skewX(1.5deg); }
+                       60% { transform:scale(.97,1.04) skewX(-1.5deg); } }
+  .pulse { animation: puls 2.8s infinite ease-in-out; }
+  @keyframes puls { 0%,100% { opacity:.75; } 50% { opacity:1; } }
+</style>
+</head>
+<body>
+<h1>RoboFace — face renderer prototype</h1>
+<p class="sub">One EmotionFrame, five switchable skins. The frame below the screen is exactly what the server would send. Skins: Stack-chan (tier 1, default) + four spirit sprite skins (tier 2). Blink is a local reflex; "speaking" simulates lip-sync from the TTS amplitude envelope.</p>
+
+<div class="controls"><span class="lbl">skin</span><span id="skinBtns"></span></div>
+<div class="controls"><span class="lbl">emotion</span><span id="emoBtns"></span></div>
+<div class="controls"><span class="lbl">gaze</span><span id="gazeBtns"></span>
+  <span class="lbl" style="margin-left:12px">voice</span><button id="talkBtn">start speaking</button></div>
+
+<div class="stage">
+  <div id="face"></div>
+  <div class="framejson" id="framejson"></div>
+</div>
+
+<script>
+"use strict";
+const S=(inner)=>`<svg class="screen" viewBox="0 0 320 240" xmlns="http://www.w3.org/2000/svg">${inner}</svg>`;
+const EMOS=["neutral","joy","thinking","surprised","sad","error"];
+const SKINS=["stackchan","ghost","flame","jelly","cloud"];
+const GAZES=[["left",-1],["center",0],["right",1]];
+
+/* ---------- shared shape helpers (the "expression grammar") ---------- */
+const xl=(cx,cy,s)=>`<line x1="${cx-s}" y1="${cy-s}" x2="${cx+s}" y2="${cy+s}"/><line x1="${cx+s}" y1="${cy-s}" x2="${cx-s}" y2="${cy+s}"/>`;
+const arcUp=(cx,y,w)=>`M${cx-w} ${y+7} Q${cx} ${y-20} ${cx+w} ${y+7}`;
+const droopL=(cx,y,w)=>`M${cx-w} ${y-8} Q${cx} ${y+15} ${cx+w} ${y+2}`;
+const droopR=(cx,y,w)=>`M${cx+w} ${y-8} Q${cx} ${y+15} ${cx-w} ${y+2}`;
+
+/* Spirit eyes/mouth: one emotion grammar, per-skin ink color and coordinates.
+   gx = horizontal gaze offset in px (from frame.gaze.x). */
+function sEyes(e,lx,rx,y,ink,hi,gx){
+  const inner=(()=>{switch(e){
+    case "joy": return `<g stroke="${ink}" stroke-width="8" fill="none" stroke-linecap="round">
+      <path d="${arcUp(lx,y,16)}"/><path d="${arcUp(rx,y,16)}"/></g>`;
+    case "thinking": return `<g class="blinkable">
+      <rect x="${lx-16}" y="${y-6}" width="32" height="12" rx="6" fill="${ink}"/>
+      <rect x="${rx-16}" y="${y-6}" width="32" height="12" rx="6" fill="${ink}"/></g>`;
+    case "surprised": return `<g class="blinkable">
+      <circle cx="${lx}" cy="${y}" r="17" fill="${ink}"/><circle cx="${lx-4}" cy="${y-6}" r="5" fill="${hi}"/>
+      <circle cx="${rx}" cy="${y}" r="17" fill="${ink}"/><circle cx="${rx-4}" cy="${y-6}" r="5" fill="${hi}"/></g>`;
+    case "sad": return `<g stroke="${ink}" stroke-width="8" fill="none" stroke-linecap="round">
+      <path d="${droopL(lx,y,16)}"/><path d="${droopR(rx,y,16)}"/></g>`;
+    case "error": return `<g stroke="${ink}" stroke-width="7" stroke-linecap="round">${xl(lx,y,13)}${xl(rx,y,13)}</g>`;
+    default: return `<g class="blinkable">
+      <ellipse cx="${lx}" cy="${y}" rx="13" ry="19" fill="${ink}"/><circle cx="${lx-4}" cy="${y-8}" r="4" fill="${hi}"/>
+      <ellipse cx="${rx}" cy="${y}" rx="13" ry="19" fill="${ink}"/><circle cx="${rx-4}" cy="${y-8}" r="4" fill="${hi}"/></g>`;
+  }})();
+  return `<g transform="translate(${gx},0)">${inner}</g>`;
+}
+function sMouth(e,cx,cy,ink){
+  switch(e){
+    case "joy": return `<path class="mouth" d="M${cx-26} ${cy-8} Q${cx} ${cy+18} ${cx+26} ${cy-8} Z" fill="${ink}"/>`;
+    case "thinking": return `<path class="mouth" d="M${cx+6} ${cy} Q${cx+16} ${cy-6} ${cx+26} ${cy-2}" stroke="${ink}" stroke-width="6" fill="none" stroke-linecap="round"/>`;
+    case "surprised": return `<ellipse class="mouth" cx="${cx}" cy="${cy}" rx="12" ry="15" fill="${ink}"/>`;
+    case "sad": return `<path class="mouth" d="M${cx-16} ${cy+7} Q${cx} ${cy-9} ${cx+16} ${cy+7}" stroke="${ink}" stroke-width="7" fill="none" stroke-linecap="round"/>`;
+    case "error": return `<polyline class="mouth" points="${cx-26},${cy} ${cx-13},${cy-7} ${cx},${cy} ${cx+13},${cy-7} ${cx+26},${cy}" stroke="${ink}" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`;
+    default: return `<ellipse class="mouth" cx="${cx}" cy="${cy}" rx="11" ry="13" fill="${ink}"/>`;
+  }
+}
+const nightBg=(c1="#0a0d1c")=>`<rect width="320" height="240" fill="${c1}"/>
+  <circle cx="70" cy="52" r="2" fill="#fff" opacity=".5"/><circle cx="266" cy="40" r="1.6" fill="#fff" opacity=".4"/>
+  <circle cx="288" cy="120" r="2" fill="#fff" opacity=".35"/><circle cx="40" cy="170" r="1.6" fill="#fff" opacity=".4"/>`;
+
+/* ---------- skin: stackchan (tier 1, procedural primitives only) ---------- */
+function stackchan(f){
+  const e=f.emotion, L=105,R=215,Y=105, gx=f.gaze.x*10;
+  const eyes=(()=>{switch(e){
+    case "joy": return `<path d="M${L-30} ${Y+8} Q${L} ${Y-28} ${L+30} ${Y+8}" stroke="#fff" stroke-width="11" fill="none" stroke-linecap="round"/>
+      <path d="M${R-30} ${Y+8} Q${R} ${Y-28} ${R+30} ${Y+8}" stroke="#fff" stroke-width="11" fill="none" stroke-linecap="round"/>`;
+    case "thinking": return `<g class="blinkable"><rect x="${L-14}" y="${Y-18}" width="48" height="16" rx="8" fill="#fff"/>
+      <rect x="${R-14}" y="${Y-18}" width="48" height="16" rx="8" fill="#fff"/></g>`;
+    case "surprised": return `<g class="blinkable"><circle cx="${L}" cy="${Y}" r="34" fill="#fff"/><circle cx="${L}" cy="${Y}" r="13" fill="#000"/>
+      <circle cx="${R}" cy="${Y}" r="34" fill="#fff"/><circle cx="${R}" cy="${Y}" r="13" fill="#000"/></g>`;
+    case "sad": return `<path d="M${L-28} ${Y-14} Q${L} ${Y+18} ${L+28} ${Y+2}" stroke="#fff" stroke-width="11" fill="none" stroke-linecap="round"/>
+      <path d="M${R+28} ${Y-14} Q${R} ${Y+18} ${R-28} ${Y+2}" stroke="#fff" stroke-width="11" fill="none" stroke-linecap="round"/>`;
+    case "error": return `<g stroke="#fff" stroke-width="10" stroke-linecap="round">${xl(L,Y,22)}${xl(R,Y,22)}</g>`;
+    default: return `<g class="blinkable"><circle cx="${L}" cy="${Y}" r="26" fill="#fff"/><circle cx="${R}" cy="${Y}" r="26" fill="#fff"/></g>`;
+  }})();
+  const X=160,MY2=178;
+  const mouth=(()=>{switch(e){
+    case "joy": return `<path class="mouth" d="M${X-34} ${MY2-12} Q${X} ${MY2+22} ${X+34} ${MY2-12}" stroke="#fff" stroke-width="10" fill="none" stroke-linecap="round"/>`;
+    case "thinking": return `<rect class="mouth" x="${X+2}" y="${MY2-4}" width="24" height="8" rx="4" fill="#fff"/>`;
+    case "surprised": return `<circle class="mouth" cx="${X}" cy="${MY2}" r="17" fill="#fff"/>`;
+    case "sad": return `<path class="mouth" d="M${X-30} ${MY2+8} Q${X} ${MY2-18} ${X+30} ${MY2+8}" stroke="#fff" stroke-width="10" fill="none" stroke-linecap="round"/>`;
+    case "error": return `<polyline class="mouth" points="${X-32},${MY2} ${X-16},${MY2-8} ${X},${MY2} ${X+16},${MY2-8} ${X+32},${MY2}" stroke="#fff" stroke-width="8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`;
+    default: return `<rect class="mouth" x="${X-22}" y="${MY2-5}" width="44" height="10" rx="5" fill="#fff"/>`;
+  }})();
+  return S(`<rect width="320" height="240" fill="#000"/><g transform="translate(${gx},0)">${eyes}</g>${mouth}`);
+}
+
+/* ---------- skin: ghost ---------- */
+function ghost(f){
+  const e=f.emotion, ink="#151528", gx=f.gaze.x*8;
+  const blush=(e==="joy"||e==="neutral"||e==="surprised")?`<ellipse cx="92" cy="146" rx="11" ry="6" fill="#ffb3c2" opacity=".55"/><ellipse cx="228" cy="146" rx="11" ry="6" fill="#ffb3c2" opacity=".55"/>`:"";
+  const tear=e==="sad"?`<path d="M104 138 q-6 15 0 21 q7 -6 0 -21" fill="#7fb2ff" opacity=".9"/>`:"";
+  return S(`<defs><filter id="gblur" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="4"/></filter></defs>
+  ${nightBg()}
+  <g class="float">
+    <path d="M160 34 C226 34 252 88 252 138 L252 196 Q236 182 222 198 Q206 214 190 198 Q175 184 160 198 Q145 184 130 198 Q114 214 98 198 Q84 182 68 196 L68 138 C68 88 94 34 160 34 Z"
+          fill="#f2f4ff" opacity=".16" filter="url(#gblur)"/>
+    <path d="M160 40 C220 40 244 90 244 136 L244 190 Q230 178 217 192 Q202 206 188 192 Q174 180 160 192 Q146 180 132 192 Q118 206 103 192 Q90 178 76 190 L76 136 C76 90 100 40 160 40 Z"
+          fill="#f2f4ff"/>
+    ${sEyes(e,122,198,118,ink,"#fff",gx)}${blush}${tear}${sMouth(e,160,158,ink)}
+  </g>`);
+}
+
+/* ---------- skin: flame (palette follows the emotion) ---------- */
+function flame(f){
+  const e=f.emotion, gx=f.gaze.x*8;
+  const pal = e==="sad" ? ["#2f5dff","#4d9bff","#bfe0ff","#dff0ff"]
+            : e==="error" ? ["#a3122a","#ff3b30","#ff8d5f","#ffd0a8"]
+            : e==="joy" ? ["#ff8a1f","#ffc61f","#fff29b","#fffbe0"]
+            : ["#ff5a1f","#ffb31f","#ffe66b","#fff4b8"];
+  const ink = e==="sad" ? "#0a1e4a" : "#3a1206";
+  return S(`<defs>
+    <linearGradient id="fg1-${e}" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="${pal[0]}"/><stop offset="70%" stop-color="${pal[1]}"/><stop offset="100%" stop-color="${pal[2]}"/></linearGradient>
+    <linearGradient id="fg2-${e}" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="${pal[1]}"/><stop offset="100%" stop-color="${pal[3]}"/></linearGradient>
+    <filter id="fglow-${e}" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="320" height="240" fill="#12080a"/>
+  <g class="flick" filter="url(#fglow-${e})">
+    <path d="M160 18 C186 62 236 78 240 136 C243 188 206 222 160 222 C114 222 77 188 80 136 C84 78 134 62 160 18 Z" fill="url(#fg1-${e})"/>
+    <path d="M160 66 C176 96 206 106 208 144 C210 180 186 202 160 202 C134 202 110 180 112 144 C114 106 144 96 160 66 Z" fill="url(#fg2-${e})" opacity=".9"/>
+    ${sEyes(e,128,192,138,ink,pal[3],gx)}${sMouth(e,160,178,ink)}
+  </g>`);
+}
+
+/* ---------- skin: jelly (glow color follows the emotion) ---------- */
+function jelly(f){
+  const e=f.emotion, gx=f.gaze.x*8;
+  const glowc = e==="error" ? "#ff4d5e" : e==="sad" ? "#6f9dff" : e==="joy" ? "#ff8fd0" : "#c58fff";
+  const ink="#2a0f3a";
+  const tent=(x,ph)=>`<path d="M${x} 168 q6 ${14+ph} 0 ${26+ph} q-6 12 0 ${24-ph}" stroke="${glowc}" stroke-width="4" fill="none" stroke-linecap="round" opacity=".65"/>`;
+  const dots=[[110,80],[160,64],[210,80],[92,116],[228,116]].map(p=>`<circle cx="${p[0]}" cy="${p[1]}" r="3.2" fill="#fff" opacity=".8" class="pulse"/>`).join("");
+  return S(`<defs>
+    <linearGradient id="jg-${e}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="${glowc}" stop-opacity=".95"/><stop offset="100%" stop-color="${glowc}" stop-opacity=".45"/></linearGradient>
+    <filter id="jglow-${e}" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  ${nightBg("#070a18")}
+  <g class="float" filter="url(#jglow-${e})">
+    <path d="M84 150 C84 74 236 74 236 150 Q222 142 208 152 Q196 160 184 152 Q172 144 160 152 Q148 160 136 152 Q124 144 112 152 Q98 160 84 150 Z" fill="url(#jg-${e})"/>
+    <path d="M104 106 C116 84 144 72 160 72 C136 84 120 96 112 118 Z" fill="#fff" opacity=".35"/>
+    ${dots}
+    ${sEyes(e,128,192,120,ink,"#fff",gx)}${sMouth(e,160,142,ink)}
+    ${tent(108,2)}${tent(134,-2)}${tent(160,3)}${tent(186,-2)}${tent(212,2)}
+  </g>`);
+}
+
+/* ---------- skin: cloud (weather follows the emotion) ---------- */
+function cloud(f){
+  const e=f.emotion, gx=f.gaze.x*8;
+  const body = e==="error" ? "#5c6478" : e==="sad" ? "#c7d4ec" : "#eef2f8";
+  const ink  = e==="error" ? "#12141f" : "#39405c";
+  const sun = e==="joy" ? `<g class="pulse"><circle cx="252" cy="62" r="22" fill="#ffd75f"/>
+      <g stroke="#ffd75f" stroke-width="4" stroke-linecap="round">
+        <line x1="252" y1="26" x2="252" y2="36"/><line x1="252" y1="88" x2="252" y2="98"/>
+        <line x1="216" y1="62" x2="226" y2="62"/><line x1="278" y1="62" x2="288" y2="62"/>
+        <line x1="227" y1="37" x2="234" y2="44"/><line x1="270" y1="80" x2="277" y2="87"/>
+        <line x1="277" y1="37" x2="270" y2="44"/><line x1="234" y1="80" x2="227" y2="87"/></g></g>` : "";
+  const rain = e==="sad" ? `<g stroke="#7fb2ff" stroke-width="3.5" stroke-linecap="round" opacity=".8">
+      <line x1="110" y1="196" x2="104" y2="212"/><line x1="150" y1="200" x2="144" y2="216"/>
+      <line x1="190" y1="196" x2="184" y2="212"/><line x1="222" y1="198" x2="216" y2="212"/></g>` : "";
+  const bolt = e==="error" ? `<path d="M170 192 L150 220 L164 220 L148 246 L184 212 L168 212 L182 192 Z" fill="#ffd75f"/>` : "";
+  const puffs = e==="thinking" ? `<circle cx="262" cy="96" r="6" fill="${body}" opacity=".8"/>
+      <circle cx="276" cy="80" r="4.5" fill="${body}" opacity=".6"/>` : "";
+  return S(`<defs><filter id="clglow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+  ${nightBg("#0c1226")}
+  ${sun}
+  <g class="float2" filter="url(#clglow)">
+    <g fill="${body}">
+      <circle cx="105" cy="140" r="38"/><circle cx="160" cy="116" r="48"/><circle cx="215" cy="140" r="38"/>
+      <circle cx="130" cy="158" r="36"/><circle cx="190" cy="158" r="36"/>
+      <rect x="86" y="140" width="150" height="52" rx="26"/></g>
+    ${puffs}
+    ${sEyes(e,130,190,132,ink,"#fff",gx)}${sMouth(e,160,166,ink)}
+  </g>${rain}${bolt}`);
+}
+
+/* ---------- renderer registry + demo state ---------- */
+const RENDER={stackchan,ghost,flame,jelly,cloud};
+const ACCENT={neutral:"#5fe8ff",joy:"#5fffc4",thinking:"#5fe8ff",surprised:"#ffd75f",sad:"#6f9dff",error:"#ff4d5e"};
+
+let skin="stackchan";
+let frame={emotion:"neutral",intensity:0.7,gaze:{x:0,y:0},accent_color:ACCENT.neutral,speaking:false,ttl_ms:4000};
+
+function renderFace(){
+  document.getElementById("face").innerHTML=RENDER[skin](frame);
+  document.getElementById("framejson").textContent=
+    `skin: ${skin}   // face_set via config_updated, or long-press carousel\n`+
+    `EmotionFrame ${JSON.stringify({...frame,accent_color:ACCENT[frame.emotion]},null,1)}`;
+  document.querySelectorAll(".blinkable").forEach(el=>{ el.style.animationDelay=(Math.random()*4).toFixed(2)+"s"; });
+}
+
+function makeBtns(holderId,items,getLabel,isActive,onPick){
+  const holder=document.getElementById(holderId);
+  for(const it of items){
+    const b=document.createElement("button");
+    b.textContent=getLabel(it);
+    if(isActive(it)) b.classList.add("active");
+    b.addEventListener("click",()=>{
+      onPick(it);
+      holder.querySelectorAll("button").forEach(x=>x.classList.remove("active"));
+      b.classList.add("active");
+      renderFace();
+    });
+    holder.appendChild(b);
+  }
+}
+makeBtns("skinBtns",SKINS,s=>s,s=>s===skin,s=>{skin=s;});
+makeBtns("emoBtns",EMOS,e=>e,e=>e===frame.emotion,e=>{frame.emotion=e;});
+makeBtns("gazeBtns",GAZES,g=>g[0],g=>g[1]===frame.gaze.x,g=>{frame.gaze.x=g[1];});
+
+const btn=document.getElementById("talkBtn");
+btn.addEventListener("click",()=>{
+  frame.speaking=document.body.classList.toggle("talking");
+  btn.textContent=frame.speaking?"stop speaking":"start speaking";
+  renderFace();
+});
+renderFace();
+</script>
+</body>
+</html>

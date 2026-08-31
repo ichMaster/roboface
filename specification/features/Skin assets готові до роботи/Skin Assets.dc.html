@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  body { margin: 0; background: #06080F; }
+  a { color: #5DFFFF; text-decoration: none; }
+  a:hover { color: #FFFFFF; }
+</style>
+</helmet>
+<div style="min-height:100vh;background:#06080F;color:#C9D2E4;font-family:'IBM Plex Sans',Helvetica,Arial,sans-serif;padding:40px 44px 72px;box-sizing:border-box">
+
+  <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:32px;border-bottom:1px solid #1B2338;padding-bottom:20px;margin-bottom:36px">
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#5DFFFF">M5Stack Core S3 · 320×240 · RGB565</div>
+      <h1 style="margin:0;font-size:30px;font-weight:600;color:#F2F4FF;letter-spacing:-0.01em">Skin assets — 29 plates</h1>
+      <div style="font-size:14px;color:#7C89A6;max-width:64ch;text-wrap:pretty">5 bodies · 19 shared features · 5 element overlays. Features are drawn once in white on alpha and tinted per skin; flame, jelly and cloud bodies are neutral mid-tones for the runtime multiply.</div>
+    </div>
+    <div style="display:flex;gap:28px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#7C89A6;white-space:nowrap">
+      <div style="display:flex;flex-direction:column;gap:4px"><span style="color:#F2F4FF;font-size:20px">264×184</span>safe area</div>
+      <div style="display:flex;flex-direction:column;gap:4px"><span style="color:#F2F4FF;font-size:20px">±14 px</span>gaze shift</div>
+      <div style="display:flex;flex-direction:column;gap:4px"><span style="color:#F2F4FF;font-size:20px">28 px</span>chrome bands</div>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:40px;align-items:flex-start;flex-wrap:wrap;margin-bottom:56px">
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="padding:14px;background:#0C1120;border:1px solid #1B2338;border-radius:4px">
+        <div style="{{ deviceStyle }}">
+          <div style="{{ plateStyle }}"></div>
+          <div style="{{ tintStyle }}"></div>
+          <sc-for list="{{ activeOverlays }}" as="ov" hint-placeholder-count="1">
+            <div style="{{ ov.style }}"></div>
+          </sc-for>
+          <div style="{{ eyeStyle }}"></div>
+          <div style="{{ mouthStyle }}"></div>
+          <div style="{{ guideEyeStyle }}"></div>
+          <div style="{{ guideMouthStyle }}"></div>
+          <div style="{{ guideSafeStyle }}"></div>
+          <div style="{{ chromeTopStyle }}">
+            <div style="display:flex;align-items:center;gap:6px">
+              <div style="width:8px;height:13px;border-radius:4px 4px 2px 2px;background:#00FFFF"></div>
+              <div style="width:14px;height:2px;background:#00FFFF"></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="width:6px;height:6px;border-radius:50%;background:#00FFFF"></div>
+              <div style="width:22px;height:11px;border:1px solid #7C89A6;border-radius:2px;padding:1px;box-sizing:border-box"><div style="width:70%;height:100%;background:#FFA400"></div></div>
+            </div>
+          </div>
+          <div style="{{ chromeBottomStyle }}">
+            <div style="display:flex;gap:3px;align-items:center">
+              <div style="width:11px;height:11px;border-radius:50%;border:1px solid #00FFFF"></div>
+              <div style="width:11px;height:11px;border-radius:50%;border:1px solid #00FFFF;margin-left:-6px"></div>
+            </div>
+            <div style="display:flex;gap:2px;align-items:flex-end;height:12px">
+              <div style="width:3px;height:4px;background:#00FFFF"></div>
+              <div style="width:3px;height:7px;background:#00FFFF"></div>
+              <div style="width:3px;height:11px;background:#00FFFF"></div>
+              <div style="width:3px;height:6px;background:#00FFFF"></div>
+              <div style="width:3px;height:3px;background:#1B2338"></div>
+              <div style="width:3px;height:3px;background:#1B2338"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#4E5B77;display:flex;justify-content:space-between">
+        <span>{{ statusLine }}</span>
+        <span>pixels shown 1:{{ scale }}, unsmoothed</span>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:26px;min-width:300px;flex:1;max-width:420px">
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#4E5B77">Skin</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          <sc-for list="{{ skinBtns }}" as="b" hint-placeholder-count="5">
+            <button type="button" onClick="{{ b.pick }}" style="{{ b.style }}">{{ b.label }}</button>
+          </sc-for>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#4E5B77">Emotion</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          <sc-for list="{{ emoBtns }}" as="b" hint-placeholder-count="7">
+            <button type="button" onClick="{{ b.pick }}" style="{{ b.style }}">{{ b.label }}</button>
+          </sc-for>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#4E5B77">Behaviour</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          <button type="button" onClick="{{ toggleSpeak }}" style="{{ speakStyle }}">lip-sync</button>
+          <button type="button" onClick="{{ toggleBlink }}" style="{{ blinkStyle }}">blink</button>
+          <button type="button" onClick="{{ toggleGuides }}" style="{{ guideBtnStyle }}">guides</button>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#4E5B77">Gaze offset · {{ gazeLabel }}</div>
+        <input type="range" min="-14" max="14" step="1" value="{{ gaze }}" onChange="{{ setGaze }}" style="width:100%;accent-color:#5DFFFF" />
+      </div>
+      <div style="border-top:1px solid #1B2338;padding-top:18px;font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.9;color:#7C89A6">
+        <div style="display:flex;justify-content:space-between"><span>body</span><span style="color:#C9D2E4">{{ fileBody }}</span></div>
+        <div style="display:flex;justify-content:space-between"><span>eyes</span><span style="color:#C9D2E4">{{ fileEyes }}</span></div>
+        <div style="display:flex;justify-content:space-between"><span>mouth</span><span style="color:#C9D2E4">{{ fileMouth }}</span></div>
+        <div style="display:flex;justify-content:space-between"><span>ink</span><span style="color:#C9D2E4">{{ inkHex }}</span></div>
+        <div style="display:flex;justify-content:space-between"><span>body tint</span><span style="color:#C9D2E4">{{ tintHex }}</span></div>
+      </div>
+    </div>
+  </div>
+
+  <sc-for list="{{ groups }}" as="g" hint-placeholder-count="4">
+    <div style="margin-bottom:44px">
+      <div style="display:flex;align-items:baseline;gap:14px;border-bottom:1px solid #1B2338;padding-bottom:10px;margin-bottom:18px">
+        <div style="font-size:16px;color:#F2F4FF;font-weight:600">{{ g.title }}</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#4E5B77">{{ g.meta }}</div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:16px">
+        <sc-for list="{{ g.items }}" as="t" hint-placeholder-count="8">
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="{{ t.tile }}">
+              <img src="{{ t.src }}" alt="" style="{{ t.img }}" />
+            </div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#7C89A6;display:flex;justify-content:space-between;gap:12px">
+              <span style="color:#C9D2E4">{{ t.name }}</span><span>{{ t.dim }}</span>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </sc-for>
+
+  <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:2;color:#4E5B77;border-top:1px solid #1B2338;padding-top:18px">
+    <div>anchors as drawn — eyes 76,64 (168×88) · mouth 100,132 (120×72) · identical on all five bodies, no per-body override</div>
+    <div>every plate ordered-dithered to RGB565 before export; features left un-dithered so the firmware tint stays clean</div>
+    <div>preview multiplies the whole tinted plate; on device the multiply is masked to the silhouette, so the sky behind cloud stays daylight</div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;previewScale&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:2,&quot;min&quot;:1,&quot;max&quot;:3,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Preview&quot;},&quot;showChrome&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Preview&quot;},&quot;showGuides&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Preview&quot;},&quot;accent&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#5DFFFF&quot;,&quot;options&quot;:[&quot;#5DFFFF&quot;,&quot;#00FFFF&quot;,&quot;#FFA400&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Preview&quot;}}">
+const A = 'assets/';
+const EMOS = ['neutral','calm','joy','thinking','surprised','sad','error'];
+const SKINS = [
+  { id:'stackchan', label:'stackchan', ink:'#5DFFFF', tinted:false, overlays:[] },
+  { id:'ghost', label:'ghost', ink:'#242A45', tinted:false, overlays:[
+    { file:'elem-ghost-blush.png', x:76, y:146, w:168, h:40, on:['joy','neutral','surprised'] },
+    { file:'elem-ghost-tear.png', x:214, y:148, w:24, h:40, on:['sad'] } ] },
+  { id:'flame', label:'flame', ink:'#3B1600', tinted:true, overlays:[],
+    tint:{ neutral:'#FF7A1A', calm:'#FFA400', joy:'#FFD24A', thinking:'#FF8C42', surprised:'#FFC46B', sad:'#B25A2E', error:'#F80000' } },
+  { id:'jelly', label:'jelly', ink:'#2B0F3D', tinted:true, overlays:[
+    { file:'elem-jelly-glow.png', x:60, y:40, w:200, h:120, on:['*'] } ],
+    tint:{ neutral:'#C77BE8', calm:'#8FA8FF', joy:'#FF8AC4', thinking:'#9B7BE8', surprised:'#E0A6FF', sad:'#5B6FB0', error:'#F80000' } },
+  { id:'cloud', label:'cloud', ink:'#39465B', tinted:true, overlays:[
+    { file:'elem-cloud-sun.png', x:216, y:36, w:72, h:72, on:['joy'] },
+    { file:'elem-cloud-rain.png', x:60, y:152, w:200, h:60, on:['sad'] } ],
+    tint:{ neutral:'#EDEFF2', calm:'#DCE6F0', joy:'#FFFFFF', thinking:'#D3D8E0', surprised:'#F2F4F8', sad:'#A9B4C2', error:'#8A8F96' } }
+];
+const VISEMES = ['mouth-ajar','mouth-half','mouth-wide','mouth-open','mouth-neutral','mouth-half','mouth-open','mouth-ajar'];
+const CHECKER = 'repeating-conic-gradient(#141A2B 0% 25%, #0C1120 0% 50%) 0 0 / 14px 14px';
+
+class Component extends DCLogic {
+  state = { skin:'ghost', emo:'joy', speaking:true, blinkOn:true, blinking:false, vi:0, gaze:0, guides:null };
+
+  componentDidMount(){
+    this.bt = setInterval(() => {
+      if (!this.state.blinkOn) return;
+      this.setState({ blinking:true });
+      this.blinkOff = setTimeout(() => this.setState({ blinking:false }), 140);
+    }, 3200);
+    this.vt = setInterval(() => {
+      if (this.state.speaking) this.setState(s => ({ vi: (s.vi + 1) % VISEMES.length }));
+    }, 150);
+  }
+  componentWillUnmount(){ clearInterval(this.bt); clearInterval(this.vt); clearTimeout(this.blinkOff); }
+
+  btn(active){
+    return { padding:'7px 13px', borderRadius:'3px', cursor:'pointer', fontFamily:"'IBM Plex Mono', monospace",
+      fontSize:'11.5px', letterSpacing:'0.04em', transition:'all .12s', whiteSpace:'nowrap',
+      border:'1px solid ' + (active ? '#5DFFFF' : '#26304A'),
+      background: active ? 'rgba(93,255,255,0.12)' : 'transparent',
+      color: active ? '#5DFFFF' : '#8C99B5' };
+  }
+
+  masked(file, x, y, w, h, ink, S){
+    const url = 'url(' + A + file + ')';
+    return { position:'absolute', left:(x*S)+'px', top:(y*S)+'px', width:(w*S)+'px', height:(h*S)+'px',
+      backgroundColor: ink, WebkitMaskImage:url, maskImage:url, WebkitMaskSize:'100% 100%', maskSize:'100% 100%',
+      WebkitMaskRepeat:'no-repeat', maskRepeat:'no-repeat' };
+  }
+
+  guide(x, y, w, h, S, on, color){
+    return { position:'absolute', left:(x*S)+'px', top:(y*S)+'px', width:(w*S)+'px', height:(h*S)+'px',
+      border:'1px dashed ' + color, boxSizing:'border-box', display: on ? 'block' : 'none', pointerEvents:'none' };
+  }
+
+  tiles(list, w, h, alpha, S){
+    return list.map(name => ({
+      src: A + name + '.png', name: name + '.png', dim: w + '×' + h,
+      tile: { width:(w*S)+'px', height:(h*S)+'px', background: alpha ? CHECKER : '#0C1120',
+        border:'1px solid #1B2338', borderRadius:'3px', display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden' },
+      img: { width:(w*S)+'px', height:(h*S)+'px', display:'block', imageRendering:'pixelated' }
+    }));
+  }
+
+  renderVals(){
+    const S = this.props.previewScale ?? 2;
+    const accent = this.props.accent ?? '#5DFFFF';
+    const showChrome = this.props.showChrome ?? true;
+    const guides = this.state.guides === null ? (this.props.showGuides ?? false) : this.state.guides;
+    const skin = SKINS.find(s => s.id === this.state.skin);
+    const emo = this.state.emo;
+    const g = this.state.gaze;
+    const eyeFile = (this.state.blinking && this.state.blinkOn) ? 'eyes-closed' : 'eyes-' + emo;
+    const mouthFile = this.state.speaking ? VISEMES[this.state.vi] : 'mouth-' + emo;
+    const ink = skin.id === 'stackchan' ? accent : skin.ink;
+    const tint = skin.tinted ? skin.tint[emo] : null;
+
+    return {
+      scale: S, gaze: g, gazeLabel: (g > 0 ? '+' : '') + g + ' px',
+      statusLine: skin.id + ' · ' + emo + (this.state.speaking ? ' · speaking' : ''),
+      fileBody: skin.id === 'stackchan' ? 'body-stackchan.png' : 'body-' + skin.id + '.png',
+      fileEyes: eyeFile + '.png', fileMouth: mouthFile + '.png',
+      inkHex: ink, tintHex: tint || '— not tinted',
+      bodySrc: A + 'body-' + skin.id + '.png',
+
+      deviceStyle: { position:'relative', width:(320*S)+'px', height:(240*S)+'px', overflow:'hidden',
+        isolation:'isolate', background:'#000', borderRadius:'2px' },
+      plateStyle: { position:'absolute', inset:'0', backgroundImage:'url(' + A + 'body-' + skin.id + '.png)',
+        backgroundSize:'100% 100%', imageRendering:'pixelated' },
+      tintStyle: { position:'absolute', inset:'0', background: tint || 'transparent',
+        mixBlendMode:'multiply', display: tint ? 'block' : 'none' },
+      eyeStyle: this.masked(eyeFile + '.png', 76 + g, 64, 168, 88, ink, S),
+      mouthStyle: this.masked(mouthFile + '.png', 100 + g, 132, 120, 72, ink, S),
+      activeOverlays: skin.overlays.filter(o => o.on[0] === '*' || o.on.indexOf(emo) >= 0).map(o => ({
+        style: { position:'absolute', left:(o.x*S)+'px', top:(o.y*S)+'px', width:(o.w*S)+'px', height:(o.h*S)+'px',
+          backgroundImage:'url(' + A + o.file + ')', backgroundSize:'100% 100%', imageRendering:'pixelated' }
+      })),
+      guideEyeStyle: this.guide(76 + g, 64, 168, 88, S, guides, 'rgba(93,255,255,0.55)'),
+      guideMouthStyle: this.guide(100 + g, 132, 120, 72, S, guides, 'rgba(93,255,255,0.55)'),
+      guideSafeStyle: this.guide(28, 28, 264, 184, S, guides, 'rgba(255,164,0,0.5)'),
+      chromeTopStyle: { position:'absolute', left:'0', top:'0', width:'100%', height:(28*S)+'px',
+        background:'rgba(6,8,15,0.82)', display: showChrome ? 'flex' : 'none', alignItems:'center',
+        justifyContent:'space-between', padding:'0 ' + (8*S) + 'px', boxSizing:'border-box' },
+      chromeBottomStyle: { position:'absolute', left:'0', bottom:'0', width:'100%', height:(28*S)+'px',
+        background:'rgba(6,8,15,0.82)', display: showChrome ? 'flex' : 'none', alignItems:'center',
+        justifyContent:'space-between', padding:'0 ' + (8*S) + 'px', boxSizing:'border-box' },
+
+      skinBtns: SKINS.map(s => ({ label:s.label, style:this.btn(s.id === skin.id), pick:() => this.setState({ skin:s.id }) })),
+      emoBtns: EMOS.map(e => ({ label:e, style:this.btn(e === emo), pick:() => this.setState({ emo:e }) })),
+      speakStyle: this.btn(this.state.speaking), blinkStyle: this.btn(this.state.blinkOn), guideBtnStyle: this.btn(guides),
+      toggleSpeak: () => this.setState(s => ({ speaking: !s.speaking })),
+      toggleBlink: () => this.setState(s => ({ blinkOn: !s.blinkOn })),
+      toggleGuides: () => this.setState({ guides: !guides }),
+      setGaze: e => this.setState({ gaze: parseInt(e.target.value, 10) }),
+
+      groups: [
+        { title:'A · Bodies', meta:'5 plates · 320×240 · opaque · RGB565-dithered',
+          items: this.tiles(SKINS.map(s => 'body-' + s.id), 320, 240, false, 0.62) },
+        { title:'B · Eyes', meta:'8 plates · 168×88 · white on alpha · shared by all skins',
+          items: this.tiles(['eyes-neutral','eyes-calm','eyes-joy','eyes-thinking','eyes-surprised','eyes-sad','eyes-error','eyes-closed'], 168, 88, true, 1) },
+        { title:'B · Mouths', meta:'11 plates · 120×72 · seven at rest, four visemes',
+          items: this.tiles(['mouth-neutral','mouth-calm','mouth-joy','mouth-thinking','mouth-surprised','mouth-sad','mouth-error','mouth-ajar','mouth-half','mouth-wide','mouth-open'], 120, 72, true, 1.2) },
+        { title:'C · Element overlays', meta:'5 plates · own colours, not tinted',
+          items: [
+            { src:A+'elem-ghost-blush.png', name:'elem-ghost-blush.png', dim:'168×40',
+              tile:{ width:'168px', height:'40px', background:CHECKER, border:'1px solid #1B2338', borderRadius:'3px', overflow:'hidden' },
+              img:{ width:'168px', height:'40px', display:'block' } },
+            { src:A+'elem-ghost-tear.png', name:'elem-ghost-tear.png', dim:'24×40',
+              tile:{ width:'24px', height:'40px', background:CHECKER, border:'1px solid #1B2338', borderRadius:'3px', overflow:'hidden' },
+              img:{ width:'24px', height:'40px', display:'block' } },
+            { src:A+'elem-jelly-glow.png', name:'elem-jelly-glow.png', dim:'200×120',
+              tile:{ width:'200px', height:'120px', background:CHECKER, border:'1px solid #1B2338', borderRadius:'3px', overflow:'hidden' },
+              img:{ width:'200px', height:'120px', display:'block' } },
+            { src:A+'elem-cloud-sun.png', name:'elem-cloud-sun.png', dim:'72×72',
+              tile:{ width:'72px', height:'72px', background:CHECKER, border:'1px solid #1B2338', borderRadius:'3px', overflow:'hidden' },
+              img:{ width:'72px', height:'72px', display:'block' } },
+            { src:A+'elem-cloud-rain.png', name:'elem-cloud-rain.png', dim:'200×60',
+              tile:{ width:'200px', height:'60px', background:CHECKER, border:'1px solid #1B2338', borderRadius:'3px', overflow:'hidden' },
+              img:{ width:'200px', height:'60px', display:'block' } }
+          ] }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

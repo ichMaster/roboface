@@ -60,6 +60,21 @@ class ProceduralRenderer : public IFaceRenderer {
     //: change" a property rather than an intention.
     void setSkin(const roboface::Skin& skin);
 
+    //: Send only part of the sprite to the panel.
+    //:
+    //: **The whole sprite is 153 KB and takes 32 ms over SPI**, measured, every time — and while a
+    //: reply plays, the only thing that changes is a mouth. Thirty-two milliseconds is half the
+    //: speaker's entire buffer spent redrawing pixels that are already correct.
+    //:
+    //: The clip is set on the *destination*, which is what makes this cheap: the transfer is
+    //: clipped before it happens rather than after.
+    void pushRegion(int x, int y, int w, int h);
+
+    //: Whether anything outside the mouth has changed since the last full push. The loop asks, so
+    //: that a partial push is taken only when it is certainly enough.
+    bool onlyMouthChanged() const { return !dirty_all_; }
+    void markDirty() { dirty_all_ = true; }
+
   private:
     //: The silhouette and the element, which are the renderer's **vocabulary** rather than any
     //: skin's content.
@@ -174,6 +189,12 @@ class ProceduralRenderer : public IFaceRenderer {
     //: which emotion produced it, because two emotions can share a recipe. The elements need the
     //: emotion itself: a flame is blue when sad, and no amount of brow angle says so.
     roboface::Emotion emotion_ = roboface::Emotion::kNeutral;
+
+    //: Set by everything that repaints more than a mouth: a new expression, a state change, a
+    //: blink, the idle drift moving, a skin change. Cleared by a full push. **Defaults to true**,
+    //: because the safe answer to "has anything else changed" before anything has been drawn is
+    //: yes -- a partial push of a screen that was never fully drawn shows a mouth on noise.
+    bool dirty_all_ = true;
     //: A frame that arrived while the device was still speaking and ends the speaking. Applied
     //: when playback stops, which is the moment it was actually describing.
     roboface::EmotionFrame pending_;

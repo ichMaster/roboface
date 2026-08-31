@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  body { margin: 0; background: #06080F; }
+  a { color: #5DFFFF; text-decoration: none; }
+  a:hover { color: #FFFFFF; }
+  @keyframes om-pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+</style>
+</helmet>
+<div style="min-height:100vh;background:#06080F;color:#C9D2E4;font-family:'IBM Plex Sans',Helvetica,Arial,sans-serif;padding:40px 44px 72px;box-sizing:border-box">
+
+  <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:32px;border-bottom:1px solid #1B2338;padding-bottom:20px;margin-bottom:32px">
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#5DFFFF">Face renderer prototype · rev 2 · sprite pipeline</div>
+      <h1 style="margin:0;font-size:30px;font-weight:600;color:#F2F4FF;letter-spacing:-0.01em">One EmotionFrame, five skins — now blitted, not drawn</h1>
+      <div style="font-size:14px;color:#7C89A6;max-width:76ch;text-wrap:pretty">Same contract as the first prototype: the server sends an EmotionFrame, the device only renders it. What changed is underneath — the renderer no longer builds faces from circles. It blits one body plate, tints one shared feature set to the skin's ink, and lays the skin's element overlay on top. Blink and lip-sync stay local reflexes.</div>
+    </div>
+    <div style="display:flex;gap:26px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#7C89A6;white-space:nowrap">
+      <div style="display:flex;flex-direction:column;gap:4px"><span style="color:#F2F4FF;font-size:20px">7</span>emotions</div>
+      <div style="display:flex;flex-direction:column;gap:4px"><span style="color:#F2F4FF;font-size:20px">4+1</span>visemes</div>
+      <div style="display:flex;flex-direction:column;gap:4px"><span style="color:#F2F4FF;font-size:20px">±14 px</span>gaze</div>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:40px;align-items:flex-start;flex-wrap:wrap">
+
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="padding:14px;background:#0C1120;border:1px solid #1B2338;border-radius:4px">
+        <div style="{{ deviceStyle }}">
+          <div style="{{ plateStyle }}"></div>
+          <div style="{{ tintStyle }}"></div>
+          <sc-for list="{{ activeOverlays }}" as="ov" hint-placeholder-count="1">
+            <div style="{{ ov.style }}"></div>
+          </sc-for>
+          <div style="{{ eyeStyle }}"></div>
+          <div style="{{ mouthStyle }}"></div>
+          <div style="{{ guideEyeStyle }}"></div>
+          <div style="{{ guideMouthStyle }}"></div>
+          <div style="{{ guideSafeStyle }}"></div>
+
+          <div style="{{ chromeTopStyle }}">
+            <div style="display:flex;align-items:center;gap:6px">
+              <div style="{{ micStyle }}"></div>
+              <div style="{{ micStemStyle }}"></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="{{ linkDotStyle }}"></div>
+              <div style="{{ battStyle }}"><div style="{{ battFillStyle }}"></div></div>
+            </div>
+          </div>
+
+          <div style="{{ chromeBottomStyle }}">
+            <div style="display:flex;gap:3px;align-items:center">
+              <div style="{{ pickerAStyle }}"></div>
+              <div style="{{ pickerBStyle }}"></div>
+            </div>
+            <div style="{{ toastStyle }}">{{ toastText }}</div>
+            <div style="display:flex;gap:2px;align-items:flex-end;height:{{ meterH }}px">
+              <sc-for list="{{ meter }}" as="m" hint-placeholder-count="6">
+                <div style="{{ m.style }}"></div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#4E5B77;display:flex;justify-content:space-between">
+        <span>{{ statusLine }}</span><span>1:{{ scale }}, unsmoothed</span>
+      </div>
+
+      <div style="background:#0A0F1C;border:1px solid #1B2338;border-radius:4px;padding:14px 16px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.75;color:#8FD9A5;white-space:pre;overflow-x:auto">{{ frameJson }}</div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:24px;flex:1;min-width:320px;max-width:460px">
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#4E5B77">Skin · face_set</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          <sc-for list="{{ skinBtns }}" as="b" hint-placeholder-count="5">
+            <button type="button" onClick="{{ b.pick }}" style="{{ b.style }}">{{ b.label }}</button>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#4E5B77">Emotion — seven, calm included</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          <sc-for list="{{ emoBtns }}" as="b" hint-placeholder-count="7">
+            <button type="button" onClick="{{ b.pick }}" style="{{ b.style }}">{{ b.label }}</button>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#4E5B77">Gaze · frame.gaze.x = {{ gazeX }} → {{ gazeLabel }}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          <sc-for list="{{ gazeBtns }}" as="b" hint-placeholder-count="3">
+            <button type="button" onClick="{{ b.pick }}" style="{{ b.style }}">{{ b.label }}</button>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#4E5B77">Local reflexes</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          <button type="button" onClick="{{ toggleSpeak }}" style="{{ speakStyle }}">{{ speakLabel }}</button>
+          <button type="button" onClick="{{ toggleBlink }}" style="{{ blinkStyle }}">blink reflex</button>
+          <button type="button" onClick="{{ toggleGuides }}" style="{{ guideBtnStyle }}">blit rects</button>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#4E5B77">Lip-sync mode</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          <sc-for list="{{ lipBtns }}" as="b" hint-placeholder-count="2">
+            <button type="button" onClick="{{ b.pick }}" style="{{ b.style }}">{{ b.label }}</button>
+          </sc-for>
+        </div>
+        <div style="font-size:12px;color:#4E5B77;line-height:1.6;text-wrap:pretty">{{ lipNote }}</div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#4E5B77">TTS amplitude envelope → viseme</div>
+        <div style="height:8px;background:#111A2C;border-radius:2px;overflow:hidden"><div style="{{ ampBarStyle }}"></div></div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#7C89A6;display:flex;justify-content:space-between">
+          <span>amp {{ ampLabel }}</span><span style="color:#5DFFFF">{{ visemeName }}</span>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid #1B2338;padding-top:16px;font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.95;color:#7C89A6">
+        <div style="color:#4E5B77;letter-spacing:0.16em;text-transform:uppercase;font-size:10px;margin-bottom:8px">Renderer call — what the frame resolves to</div>
+        <sc-for list="{{ resolved }}" as="r" hint-placeholder-count="6">
+          <div style="display:flex;justify-content:space-between;gap:16px"><span>{{ r.k }}</span><span style="color:#C9D2E4;text-align:right">{{ r.v }}</span></div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:44px;border-top:1px solid #1B2338;padding-top:20px;display:flex;gap:44px;flex-wrap:wrap;font-size:13px;line-height:1.7;color:#7C89A6">
+    <div style="flex:1;min-width:280px;max-width:44ch">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#4E5B77;margin-bottom:10px">Changed from rev 1</div>
+      <div style="text-wrap:pretty">Faces are sprites, not primitives — one 320×240 body plate per skin, one shared 19-plate feature set tinted to the skin's ink. Seven emotions: <span style="color:#C9D2E4">calm</span> joined the table. Lip-sync keeps rev 1's motion — the emotion mouth stretched by the envelope — and gains the four viseme plates as an alternative you can switch to. Gaze is a ±14 px blit offset on both feature rects, not a ±10 px SVG translate on the eyes alone. Chrome bands are drawn, so it is visible what the face may never occupy.</div>
+    </div>
+    <div style="flex:1;min-width:280px;max-width:44ch">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#4E5B77;margin-bottom:10px">Dropped, on purpose</div>
+      <div style="text-wrap:pretty">The SVG glows, blurs and gradient stacks are gone: on RGB565 they band, and the firmware has no filter stage. Per-skin colour logic is gone too — flame, jelly and cloud are one neutral plate multiplied by a colour from the manifest, which is what keeps a new skin from needing renderer code. Idle bob is out while the body is a single plate: bobbing it would drag the sky with it.</div>
+    </div>
+    <div style="flex:1;min-width:280px;max-width:44ch">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:#4E5B77;margin-bottom:10px">Still true to the contract</div>
+      <div style="text-wrap:pretty">renderFace(skin, frame) stays pure — same frame, same pixels. The device never decides an emotion; blink and lip-sync are the only motion it originates. Assets and anchors come from <a href="assets/manifest.json">manifest.json</a>; the plates are on the <a href="Skin%20Assets.dc.html">asset sheet</a>.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;previewScale&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:2,&quot;min&quot;:1,&quot;max&quot;:3,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Preview&quot;},&quot;showChrome&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Preview&quot;},&quot;showGuides&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Preview&quot;}}">
+const A = 'assets/';
+const EMOS = ['neutral','calm','joy','thinking','surprised','sad','error'];
+const ACCENT = { neutral:'#5DFFFF', calm:'#5FE8FF', joy:'#5FFFC4', thinking:'#5DFFFF', surprised:'#FFA400', sad:'#6F9DFF', error:'#F80000' };
+const SKINS = [
+  { id:'stackchan', label:'stackchan', ink:'#5DFFFF', tinted:false, overlays:[] },
+  { id:'ghost', label:'ghost', ink:'#242A45', tinted:false, overlays:[
+    { file:'elem-ghost-blush.png', x:76, y:146, w:168, h:40, on:['joy','neutral','surprised'] },
+    { file:'elem-ghost-tear.png', x:214, y:148, w:24, h:40, on:['sad'] } ] },
+  { id:'flame', label:'flame', ink:'#3B1600', tinted:true, overlays:[],
+    tint:{ neutral:'#FF7A1A', calm:'#FFA400', joy:'#FFD24A', thinking:'#FF8C42', surprised:'#FFC46B', sad:'#B25A2E', error:'#F80000' } },
+  { id:'jelly', label:'jelly', ink:'#2B0F3D', tinted:true, overlays:[
+    { file:'elem-jelly-glow.png', x:60, y:40, w:200, h:120, on:['*'] } ],
+    tint:{ neutral:'#C77BE8', calm:'#8FA8FF', joy:'#FF8AC4', thinking:'#9B7BE8', surprised:'#E0A6FF', sad:'#5B6FB0', error:'#F80000' } },
+  { id:'cloud', label:'cloud', ink:'#39465B', tinted:true, overlays:[
+    { file:'elem-cloud-sun.png', x:216, y:36, w:72, h:72, on:['joy'] },
+    { file:'elem-cloud-rain.png', x:60, y:152, w:200, h:60, on:['sad'] } ],
+    tint:{ neutral:'#EDEFF2', calm:'#DCE6F0', joy:'#FFFFFF', thinking:'#D3D8E0', surprised:'#F2F4F8', sad:'#A9B4C2', error:'#8A8F96' } }
+];
+// lipsync.h: amplitude envelope -> viseme. closed reuses mouth-neutral, so four files serve five states.
+const VISEME_TABLE = [
+  { max:0.10, name:'closed', file:'mouth-neutral' },
+  { max:0.30, name:'ajar', file:'mouth-ajar' },
+  { max:0.55, name:'half', file:'mouth-half' },
+  { max:0.80, name:'wide', file:'mouth-wide' },
+  { max:1.01, name:'open', file:'mouth-open' }
+];
+const GAZES = [['look left',-1],['centre',0],['look right',1]];
+
+class Component extends DCLogic {
+  state = { skin:'ghost', emo:'calm', speaking:true, blinkOn:true, blinking:false, amp:0, gx:0, guides:null, lip:'stretch' };
+
+  componentDidMount(){
+    this.bt = setInterval(() => {
+      if (!this.state.blinkOn) return;
+      this.setState({ blinking:true });
+      this.blinkOff = setTimeout(() => this.setState({ blinking:false }), 140);
+    }, 3000 + Math.random() * 1600);
+    // stand-in for the TTS amplitude envelope the firmware samples ~50×/s
+    this.t = 0;
+    this.at = setInterval(() => {
+      if (!this.state.speaking) { if (this.state.amp !== 0) this.setState({ amp:0 }); return; }
+      this.t += 1;
+      const env = 0.5 + 0.34 * Math.sin(this.t / 3.1) + 0.18 * Math.sin(this.t / 1.3 + 1.7);
+      const syl = Math.max(0, Math.sin(this.t / 9)) ;
+      this.setState({ amp: Math.max(0, Math.min(1, env * (0.45 + 0.75 * syl))) });
+    }, 60);
+  }
+  componentWillUnmount(){ clearInterval(this.bt); clearInterval(this.at); clearTimeout(this.blinkOff); }
+
+  btn(active){
+    return { padding:'7px 13px', borderRadius:'3px', cursor:'pointer', fontFamily:"'IBM Plex Mono', monospace",
+      fontSize:'11.5px', letterSpacing:'0.04em', transition:'all .12s', whiteSpace:'nowrap',
+      border:'1px solid ' + (active ? '#5DFFFF' : '#26304A'),
+      background: active ? 'rgba(93,255,255,0.12)' : 'transparent',
+      color: active ? '#5DFFFF' : '#8C99B5' };
+  }
+  masked(file, x, y, w, h, ink, S, extra){
+    const url = 'url(' + A + file + '.png)';
+    const base = { position:'absolute', left:(x*S)+'px', top:(y*S)+'px', width:(w*S)+'px', height:(h*S)+'px',
+      backgroundColor: ink, WebkitMaskImage:url, maskImage:url, WebkitMaskSize:'100% 100%', maskSize:'100% 100%',
+      WebkitMaskRepeat:'no-repeat', maskRepeat:'no-repeat', transition:'left .18s ease-out' };
+    return extra ? Object.assign(base, extra) : base;
+  }
+  guide(x, y, w, h, S, on, color){
+    return { position:'absolute', left:(x*S)+'px', top:(y*S)+'px', width:(w*S)+'px', height:(h*S)+'px',
+      border:'1px dashed ' + color, boxSizing:'border-box', display: on ? 'block' : 'none', pointerEvents:'none',
+      transition:'left .18s ease-out' };
+  }
+
+  renderVals(){
+    const S = this.props.previewScale ?? 2;
+    const showChrome = this.props.showChrome ?? true;
+    const guides = this.state.guides === null ? (this.props.showGuides ?? false) : this.state.guides;
+    const skin = SKINS.find(s => s.id === this.state.skin);
+    const emo = this.state.emo;
+    const amp = this.state.amp;
+    const gazeX = this.state.gx;
+    const g = Math.round(gazeX * 14);
+    const vis = VISEME_TABLE.find(v => amp < v.max);
+    const blinking = this.state.blinking && this.state.blinkOn;
+    const eyeFile = blinking ? 'eyes-closed' : 'eyes-' + emo;
+    const stretchMode = this.state.lip === 'stretch';
+    const speaking = this.state.speaking;
+    // rev-1 behaviour, kept: the emotion mouth stays on screen and breathes with the envelope
+    const sy = speaking && stretchMode ? 0.55 + 1.35 * amp : 1;
+    const sx = speaking && stretchMode ? 1 + 0.07 * amp : 1;
+    const mouthFile = (speaking && !stretchMode) ? vis.file : 'mouth-' + emo;
+    const mouthFx = { transform:'scale(' + sx.toFixed(3) + ',' + sy.toFixed(3) + ')', transformOrigin:'50% 48%',
+      transition: stretchMode ? 'transform .11s ease-in-out, left .18s ease-out' : 'left .18s ease-out' };
+    const ink = skin.ink;
+    const tint = skin.tinted ? skin.tint[emo] : null;
+    const accent = ACCENT[emo];
+    const frame = { emotion:emo, intensity:0.7, gaze:{ x:gazeX, y:0 }, accent_color:accent, speaking:this.state.speaking, ttl_ms:4000 };
+
+    const bar = (h, lit) => ({ width:(1.5*S)+'px', height:(h*S)+'px', background: lit ? '#00FFFF' : '#1B2338' });
+    const meterLevels = [3,5,8,11,14,17];
+
+    return {
+      scale: S, gazeX: gazeX, gazeLabel: (g > 0 ? '+' : '') + g + ' px on both rects',
+      statusLine: skin.id + ' · ' + emo + (this.state.speaking ? ' · speaking' : '') + (blinking ? ' · blink' : ''),
+      frameJson: 'skin: ' + skin.id + '   // face_set via config_updated, or the picker button\n' +
+        'EmotionFrame ' + JSON.stringify(frame, null, 1),
+      ampLabel: amp.toFixed(2),
+      visemeName: !speaking ? 'idle' : (stretchMode ? 'stretch ×' + sy.toFixed(2) + ' on mouth-' + emo + '.png' : vis.name + ' → ' + vis.file + '.png'),
+      lipBtns: [
+        { label:'stretch (rev 1)', style:this.btn(stretchMode), pick:() => this.setState({ lip:'stretch' }) },
+        { label:'viseme swap', style:this.btn(!stretchMode), pick:() => this.setState({ lip:'visemes' }) }
+      ],
+      lipNote: stretchMode
+        ? 'The emotion mouth stays on screen and is stretched vertically by the envelope — the motion from the first prototype, now on a sprite. One plate, a scaled blit per frame; the character never drops out of the expression mid-word.'
+        : 'Four viseme plates swapped by amplitude thresholds. Truer to the phoneme, but at 320×240 the swap reads as a flicker between mouths rather than one mouth moving.',
+      ampBarStyle: { width: Math.round(amp * 100) + '%', height:'100%', background:'#5DFFFF', transition:'width .06s linear' },
+
+      deviceStyle: { position:'relative', width:(320*S)+'px', height:(240*S)+'px', overflow:'hidden',
+        isolation:'isolate', background:'#000', borderRadius:'2px' },
+      plateStyle: { position:'absolute', inset:'0', backgroundImage:'url(' + A + 'body-' + skin.id + '.png)',
+        backgroundSize:'100% 100%', imageRendering:'pixelated' },
+      tintStyle: { position:'absolute', inset:'0', background: tint || 'transparent',
+        mixBlendMode:'multiply', display: tint ? 'block' : 'none' },
+      activeOverlays: skin.overlays.filter(o => o.on[0] === '*' || o.on.indexOf(emo) >= 0).map(o => ({
+        style: { position:'absolute', left:(o.x*S)+'px', top:(o.y*S)+'px', width:(o.w*S)+'px', height:(o.h*S)+'px',
+          backgroundImage:'url(' + A + o.file + ')', backgroundSize:'100% 100%', imageRendering:'pixelated' } })),
+      eyeStyle: this.masked(eyeFile, 76 + g, 64, 168, 88, ink, S),
+      mouthStyle: this.masked(mouthFile, 100 + g, 132, 120, 72, ink, S, mouthFx),
+      guideEyeStyle: this.guide(76 + g, 64, 168, 88, S, guides, 'rgba(93,255,255,0.55)'),
+      guideMouthStyle: this.guide(100 + g, 132, 120, 72, S, guides, 'rgba(93,255,255,0.55)'),
+      guideSafeStyle: this.guide(28, 28, 264, 184, S, guides, 'rgba(255,164,0,0.5)'),
+
+      chromeTopStyle: { position:'absolute', left:'0', top:'0', width:'100%', height:(28*S)+'px',
+        background:'rgba(6,8,15,0.82)', display: showChrome ? 'flex' : 'none', alignItems:'center',
+        justifyContent:'space-between', padding:'0 ' + (8*S) + 'px', boxSizing:'border-box' },
+      chromeBottomStyle: { position:'absolute', left:'0', bottom:'0', width:'100%', height:(28*S)+'px',
+        background:'rgba(6,8,15,0.82)', display: showChrome ? 'flex' : 'none', alignItems:'center',
+        justifyContent:'space-between', padding:'0 ' + (8*S) + 'px', boxSizing:'border-box' },
+      micStyle: { width:(4*S)+'px', height:(7*S)+'px', borderRadius:(2*S)+'px ' + (2*S)+'px ' + (1*S)+'px ' + (1*S)+'px',
+        background: this.state.speaking ? '#FFA400' : '#00FFFF' },
+      micStemStyle: { width:(7*S)+'px', height:(1.5*S)+'px', background: this.state.speaking ? '#FFA400' : '#00FFFF' },
+      linkDotStyle: { width:(3*S)+'px', height:(3*S)+'px', borderRadius:'50%', background:'#00FFFF',
+        animation:'om-pulse 2.4s ease-in-out infinite' },
+      battStyle: { width:(11*S)+'px', height:(5.5*S)+'px', border:'1px solid #7C89A6', borderRadius:'1px',
+        padding:'1px', boxSizing:'border-box' },
+      battFillStyle: { width:'70%', height:'100%', background:'#FFA400' },
+      pickerAStyle: { width:(5.5*S)+'px', height:(5.5*S)+'px', borderRadius:'50%', border:'1px solid #00FFFF' },
+      pickerBStyle: { width:(5.5*S)+'px', height:(5.5*S)+'px', borderRadius:'50%', border:'1px solid #00FFFF', marginLeft:(-3*S)+'px' },
+      toastStyle: { fontFamily:"'IBM Plex Mono', monospace", fontSize:(7*S)+'px', color:'#7C89A6',
+        letterSpacing:'0.06em', opacity: this.state.speaking ? 1 : 0.45 },
+      toastText: this.state.speaking ? 'speaking' : 'ttl ' + frame.ttl_ms + ' ms',
+      meterH: 17 * S,
+      meter: meterLevels.map((h, i) => ({ style: bar(h, this.state.speaking && amp * meterLevels.length > i) })),
+
+      skinBtns: SKINS.map(s => ({ label:s.label, style:this.btn(s.id === skin.id), pick:() => this.setState({ skin:s.id }) })),
+      emoBtns: EMOS.map(e => ({ label:e, style:this.btn(e === emo), pick:() => this.setState({ emo:e }) })),
+      gazeBtns: GAZES.map(gz => ({ label:gz[0], style:this.btn(gz[1] === gazeX), pick:() => this.setState({ gx:gz[1] }) })),
+      speakLabel: this.state.speaking ? 'stop speaking' : 'start speaking',
+      speakStyle: this.btn(this.state.speaking), blinkStyle: this.btn(this.state.blinkOn), guideBtnStyle: this.btn(guides),
+      toggleSpeak: () => this.setState(s => ({ speaking: !s.speaking })),
+      toggleBlink: () => this.setState(s => ({ blinkOn: !s.blinkOn })),
+      toggleGuides: () => this.setState({ guides: !guides }),
+
+      resolved: [
+        { k:'body plate', v:'body-' + skin.id + '.png' },
+        { k:'body tint ×', v: tint || 'none — plate ships final' },
+        { k:'eyes blit', v: eyeFile + '.png @ ' + (76 + g) + ',64' },
+        { k:'mouth blit', v: mouthFile + '.png @ ' + (100 + g) + ',132' + (speaking && stretchMode ? '  ×' + sy.toFixed(2) + ' vertical' : '') },
+        { k:'feature ink', v: ink },
+        { k:'overlay', v: (skin.overlays.filter(o => o.on[0] === '*' || o.on.indexOf(emo) >= 0).map(o => o.file).join(', ') || 'none this frame') },
+        { k:'accent_color', v: accent + (emo === 'error' ? '  // fault red, reserved' : '') }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>
