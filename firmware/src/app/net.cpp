@@ -21,6 +21,25 @@ void Net::begin(const char* ssid, const char* password, uint32_t now_ms) {
     started_ = true;
 
     WiFi.mode(WIFI_STA);
+
+    // **No power saving.** The ESP32 defaults to sleeping between beacons, and the access point
+    // then holds packets until the station wakes -- which costs nothing on a device that polls and
+    // everything on one that is being streamed audio.
+    //
+    // Measured from the server, 600 pings over five minutes on a quiet LAN:
+    //
+    //     0% packet loss · rtt min 1.97 / avg 148.71 / max 569.51 ms
+    //
+    // Nothing lost, everything late, and the minimum proving the link is capable of 2 ms. That is
+    // the signature of a sleeping radio and nothing else: a congested network loses packets, a weak
+    // signal loses packets, and a slow one is slow at its minimum too.
+    //
+    // It is also the answer to a question several days of work had been asking in the wrong place.
+    // Replies broke up, and every candidate examined -- the sprite push, the skin bodies, the touch
+    // polling, the frame size -- was a few tens of milliseconds against a speaker buffer of 64. The
+    // gap was arriving from the network, and no amount of care on either side of it would have
+    // helped while the radio was asleep.
+    WiFi.setSleep(false);
     // The ESP32 persists credentials in NVS by default and will happily reconnect to a *stale*
     // network behind our back, which makes a config change look like it did not take.
     WiFi.persistent(false);
