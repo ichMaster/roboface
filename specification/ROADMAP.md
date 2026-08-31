@@ -300,7 +300,7 @@ Add the four sprite skins — **ghost, flame, jellyfish, cloud** — over the sa
 
 ## v3 — Vision
 
-The camera opens. **Most of what it sees is understood on the server, locally, without a model call** — faces, where they are, and what the face is doing. Only the one question that needs language ("what do you see?") goes to Gemini. The version ends with the hardest audio work in the project: the esp-sr front end that finally makes listening full-duplex. Depends on: v2.
+The camera opens. **Most of what it sees is understood on the server, locally, without a model call** — faces, where they are, and what the face is doing. Only the one question that needs language ("what do you see?") goes to Gemini. The version ends with the hardest audio work in the project: the esp-sr front end that makes listening full-duplex, and the wake word that means nothing leaves the device until it is called. Depends on: v2.
 
 **Why the split is by frequency rather than by capability.** A cloud call is 500–2000 ms; a head turns in 200. Tracking a face through a model call is not slow, it is impossible — and an emotional read that costs a paid call every few seconds is one nobody leaves switched on. Local vision is continuous, free and private; the LLM is occasional and rich. Each does what the other cannot.
 
@@ -378,9 +378,38 @@ Integrate the Espressif audio front end (esp-sr AFE: AEC + noise suppression + V
 - Server-side cancellation: an in-flight turn is cancelled cleanly on a committed barge-in, with **no orphaned `tts_audio` frames after cancellation** (an epoch/turn id on audio frames, so late chunks from the abandoned turn are dropped rather than played); a failed turn still resets the pipeline.
 - Remove the half-duplex guard behind a capability flag (boards without AEC keep it).
 
-**DoD:** speaking while the device is talking interrupts it and starts a new turn; the device does not trigger on its own voice; on a board without AEC the half-duplex behaviour is unchanged; v3 is complete.
+**DoD:** speaking while the device is talking interrupts it and starts a new turn; the device does not trigger on its own voice; on a board without AEC the half-duplex behaviour is unchanged.
 
 **Tests:** host — the barge-in decision logic against fixtures with playback bleed, the queue/requeue semantics (nothing queued is lost, the in-flight phrase replays whole) and the resume watchdog under an injected clock; integration — a committed barge-in cancels the in-flight turn server-side and no `tts_audio` from the abandoned turn is played; manual DoD check on hardware.
+
+> **v3.4 and v3.5 share a build step.** Both are esp-sr, both sit in the same audio front end, and both must run before anything reaches the network. Shipping them as one phase would make a large phase larger; shipping them adjacent means the library arrives once.
+
+### v3.5 — The name
+
+**Goal:** nothing leaves the device until it is called.
+
+WakeNet, the wake-word half of the esp-sr package v3.4 already brings in, runs on the device and listens continuously for one name. Until it hears it, no audio is streamed anywhere.
+
+**This is a privacy and cost change before it is a convenience.** Today active listening means the endpointer fires on any speech loud enough — a television, a conversation between two other people in the room — and the audio goes to the server *and* onward to a paid recogniser. Measured on the board in a normal room: 436 speech starts against 4 completed utterances in three minutes. A name closes that: the microphone still hears everything and the network hears nothing.
+
+It is also what would let active listening be **on** by default. It ships off today, and the reason is exactly the above.
+
+**The model is the long pole, and it is procurement rather than code.** WakeNet's built-in words are `Alexa`, `Hi ESP`, `Hi Lexin` and several Chinese ones; a name of our own has to be produced by Espressif, by one of two routes. Their corpus process wants 500+ speakers including 100 children, fifteen repetitions each at three speeds — a data-collection project, not an afternoon. Their TTS-sample route generates the model from synthetic speech and is the realistic one; it was improved in WakeNet10 (August 2026). A third-party service offers the same. **Start the request before the phase, not during it.**
+
+Choose a name of 3–6 syllables. A single short word detects measurably worse than a name with a greeting attached, so *"привіт, Лумі"* is a better target than *"Лумі"*.
+
+**Tasks:**
+- Bring WakeNet into the build beside the AFE from v3.4; they share the audio front end and both must run **before** anything reaches the network.
+- Order the custom model (TTS-sample route) and carry the built-in `Hi ESP` as the interim so the plumbing can be finished and tested before it arrives.
+- Gate the uplink on the wake: `beginListening` is refused unless the name was heard within a short window, or the person used one of the two deliberate paths.
+- **The two deliberate paths stay and are not degraded.** Press-and-hold is push-to-talk from the first millisecond, and the microphone button is a control someone chose. Three ways to start a turn, each for a different situation: the name across a room, the hold when precision matters, the button when the room should not hear you say a name.
+- The wake is a **local fact and is not reported**: the character has no business knowing it was called and then not spoken to. Only the utterance that follows goes on the wire.
+- Chrome: the listening indicator is what it always was. A device woken by its name is listening, and that is already shown.
+- Config: a false-wake counter in the status line, because the number that decides whether a wake word is usable is how often it fires when nobody spoke, and that number is only knowable from a room.
+
+**DoD:** saying the name from across a room starts a turn; with the name armed and nobody calling it, **no audio frame leaves the device** over a ten-minute period in a normal room with speech in it — asserted from the server's own frame counters rather than from the device's word; press-and-hold and the microphone button behave exactly as before; a board without the model falls back to the interim word and says so at boot rather than silently never waking.
+
+**Tests:** host — the arming window and its expiry under an injected clock, and that a refused `beginListening` leaves the endpointer reset (the v1.4 lesson: a refused window that leaves the endpointer convinced speech is ongoing makes the device deaf for the session); integration — a fake device that never wakes sends no audio through a full session; manual DoD check on hardware, which is the only place a false-wake rate exists.
 
 ---
 

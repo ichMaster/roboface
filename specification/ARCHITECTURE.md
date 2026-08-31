@@ -417,6 +417,28 @@ written to disk in either case; the camera is live only during an explicit turn 
 presence mode is opt-in; and the **lens indicator is lit whenever the camera is powered**, with no
 fade timer and no way to hide it.
 
+## Waking (v3.5)
+
+**Nothing leaves the device until it is called.** WakeNet — the wake-word half of the same esp-sr
+package that brings AEC in v3.4 — listens continuously on the device for one name and gates the
+uplink on hearing it.
+
+This is a privacy and cost property before it is a convenience. Active listening today means the
+endpointer fires on any speech loud enough, and the audio goes to the server and onward to a paid
+recogniser: measured in a normal room, 436 speech starts against 4 completed utterances in three
+minutes. With a name, the microphone still hears everything and the network hears nothing — and that
+is what makes it safe for active listening to be on by default, which it is not today.
+
+**Three ways to start a turn, and none replaces another.** The name works across a room; press-and-hold
+is push-to-talk from the first millisecond, for when precision matters; the microphone button is for
+when the room should not hear you say a name. The wake itself is a **local fact and is never
+reported** — the character has no business knowing it was called and then not spoken to.
+
+The custom model is procurement rather than code: WakeNet ships with `Alexa`, `Hi ESP` and a few
+others, and a name of our own must be produced by Espressif from a corpus or from TTS samples. The
+build carries a built-in word as the interim so the gating can be finished and tested before the real
+model exists.
+
 ## The mind (v4)
 
 Deliberately small, entirely server-side, no console:
