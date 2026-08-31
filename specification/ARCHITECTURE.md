@@ -440,6 +440,34 @@ others, and a name of our own must be produced by Espressif from a corpus or fro
 build carries a built-in word as the interim so the gating can be finished and tested before the real
 model exists.
 
+## Who it is talking to (v3.5–v3.6)
+
+Recognition is local like the rest of v3's continuous half, and it exists for one reason: **v4's memory
+stores facts about a person, and without identity it has one bucket.** In a home with two people what
+one says becomes something the character believes about the other, and it will say so. That is a
+correctness problem, not a feature.
+
+**Voice first, face second, and voice wins a disagreement.** An ECAPA-TDNN embedding from the
+utterance the turn already carries costs about fifty milliseconds and needs no new data path and no
+new indicator; a desk companion is talked to, not necessarily looked at, and voice works in the dark
+with the camera unpowered. Face answers the one question voice cannot — who walked in, before anyone
+has spoken — at the cost of a lit lens indicator for as long as it runs, which is why it is
+separately switchable. When the two disagree, the voice is the one talking; the face may be looking
+over a shoulder.
+
+**Four rules, and they are the same four for both.**
+
+1. **Enrollment is explicit.** A person is enrolled by being asked. The device never accumulates
+   profiles of whoever passes.
+2. **Templates never leave the LAN**, live in the server's own store, and are deletable by command.
+   An embedding is a template for comparison and cannot be turned back into audio or an image —
+   worth stating, because half the concern about biometrics is about recordings.
+3. **Unenrolled is "someone", not "unknown".** No template is kept for a voice or face nobody asked
+   to enroll, and a guest's conversation goes to a session bucket that is discarded.
+4. **Unknown is a first-class answer, never a nearest match.** Below the confidence threshold the
+   identity is absent — the same rule as `Gaze | None` and `DirectionEstimate.present`. A character
+   that confidently uses the wrong name is worse than one that uses no name.
+
 ## The mind (v4)
 
 Deliberately small, entirely server-side, no console:

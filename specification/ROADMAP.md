@@ -300,7 +300,7 @@ Add the four sprite skins — **ghost, flame, jellyfish, cloud** — over the sa
 
 ## v3 — Vision
 
-The camera opens. **Most of what it sees is understood on the server, locally, without a model call** — faces, where they are, and what the face is doing. Only the one question that needs language ("what do you see?") goes to Gemini. The version ends with the hardest audio work in the project: the esp-sr front end, which both makes listening full-duplex and gates the uplink on a name. Depends on: v2.
+The camera opens. **Most of what it sees is understood on the server, locally, without a model call** — faces, where they are, and what the face is doing. Only the one question that needs language ("what do you see?") goes to Gemini. The version ends with the hardest audio work in the project: the esp-sr front end, which both makes listening full-duplex and gates the uplink on a name — and closes by learning who it is talking to, by voice and then by face. Depends on: v2.
 
 **Why the split is by frequency rather than by capability.** A cloud call is 500–2000 ms; a head turns in 200. Tracking a face through a model call is not slow, it is impossible — and an emotional read that costs a paid call every few seconds is one nobody leaves switched on. Local vision is continuous, free and private; the LLM is occasional and rich. Each does what the other cannot.
 
@@ -391,6 +391,54 @@ Integrate the Espressif audio front end (esp-sr) using the playback reference ch
 
 **Tests:** host — the barge-in decision logic against fixtures with playback bleed, the queue/requeue semantics (nothing queued is lost, the in-flight phrase replays whole) and the resume watchdog under an injected clock; the wake's arming window and its expiry under an injected clock, and that a refused `beginListening` leaves the endpointer **reset** (the v1.4 lesson: a refused window that leaves the endpointer convinced speech is ongoing makes the device deaf for the rest of the session); integration — a committed barge-in cancels the in-flight turn server-side and no `tts_audio` from the abandoned turn is played, and a fake device that never wakes sends no audio through a full session; manual DoD check on hardware, which is the only place a false-wake rate exists.
 
+### v3.5 — Who is speaking
+
+**Goal:** the character knows who it is talking to, and says the name.
+
+**That is the whole of it in v3.** Recognise, and address the person by name. Nothing is stored about
+them beyond the name they enrolled under, nothing is recalled, and the conversation is as
+stateless as it was before. A person becomes a real user with a history in **v4.2**, and keeping
+those apart is deliberate: identity is a measurement and memory is a policy, and the second is much
+easier to get wrong.
+
+A speaker-identification provider on the server, local like the rest of v3's continuous half: an ECAPA-TDNN embedding from the utterance the turn already carries, compared against enrolled voices by cosine distance. Roughly fifty milliseconds on the machine the server is, on audio that is already there — **no new data path and no new indicator**, which is most of why voice comes before face.
+
+**A desk companion is talked to, not necessarily looked at.** Voice works in the dark, works with presence mode off and the camera unpowered, and answers the question that actually matters during a conversation: not who is in the room, but who is speaking now.
+
+**"Unknown" is a first-class answer, not a nearest match.** The same rule this project applies to `Gaze | None` and `DirectionEstimate.present`: below the confidence threshold the identity is *absent*, and absent is not "probably Vitalii". A character that confidently calls someone by the wrong name is worse than one that does not use names.
+
+**Tasks:**
+- A `SpeakerIdProvider` alongside the other providers, with a mock; the real one is an ECAPA-TDNN embedding and a cosine comparison. Its output is `{person_id, confidence}` or nothing.
+- **Explicit enrollment only.** A person is enrolled by being asked — three to five utterances — and never by the device quietly accumulating profiles of everyone who speaks near it.
+- Storage: embeddings in the same SQLite the rest of the server uses, **never leaving the LAN**, listable and deletable by command. An embedding is a template for comparison and cannot be turned back into audio; say so in the docs, because half the worry about biometrics is about recordings.
+- **An unenrolled speaker is "someone", not "unknown intruder".** No profiling of guests: no template is stored for a voice nobody asked to enroll.
+- The identity reaches the prompt as **a name and nothing more** — *"you are speaking with Vitalii"*. No history, no facts, no per-person anything: that is v4.2, and this phase must not grow toward it.
+- A threshold with hysteresis: an identity that flickers between two people mid-conversation is worse than one that stays wrong.
+
+**DoD:** two enrolled people talking to the device in turn are **each addressed by their own name**; a third, unenrolled person is spoken to normally and without a name, rather than misidentified as either; clearing an enrollment really clears it; no embedding or audio leaves the LAN, asserted from the server's own outbound counters.
+
+**Tests:** unit — the threshold and hysteresis against fixture embeddings, "unknown" below confidence, enrollment and deletion round-tripping through the store; contract — the `SpeakerIdProvider` seam and its mock; integration — two fixture voices across a session produce two distinct identities and an unenrolled third produces none.
+
+### v3.6 — Who is here
+
+**Goal:** the character greets the person who walked in, by name — before they have said a word.
+
+Face recognition on top of the detection v3.2 already does: the same frames, one more step — an ArcFace embedding compared against enrolled faces. It answers the one question voice cannot, because it answers it **before anyone has spoken**.
+
+**Everything from v3.5 applies unchanged** — explicit enrollment, templates that never leave the LAN, deletable, "unknown" as a real answer, no profiling of guests. This phase adds a second way to ask the same question, not a second policy.
+
+**And one cost that voice does not have.** Face recognition needs the camera powered, which lights the lens indicator for as long as it runs. That is the privacy rule working as intended, and it is why this is a separate phase and separately switchable: someone may reasonably want to be recognised by voice and not watched.
+
+**Tasks:**
+- Extend `VisionProvider` with an embedding output; the comparison and store are shared with v3.5 rather than duplicated — one enrollment per person, two ways of recognising them.
+- Greeting policy: uses v3.2's existing rules (one per arrival, quiet-hours aware, never during a turn) and adds the name when confident.
+- **Voice wins a disagreement.** If the face says one person and the voice says another, the voice is talking. The face may be looking over a shoulder.
+- Config: face recognition is separately switchable from presence, and off by default.
+
+**DoD:** an enrolled person sitting down is greeted by name; an unenrolled one is greeted without a name rather than by the wrong one; with face recognition off, presence and gaze behave exactly as in v3.2; the lens indicator is lit whenever this is running.
+
+**Tests:** host — the voice-over-face precedence and the confidence threshold against fixtures; unit — one enrollment record serving both providers; integration — a fixture face produces a named greeting and an unknown face produces an unnamed one.
+
 ---
 
 ## v4 — The simple mind
@@ -415,19 +463,24 @@ An authored canon file — the character's biography, values, voice and hard rul
 
 ### v4.2 — Memory
 
-**Goal:** it remembers you between sessions.
+**Goal:** it remembers you between sessions — and does not confuse you with anyone else.
 
-Session history — the last **40 messages** — plus **facts about the interlocutor**: up to **500 facts of two lines** each, extracted by the model from the conversation, stored in SQLite and mixed into the system prompt.
+Session history — the last **40 messages** — plus **facts about the person**: up to **500 facts of two lines** each, extracted by the model from the conversation, stored in SQLite and mixed into the system prompt.
+
+**This is where a name becomes a user.** v3.5 and v3.6 recognise a person and address them; nothing more, on purpose. Here that identity acquires a history — and it has to, because **facts belong to a person, not to a device**. Without it the store has one bucket: in a home with two people, what one says becomes something the character believes about the other, and it will say so. That is a correctness problem rather than a missing feature, and it is why identity lands a whole version before memory rather than beside it.
+
+**An unidentified speaker gets a session bucket that is discarded**, not the resident's. A guest's conversation is remembered for as long as they are talking and then forgotten — which is both the privacy answer and the correct one.
 
 **Tasks:**
-- SQLite behind a thin repository: `SessionMessage` and `Fact` (see ARCHITECTURE §Data model).
+- SQLite behind a thin repository: `SessionMessage` and `Fact`, both **keyed by person** (see ARCHITECTURE §Data model).
+- The unidentified case: a session-scoped bucket, never written to the durable store, dropped when the session ends.
 - The rolling 40-message window in the prompt, with the oldest dropped deterministically.
 - Fact extraction: a cheap model pass that proposes facts; validation, deduplication, a 500-item cap with an eviction rule, two-line truncation.
 - Injection of the fact block into the system prompt; a way to list and clear memory.
 
-**DoD:** after a restart the character recalls durable facts about you and the thread of recent conversation; the store never exceeds its caps; clearing memory really clears it.
+**DoD:** after a restart the character recalls durable facts about you and the thread of recent conversation; **facts told by one enrolled person never appear in another's prompt**; a guest's conversation leaves nothing behind; the store never exceeds its caps; clearing memory really clears it.
 
-**Tests:** unit — windowing, fact validation/dedup/eviction, truncation; contract — the `SessionMessage`/`Fact` record shapes; integration — a restart rehydrates the prompt from the store (mock model, temp DB).
+**Tests:** unit — windowing, fact validation/dedup/eviction, truncation, and **that a fact stored under one person is absent from another's prompt**; contract — the `SessionMessage`/`Fact` record shapes with their person key; integration — a restart rehydrates the right person's prompt from the store, and an unidentified session leaves the store unchanged (mock model, temp DB).
 
 ### v4.3 — One tool: web search
 
