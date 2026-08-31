@@ -417,10 +417,11 @@ written to disk in either case; the camera is live only during an explicit turn 
 presence mode is opt-in; and the **lens indicator is lit whenever the camera is powered**, with no
 fade timer and no way to hide it.
 
-## Waking (v3.5)
+## Waking (v3.4)
 
 **Nothing leaves the device until it is called.** WakeNet — the wake-word half of the same esp-sr
-package that brings AEC in v3.4 — listens continuously on the device for one name and gates the
+package that brings AEC, integrated with it because they share one audio front end and both must run
+before anything reaches the network — listens continuously on the device for one name and gates the
 uplink on hearing it.
 
 This is a privacy and cost property before it is a convenience. Active listening today means the
