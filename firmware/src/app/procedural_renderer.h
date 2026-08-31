@@ -28,6 +28,7 @@
 #include "pure/facehold.h"
 #include "pure/idle.h"
 #include "pure/layers.h"
+#include "app/art.h"
 #include "pure/skins.h"
 #include "pure/layout.h"
 #include "pure/lipsync.h"
@@ -85,7 +86,6 @@ class ProceduralRenderer : public IFaceRenderer {
     //: shape nobody has drawn before costs one `case`. `SkinBody` and `SkinElement` are closed enums
     //: precisely so that this vocabulary is finite, known, and small -- and so that a skin needing a
     //: sixth entry is announcing that the schema is too narrow, loudly, at the moment it is written.
-    void drawBody(const roboface::LayerBank& bank);
     void drawElement(const roboface::LayerBank& bank);
 
   public:
@@ -195,6 +195,12 @@ class ProceduralRenderer : public IFaceRenderer {
     //: because the safe answer to "has anything else changed" before anything has been drawn is
     //: yes -- a partial push of a screen that was never fully drawn shows a mouth on noise.
     bool dirty_all_ = true;
+
+    //: Whether the body itself has to be redrawn, as opposed to the ground under the features.
+    //: **Two different questions**: `dirty_all_` is about what the panel needs sent, this is about
+    //: what the sprite needs painted. A tinted skin changing emotion repaints the body without the
+    //: features having moved; a mouth moving does the reverse.
+    bool body_dirty_ = true;
     //: A frame that arrived while the device was still speaking and ends the speaking. Applied
     //: when playback stops, which is the moment it was actually describing.
     roboface::EmotionFrame pending_;

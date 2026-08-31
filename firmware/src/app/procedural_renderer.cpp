@@ -44,16 +44,22 @@ bool ProceduralRenderer::begin() {
     // working in v1.4.2 -- before that this allocation would have taken half of what was left.
     sprite_.setPsram(true);
 
-    // **8 bits, not 16, and this is the frame budget rather than a preference.**
+    // **16 bits, and this reverses a decision that was right when it was made.**
     //
-    // Measured: each push of a 320x240 16-bit sprite costs about 48 ms of blocked loop -- 150 KB
-    // over SPI -- which works out at roughly 2.4 lost microphone frames per drawn frame. At 7 FPS
-    // the recorder ran at 35 frames a second instead of 50. Lowering the frame rate only trades one
-    // for the other; halving the bytes moves the line.
+    // Eight bits was chosen for the frame budget and measured: a 16-bit push cost ~48 ms of blocked
+    // loop against ~32 ms for eight, and at the time the face was a background, a glow and one ink
+    // -- a 256-entry palette was more than it could use. That reasoning was sound and it expired
+    // when the faces stopped being three colours.
     //
-    // The face costs nothing in colour: a background, a glow and one ink. A 256-entry palette is
-    // more than this renderer will ever need, and v2.6's skins are a palette swap by design.
-    sprite_.setColorDepth(8);
+    // Drawn art cannot live in a palette. Not because 256 colours is too few for one body, but
+    // because **an index cannot be blended**: the features are alpha masks tinted in the skin's ink
+    // and the overlays are semi-transparent, and every one of those composites needs to mix two
+    // colours per pixel. In palette space there is no such operation.
+    //
+    // The cost is paid back by the partial push (v2.6.2): while a reply plays, only the mouth band
+    // is sent, which is 24,000 pixels rather than 76,800. A full push is now ~48 ms and happens on
+    // an expression change rather than on every syllable.
+    sprite_.setColorDepth(16);
     ready_ = sprite_.createSprite(kScreenWidth, kScreenHeight) != nullptr;
     if (!ready_) return false;  // say so rather than presenting a blank screen as a working one
 
@@ -148,6 +154,7 @@ void ProceduralRenderer::apply(const roboface::EmotionFrame& frame) {
     // the face should return to what the server last asked for rather than to centre.
     server_gaze_x_ = frame.has_gaze ? frame.gaze_x : 0.0f;
 
+    if (frame.emotion != emotion_) body_dirty_ = true;
     emotion_ = frame.emotion;
     dirty_all_ = true;
     crossfade_.target(roboface::withIntensity(roboface::recipeFor(frame.emotion), frame.intensity));
@@ -174,6 +181,7 @@ void ProceduralRenderer::setSkin(const roboface::Skin& skin) {
     // later. Keeping the current face is always safe; wearing a broken one never is.
     if (roboface::validate(skin) != roboface::SkinFault::kNone) return;
     skin_ = skin;
+    body_dirty_ = true;
     dirty_all_ = true;
     animating_ = true;
 }
@@ -332,120 +340,45 @@ void ProceduralRenderer::tick(uint32_t now_ms) {
 }
 
 
-void ProceduralRenderer::drawBody(const roboface::LayerBank& bank) {
-    // The element decides the body's colour for the skins whose element *is* the body -- the cloud's
-    // weather and the flame's fire are not decoration on a shape, they are the shape's colour.
-    const uint16_t base =
-        (skin_.element == roboface::SkinElement::kWeatherFollowsEmotion ||
-         skin_.element == roboface::SkinElement::kPaletteFollowsEmotion)
-            ? skin_.element_palette.at(emotion_)
-            : skin_.body_colour;
-    const uint16_t colour = dimmed(base, bank.brightness);
-
-    const int cx = skin_.geometry.centre_x;
-    const int cy = skin_.geometry.centre_y;
-
-    switch (skin_.body) {
-        case roboface::SkinBody::kNone:
-            // Stackchan: the wash behind the head, exactly as before v2.6.
-            sprite_.fillRoundRect(bank.glow.centre_x - bank.glow.half_width,
-                                  bank.glow.centre_y - bank.glow.half_height,
-                                  bank.glow.half_width * 2, bank.glow.half_height * 2,
-                                  bank.glow.corner_radius, colour);
-            return;
-
-        case roboface::SkinBody::kGhost: {
-            // A dome with a scalloped hem: a circle for the crown, a rectangle for the body, and
-            // four bumps along the bottom. Round shapes only -- the panel has no anti-aliasing and
-            // a polygon at this size reads as a staircase.
-            sprite_.fillCircle(cx, cy - 30, 66, colour);
-            sprite_.fillRect(cx - 66, cy - 30, 132, 82, colour);
-            for (int i = 0; i < 4; ++i) {
-                sprite_.fillCircle(cx - 50 + i * 33, cy + 52, 16, colour);
-            }
-            return;
-        }
-
-        case roboface::SkinBody::kFlame: {
-            // A teardrop: wide at the base, tapering upward. Three circles of falling radius, which
-            // at 320x240 is indistinguishable from the curve and costs a fraction of it.
-            sprite_.fillCircle(cx, cy + 26, 56, colour);
-            sprite_.fillCircle(cx, cy - 14, 42, colour);
-            sprite_.fillCircle(cx, cy - 48, 24, colour);
-            return;
-        }
-
-        case roboface::SkinBody::kBell: {
-            // The jellyfish: a bell, and tendrils below it in the same colour at a lighter weight.
-            sprite_.fillCircle(cx, cy - 8, 64, colour);
-            sprite_.fillRect(cx - 64, cy - 8, 128, 24, colour);
-            for (int i = 0; i < 5; ++i) {
-                const int x = cx - 48 + i * 24;
-                sprite_.drawFastVLine(x, cy + 16, 34, colour);
-                sprite_.drawFastVLine(x + 1, cy + 16, 34, colour);
-            }
-            return;
-        }
-
-        case roboface::SkinBody::kCloud: {
-            // Overlapping lobes, flat along the bottom.
-            sprite_.fillCircle(cx - 44, cy + 10, 34, colour);
-            sprite_.fillCircle(cx, cy - 14, 46, colour);
-            sprite_.fillCircle(cx + 44, cy + 10, 34, colour);
-            sprite_.fillRect(cx - 44, cy + 10, 88, 34, colour);
-            return;
-        }
-
-        case roboface::SkinBody::kCount:
-            return;
-    }
-}
-
 void ProceduralRenderer::drawElement(const roboface::LayerBank& bank) {
-    const int cx = skin_.geometry.centre_x;
-    const int cy = skin_.geometry.centre_y;
+    // **The overlays keep their own colours** -- a blush is pink whatever the skin's ink is, and a
+    // tear is blue. That is the one place in this pipeline where the artist's palette reaches the
+    // panel unmediated, and it is why these are RGB565 rather than alpha masks.
+    //
+    // The coordinates are the manifest's, returned with the art. They are spelled here rather than
+    // derived because they are placements on a specific drawing: where a cheek is on *this* ghost.
+    uint16_t* canvas = static_cast<uint16_t*>(sprite_.getBuffer());
+    if (canvas == nullptr) return;
+    (void)bank;
 
     switch (skin_.element) {
-        case roboface::SkinElement::kBlushAndTear: {
-            // The ghost's, and the only element that is *additional* rather than a colour: pink
-            // cheeks when content, a tear when sad. The prototype's own rule -- blush on joy,
-            // neutral and surprised; a tear on sad -- rather than a new one.
-            const bool content = emotion_ == roboface::Emotion::kJoy ||
-                                 emotion_ == roboface::Emotion::kNeutral ||
-                                 emotion_ == roboface::Emotion::kSurprised;
-            if (content) {
-                const uint16_t pink = dimmed(skin_.element_palette.at(emotion_), bank.brightness);
-                sprite_.fillEllipse(cx - 68, cy + 26, 11, 6, pink);
-                sprite_.fillEllipse(cx + 68, cy + 26, 11, 6, pink);
+        case roboface::SkinElement::kBlushAndTear:
+            if (emotion_ == roboface::Emotion::kJoy || emotion_ == roboface::Emotion::kNeutral ||
+                emotion_ == roboface::Emotion::kSurprised) {
+                art::drawOverlay(canvas, assets::kElemGhostBlush, 76, 146);
             }
             if (emotion_ == roboface::Emotion::kSad) {
-                const uint16_t blue = dimmed(0x7DFF, bank.brightness);
-                sprite_.fillEllipse(cx - 56, cy + 24, 4, 9, blue);
+                art::drawOverlay(canvas, assets::kElemGhostTear, 214, 148);
             }
             return;
-        }
 
-        case roboface::SkinElement::kGlowFollowsEmotion: {
-            // The jelly's bell already carries `body_colour`; the glow is the dots on top of it.
-            const uint16_t glow = dimmed(skin_.element_palette.at(emotion_), bank.brightness);
-            const int dots[5][2] = {{-50, -40}, {0, -56}, {50, -40}, {-68, -4}, {68, -4}};
-            for (const auto& dot : dots) {
-                sprite_.fillCircle(cx + dot[0], cy + dot[1], 3, glow);
-            }
+        case roboface::SkinElement::kGlowFollowsEmotion:
+            // Always, on this skin: the bell glows whatever the mood, and the mood is the colour
+            // the body was already tinted with.
+            art::drawOverlay(canvas, assets::kElemJellyGlow, 60, 40);
             return;
-        }
 
-        case roboface::SkinElement::kWeatherFollowsEmotion: {
-            // The cloud's weather. The body colour already changed in `drawBody`; joy adds a sun.
+        case roboface::SkinElement::kWeatherFollowsEmotion:
             if (emotion_ == roboface::Emotion::kJoy) {
-                const uint16_t sun = dimmed(0xFEBF, bank.brightness);
-                sprite_.fillCircle(cx + 92, cy - 58, 16, sun);
+                art::drawOverlay(canvas, assets::kElemCloudSun, 228, 34);
+            }
+            if (emotion_ == roboface::Emotion::kSad) {
+                art::drawOverlay(canvas, assets::kElemCloudRain, 60, 168);
             }
             return;
-        }
 
         case roboface::SkinElement::kPaletteFollowsEmotion:
-            // The flame's palette *is* the body, drawn already. Nothing on top.
+            // The flame's palette *is* its body, tinted already. Nothing on top.
             return;
 
         case roboface::SkinElement::kNone:
@@ -455,75 +388,59 @@ void ProceduralRenderer::drawElement(const roboface::LayerBank& bank) {
 }
 
 void ProceduralRenderer::compose(const roboface::LayerBank& bank) {
-    // **The face area only.** The outer 28 px bands belong to chrome (DEVICE_UI §Layout), and the
-    // stub said so in its own docstring -- but the stub redrew only on an event, so clearing the
-    // whole sprite cost nothing. This renderer redraws on its own schedule, ~18 times a second,
-    // while `render()` still runs only when something happens: a full-sprite clear would wipe the
-    // link, the battery and the muted-microphone indicator within 55 ms of each event and leave
-    // them gone until the next one.
-    //
-    // Which would have been read as the chrome flickering, and looked for in the chrome.
-    sprite_.fillRect(roboface::kFaceLeft, roboface::kFaceTop, roboface::kFaceWidth,
-                     roboface::kFaceHeight, skin_.background);
+    // **The face area only.** The outer 28 px bands belong to chrome (DEVICE_UI §Layout), and a
+    // full-sprite clear would wipe the link, the battery and the microphone button within 55 ms of
+    // each event and leave them gone until the next one -- which reads as the chrome flickering,
+    // and gets looked for in the chrome.
+    uint16_t* canvas = static_cast<uint16_t*>(sprite_.getBuffer());
+    if (canvas == nullptr) return;
 
+    const std::size_t skin_index = roboface::skinIndexFor(skin_.name);
+    const bool tinted = skin_.element == roboface::SkinElement::kPaletteFollowsEmotion ||
+                        skin_.element == roboface::SkinElement::kGlowFollowsEmotion ||
+                        skin_.element == roboface::SkinElement::kWeatherFollowsEmotion;
+    const uint16_t tint = skin_.element_palette.at(emotion_);
     const uint16_t ink = dimmed(skin_.ink, bank.brightness);
 
-    // The silhouette first: everything else sits on it.
-    drawBody(bank);
+    // The gaze moves the features across the body, which is the whole reason they are separate
+    // images: the character looks at you, and the costume does not follow.
+    const float gaze_x = reflex_gaze_  ? reflex_gaze_x_
+                         : voice_gaze_ ? voice_gaze_x_
+                                       : server_gaze_x_;
+    const int shift = static_cast<int>(gaze_x * static_cast<float>(skin_.gaze_travel_px));
 
-    // Eyes. A closed eye is a line, not a zero-height rectangle -- `fillRoundRect` with no height
-    // draws nothing, and a blink that made the eyes vanish would look like a fault.
-    for (const auto& eye : {bank.left_eye, bank.right_eye}) {
-        if (eye.half_height <= 1) {
-            sprite_.drawFastHLine(eye.centre_x - eye.half_width, eye.centre_y, eye.half_width * 2,
-                                  ink);
-        } else {
-            sprite_.fillRoundRect(eye.centre_x - eye.half_width, eye.centre_y - eye.half_height,
-                                  eye.half_width * 2, eye.half_height * 2,
-                                  eye.half_width / 2, ink);
-        }
-    }
-
-    // Brows, as thick lines between the two endpoints the layer bank worked out.
-    for (const auto& brow : {bank.left_brow, bank.right_brow}) {
-        for (int thickness = 0; thickness < 4; ++thickness) {
-            sprite_.drawLine(brow.inner_x, brow.inner_y + thickness, brow.outer_x,
-                             brow.outer_y + thickness, ink);
-        }
-    }
-
-    // The mouth. Two shapes rather than one, because a closed mouth and an open one are different
-    // things: a line that curves, and an opening with a height. Drawing an open mouth as a thicker
-    // line is what makes lip-sync look like a moustache twitching.
-    if (bank.mouth.open_height > 1) {
-        // Open: a filled ellipse between the corners, its lower edge following the curve so the
-        // mouth still smiles or frowns while it speaks.
-        const int centre_y = (bank.mouth.left_y + bank.mouth.mid_y) / 2;
-        sprite_.fillEllipse(bank.mouth.mid_x, centre_y, bank.mouth.open_half_width,
-                            bank.mouth.open_height, ink);
+    // **The whole body, or only the ground the features stand on.** After the first frame the body
+    // has not changed and the features have, so restoring 23,000 pixels beats redrawing 76,800 --
+    // and this loop runs while a reply is playing, where every millisecond is one the speaker does
+    // not get.
+    if (body_dirty_) {
+        art::drawBodyRegion(canvas, skin_index, tinted, tint, 0, 0, roboface::kScreenWidth,
+                            roboface::kScreenHeight);
+        body_dirty_ = false;
     } else {
-        // Closed: a quadratic through the three control points, walked in segments.
-        int previous_x = bank.mouth.left_x;
-        int previous_y = bank.mouth.left_y;
-        for (int step = 1; step <= kMouthSegments; ++step) {
-            const float t = static_cast<float>(step) / static_cast<float>(kMouthSegments);
-            const float inv = 1.0f - t;
-            const float x = inv * inv * static_cast<float>(bank.mouth.left_x) +
-                            2.0f * inv * t * static_cast<float>(bank.mouth.mid_x) +
-                            t * t * static_cast<float>(bank.mouth.right_x);
-            const float y = inv * inv * static_cast<float>(bank.mouth.left_y) +
-                            2.0f * inv * t * static_cast<float>(bank.mouth.mid_y) +
-                            t * t * static_cast<float>(bank.mouth.right_y);
-            for (int thickness = 0; thickness < 3; ++thickness) {
-                sprite_.drawLine(previous_x, previous_y + thickness, static_cast<int>(x),
-                                 static_cast<int>(y) + thickness, ink);
-            }
-            previous_x = static_cast<int>(x);
-            previous_y = static_cast<int>(y);
-        }
+        art::drawBodyRegion(canvas, skin_index, tinted, tint, art::kEyesX - skin_.gaze_travel_px,
+                            art::kEyesY, assets::kEyesNeutral.width + 2 * skin_.gaze_travel_px,
+                            assets::kEyesNeutral.height);
+        art::drawBodyRegion(canvas, skin_index, tinted, tint, art::kMouthX - skin_.gaze_travel_px,
+                            art::kMouthY, assets::kMouthNeutral.width + 2 * skin_.gaze_travel_px,
+                            assets::kMouthNeutral.height);
     }
 
-    // Last, over the features: a blush sits on a cheek and a tear runs down one.
+    // Eyes. A blink replaces the image outright rather than scaling one: the artist drew a closed
+    // eye, and squashing an open one is how a face ends up looking like a puppet.
+    const bool blinking = bank.left_eye.half_height <= 1;
+    art::drawMask(canvas, blinking ? assets::kEyesClosed : art::eyesFor(emotion_),
+                  art::kEyesX + shift, art::kEyesY, ink);
+
+    // The mouth, and **the fact rather than the permission**: `playing_` is whether this device's
+    // speaker is running, which is what v2.1.2 established the mouth must follow. The server's
+    // idea of when a reply ends runs seconds ahead of the audio still draining.
+    if (playing_) {
+        art::drawMask(canvas, art::visemeFor(last_mouth_), art::kMouthX + shift, art::kMouthY, ink);
+    } else {
+        art::drawMask(canvas, art::mouthFor(emotion_), art::kMouthX + shift, art::kMouthY, ink);
+    }
+
     drawElement(bank);
 }
 

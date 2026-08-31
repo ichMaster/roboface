@@ -89,6 +89,16 @@ inline constexpr int kEyesY = 64;
 inline constexpr int kMouthX = 100;
 inline constexpr int kMouthY = 132;
 
+//: **The sprite stores its pixels byte-swapped**, and writing raw into its buffer means matching
+//: that rather than being converted into it.
+//:
+//: LovyanGFX keeps a 16-bit sprite in the order the panel's SPI wants, so it can be sent without
+//: touching it. `drawPixel` converts on the way in; writing to `getBuffer()` skips the conversion
+//: and therefore has to do it. Getting this wrong does not fail — it produces a picture, in
+//: thoroughly wrong colours, which is exactly how it announced itself.
+inline uint16_t toStore(uint16_t rgb) { return __builtin_bswap16(rgb); }
+inline uint16_t fromStore(uint16_t stored) { return __builtin_bswap16(stored); }
+
 //: RGB565 channel arithmetic, unpacked once per pixel rather than per channel access.
 inline uint16_t blend565(uint16_t dst, uint16_t src, uint8_t alpha) {
     if (alpha == 0) return dst;
@@ -132,7 +142,7 @@ inline void drawBodyRegion(uint16_t* canvas, std::size_t skin_index, bool tinted
         for (int row = y0; row < y1; ++row) {
             const uint8_t* src = luma + row * body.width;
             uint16_t* dst = canvas + row * body.width;
-            for (int col = x0; col < x1; ++col) dst[col] = tint565(src[col], tint);
+            for (int col = x0; col < x1; ++col) dst[col] = toStore(tint565(src[col], tint));
         }
         return;
     }
@@ -141,7 +151,7 @@ inline void drawBodyRegion(uint16_t* canvas, std::size_t skin_index, bool tinted
     for (int row = y0; row < y1; ++row) {
         const uint16_t* src = pixels + row * body.width;
         uint16_t* dst = canvas + row * body.width;
-        for (int col = x0; col < x1; ++col) dst[col] = src[col];
+        for (int col = x0; col < x1; ++col) dst[col] = toStore(src[col]);
     }
 }
 
@@ -162,7 +172,7 @@ inline void drawMask(uint16_t* canvas, const assets::Entry& mask, int x, int y, 
             if (dx < 0 || dx >= roboface::kScreenWidth) continue;
             const uint32_t a = static_cast<uint32_t>(src[col]) * opacity / 255u;
             if (a == 0) continue;
-            dst[dx] = blend565(dst[dx], ink, static_cast<uint8_t>(a));
+            dst[dx] = toStore(blend565(fromStore(dst[dx]), ink, static_cast<uint8_t>(a)));
         }
     }
 }
@@ -183,7 +193,7 @@ inline void drawOverlay(uint16_t* canvas, const assets::Entry& entry, int x, int
             if (dx < 0 || dx >= roboface::kScreenWidth) continue;
             const std::size_t i = static_cast<std::size_t>(row) * entry.width + col;
             if (alpha[i] == 0) continue;
-            dst[dx] = blend565(dst[dx], colour[i], alpha[i]);
+            dst[dx] = toStore(blend565(fromStore(dst[dx]), colour[i], alpha[i]));
         }
     }
 }
