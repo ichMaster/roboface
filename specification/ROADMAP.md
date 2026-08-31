@@ -300,13 +300,17 @@ Add the four sprite skins — **ghost, flame, jellyfish, cloud** — over the sa
 
 ## v3 — Vision
 
-The camera opens, and with it the asynchronous emotional read of the person in front of the device. The version ends with the hardest audio work — the esp-sr front end that finally makes listening full-duplex. Depends on: v2.
+The camera opens. **Most of what it sees is understood on the server, locally, without a model call** — faces, where they are, and what the face is doing. Only the one question that needs language ("what do you see?") goes to Gemini. The version ends with the hardest audio work in the project: the esp-sr front end that finally makes listening full-duplex. Depends on: v2.
+
+**Why the split is by frequency rather than by capability.** A cloud call is 500–2000 ms; a head turns in 200. Tracking a face through a model call is not slow, it is impossible — and an emotional read that costs a paid call every few seconds is one nobody leaves switched on. Local vision is continuous, free and private; the LLM is occasional and rich. Each does what the other cannot.
+
+**The privacy story is stronger than v2's was, and for a structural reason.** Frames from the continuous channel **never leave the LAN** — they are processed on the server beside the device and discarded. Only the explicit "what do you see?" frame is sent to Google, on a person's direct request, once.
 
 ### v3.1 — Look and tell
 
 **Goal:** "what do you see?" is answered.
 
-Capture a JPEG from the GC0308 on demand, announce it with `image_in` and send it as a binary frame; the server attaches it to that turn's Gemini call as multimodal input and answers by voice through the normal pipeline.
+Capture a JPEG from the GC0308 on demand, announce it with `image_in` and send it as a binary frame; the server attaches it to that turn's Gemini call as multimodal input and answers by voice through the normal pipeline. **The one place the LLM is the right tool**: describing a scene in language is what it is for, and no local classifier substitutes — a list of labels is not a description.
 
 **Tasks:**
 - Firmware camera bring-up: init, capture, JPEG encode into PSRAM at a modest resolution, memory bounded.
@@ -319,38 +323,47 @@ Capture a JPEG from the GC0308 on demand, announce it with `image_in` and send i
 
 **Tests:** contract — the `image_in` frame and the binary JPEG rule; unit — size/dimension guards, the multimodal call shape against a mock; integration — `image_in → reply` end to end with a fixture image.
 
-### v3.2 — Presence
+### v3.2 — The vision seam: faces, presence and gaze
 
-**Goal:** the face wakes when someone sits down.
+**Goal:** the face looks at the person, and knows when one arrives.
 
-Cheap local motion/brightness detection on the camera, combined with the proximity sensor, wakes the face and lets the character greet someone arriving. No identity, no recognition — only "someone is there".
+A **fourth provider**, `VisionProvider`, alongside `LLMProvider`, `ASRProvider` and `TTSProvider` — with a mock, so the suite needs neither a camera nor a model. It joins the existing provider-seam category rather than adding a sixth seam: the five pinned seams are categories, and this is a new member of one of them. Its real implementation runs face detection on the server (MediaPipe on CPU, single-digit milliseconds on the N100 the server is) over a low-rate stream of frames the device sends while presence mode is on.
+
+**Face detection replaces the frame-difference presence detector** the previous plan called for. It is the same computation, strictly better evidence, and it removes a subsystem rather than adding one: "a face is present" is a stronger claim than "some pixels changed", and it comes with a position.
+
+**The position rides the seam that already exists.** `EmotionFrame.gaze` has carried the voice direction since v2.5 and its authority order is documented; a face is simply a better producer for it. No new level is needed — the round trip is a few milliseconds on a LAN, which is far inside the time a head takes to move.
 
 **Tasks:**
-- Low-cost on-device presence detection (frame difference / brightness change) with hysteresis and a cooldown.
-- Presence state feeds the face (wake, gaze toward the person) and is reported to the server; the **lens indicator is lit the whole time presence keeps the camera powered** (DEVICE_UI.md §Indicators) — presence is not an exemption from the privacy rule.
+- `VisionProvider` seam + mock; a real adapter behind it. The seam takes a JPEG and returns faces with positions and confidence — **no emotion here** (that is v3.3, and mixing them would make one hard to replace without the other).
+- Device: low-rate frame capture in presence mode. **The rate is the design decision**: continuous tracking does not need thirty frames a second, and the socket that would carry them is the one that blocked for 142 ms in v2.6.2 while a reply played. Start at 3–5 fps, interpolate the gaze between reads, and drop frames rather than queue them when the link is busy.
+- Presence from faces: arrival, departure, hysteresis and a cooldown, in pure logic against fixtures.
+- Gaze: the largest/nearest face's position becomes `EmotionFrame.gaze`; the existing authority order settles the rest.
 - Server-side greeting policy: at most one greeting per arrival, quiet-hours aware, never during a turn.
-- Config gate: presence mode is off by default and enabled explicitly.
+- Config gate: presence mode is off by default and enabled explicitly. The **lens indicator is lit the whole time presence keeps the camera powered** — presence is not an exemption from the privacy rule.
 
-**DoD:** sitting down in front of an idle device wakes the face and can produce a greeting; leaving and returning does not spam greetings; with presence off, the camera stays dark outside explicit turns.
+**DoD:** a person moving in front of the device is followed by its eyes within a moment; sitting down in front of an idle device wakes the face and can produce a greeting; leaving and returning does not spam greetings; with presence off the camera stays dark outside explicit turns; **no frame from this channel reaches any external service**, asserted in a test rather than promised.
 
-**Tests:** host — the detector's hysteresis/cooldown against frame fixtures; unit — the greeting policy under an injected clock; integration — presence events reaching the server produce at most one greeting.
+**Tests:** contract — the `VisionProvider` seam; host — presence hysteresis and cooldown against fixtures, gaze interpolation between reads under an injected clock; unit — the greeting policy; integration — a fixture face reaching the server moves `gaze` in the next frame, and the frame rate limiter drops rather than queues under a busy link.
 
-### v3.3 — The background emotion channel
+### v3.3 — What the face is doing, in the prompt
 
-**Goal:** the character notices how you feel — without ever slowing down the conversation.
+**Goal:** the character responds to how you look, without guessing at a category.
 
-A **separate channel and a separate Gemini call**, fully outside the turn pipeline. While presence mode is on, the device sends a small frame every few seconds; a background task asks for the person's emotion (enum + intensity) and puts the answer in two places: a **mood line** in the next turn's system prompt, and optionally an **immediate mirror** on the face.
+Every turn carries a short description of the person's expression into the system prompt. It is measured locally by the same `VisionProvider` and costs nothing: no background task, no separate model call, no expiry, no rule about not blocking a turn — the read is already there when the turn starts.
+
+**Facial muscle activity, not an emotion label.** MediaPipe's face landmarker outputs blendshape coefficients — `mouthSmile`, `browDown`, `eyeSquint`, `jawOpen` and forty-eight more. Those are measurements. A seven-class emotion classifier on top of them is a guess, and one built on a model of "basic emotions" that is scientifically contested and much less accurate in a real room than on a benchmark. So the seam reports **what the face is doing** — *"smiling, brows raised"* — and the LLM interprets it in the context of the conversation, which is the thing the LLM is actually good at.
+
+A character confidently mirroring a wrong read is worse than one that does not try, which is why this phase produces a hint rather than an instruction.
 
 **Tasks:**
-- Device: periodic small-frame capture in presence mode, rate-limited, dropped when the link is busy.
-- Server: a background task with its own concurrency limit and its own timeout, never awaited by a turn.
-- The read → a validated `{emotion, intensity}`; stale reads expire.
-- Injection: a one-line mood note in the next turn's prompt; optional mirroring via an out-of-turn `EmotionFrame`.
-- Hard rule enforced in code: a late or failed read is dropped — turn latency must be unchanged.
+- Extend `VisionProvider` with blendshape output; a threshold table turning coefficients into a small vocabulary of plain descriptions.
+- A one-line note in the next turn's system prompt, and only there. Absent when no face is present or confidence is low — **absence rather than a neutral default**, the distinction v2.5 established for gaze.
+- Optional mirroring on the face via an out-of-turn `EmotionFrame`, gated on confidence and off by default.
+- The vocabulary is a closed, tested table: a coefficient with no description is a silent gap.
 
-**DoD:** with presence on, the character's tone adapts to a visibly happy or sad person, and the face can mirror it without a word; measured turn latency with the channel on is indistinguishable from with it off; disabling the channel changes nothing else.
+**DoD:** with presence on, the character's tone adapts to a visibly happy or unhappy person; the prompt line is absent when nobody is in front of the camera; **turn latency is unchanged**, measured with the channel on and off; disabling the channel changes nothing else.
 
-**Tests:** unit — the background task never blocks a turn (a deliberately slow mock read leaves turn timing unchanged), read validation and expiry; integration — the mood line appears in the next prompt and only there; contract — the background read is not part of the turn's frame sequence.
+**Tests:** host — the coefficient-to-description table, total over its vocabulary and with its thresholds; unit — the prompt line present exactly when a confident read exists and absent otherwise; integration — the note appears in the next prompt and only there, and the turn's frame sequence is unchanged.
 
 ### v3.4 — AEC and barge-in
 

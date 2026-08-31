@@ -384,13 +384,38 @@ The hold is layered rather than split: a press is **PTT** from the first ~120 ms
 
 ## Vision
 
-Three tiers, all v3, and all subject to the privacy rule below.
+**Split by frequency, not by capability.** A cloud call is 500–2000 ms; a head turns in 200. Tracking
+a face through a model call is not slow, it is impossible — and an emotional read costing a paid call
+every few seconds is one nobody leaves switched on. So the continuous half runs on the server,
+locally, and the LLM answers the one question that needs language.
 
-1. **Look and tell (v3.1).** On demand ("what do you see?") the device captures a JPEG, announces it with `image_in` and sends it; the server attaches it to that turn's Gemini call as multimodal input and answers by voice.
-2. **Presence (v3.2).** Cheap local motion/brightness detection plus the proximity sensor wakes the face and greets someone who sits down. No identity, no recognition.
-3. **Background emotion read (v3.3).** A **separate channel and a separate Gemini call**, fully outside the turn pipeline: while presence mode is on, the device sends a small frame every few seconds; a background task asks "what emotion is the person showing?" (enum + intensity) and puts the answer in two places — a **mood line** in the next turn's system prompt, and optionally an **immediate mirror** on the face via an `EmotionFrame`. **It never blocks or delays a turn**: if the background call is late, the turn goes without it. Wake-on-face falls out of the same channel.
+1. **Look and tell (v3.1) — the LLM's half.** On demand ("what do you see?") the device captures a
+   JPEG, announces it with `image_in` and sends it; the server attaches it to that turn's Gemini call
+   as multimodal input and answers by voice. Describing a scene in language is what a language model
+   is for, and a list of labels from a local classifier is not a description.
+2. **Faces, presence and gaze (v3.2) — local.** A fourth provider, `VisionProvider`, over a
+   low-rate frame stream. Face detection *is* the presence detector: "a face is present" is a
+   stronger claim than "some pixels changed" and it arrives with a position. That position rides
+   `EmotionFrame.gaze`, which has existed since v2.2 and had the voice direction as its first real
+   producer in v2.5 — a face is simply a better one, and the authority order needs no new level.
+3. **Expression in the prompt (v3.3) — local.** The same seam reports **what the face is doing**
+   rather than which emotion it is: `mouthSmile`, `browDown`, `eyeSquint` are measurements, and a
+   seven-class emotion label on top of them is a guess resting on a contested model of "basic
+   emotions" that performs far worse in a room than on a benchmark. The turn's prompt gets *"smiling,
+   brows raised"* and the LLM interprets it in context, which is what it is good at. A character
+   confidently mirroring a wrong read is worse than one that does not try.
 
-**Privacy.** Frames are processed in memory and never written to disk. The camera is live only during an explicit turn or in presence mode, and presence mode is opt-in in the role/config.
+**What this deletes.** The earlier design put the emotional read on a background Gemini call, with a
+concurrency limit, a timeout, an expiry and a rule in code that a late read must never delay a turn.
+Every part of that machinery existed to work around cloud latency. A local read of twenty
+milliseconds is simply there when the turn starts.
+
+**Privacy, and it is now structural rather than procedural.** Frames from the continuous channel
+**never leave the LAN** — they are processed on the server beside the device and discarded. Only the
+explicit "what do you see?" frame is sent to Google, on a person's direct request, once. Nothing is
+written to disk in either case; the camera is live only during an explicit turn or in presence mode;
+presence mode is opt-in; and the **lens indicator is lit whenever the camera is powered**, with no
+fade timer and no way to hide it.
 
 ## The mind (v4)
 
