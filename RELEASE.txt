@@ -1,3 +1,36 @@
+Version 2.6.2 (2026-09-01)
+---------------------------
+- The five faces are drawn art rather than circles and rectangles. 29 images
+  composite from flash: a body, then the emotion's eyes and mouth as alpha
+  masks tinted in the skin's ink, then that skin's overlay. Decoding happens
+  on the workstation, so the firmware links no PNG decoder, spends nothing at
+  boot, and copies nothing to RAM -- flash is memory-mapped.
+- The sprite is 16-bit rather than 8. Eight was right when a face was three
+  colours; drawn art cannot live in a palette, because an index cannot be
+  blended and every feature is a mask mixed into what is under it.
+- **The radio no longer sleeps between beacons, and this was the cause of
+  replies breaking up.** Measured from the server: 0% packet loss, average
+  round trip 149 ms with a minimum of 2 on a quiet LAN -- everything late,
+  nothing lost, which is the signature of a sleeping station and of nothing
+  else. After: average 5.9 ms, and the audio gap during a reply went from
+  1386 ms to a steady 32.
+- The speaker is fed inside the WebSocket receive as well as from the loop.
+  A single receive blocked for 142 ms against 64 ms of buffering, and the
+  device is not running during that window.
+- While a reply plays only the mouth band is sent to the panel, not the whole
+  153 KB sprite.
+- Face switching gets a button in the bottom-left corner, mirroring the
+  microphone. The picker it opens is driven by taps -- arrows at the edges,
+  the face to confirm, the top band to cancel -- rather than by sliding along
+  five-pixel dots, which was stiff on the board.
+- The carousel could never open at all: it was told "a listening window is
+  open" where it asked "was speech detected", and the hold itself opens the
+  window. And a muted microphone recorded anyway, while the mute glyph stayed
+  lit -- chrome that lies is the worst thing chrome can do.
+- The status line carries loop and audio-gap peaks per section. Several
+  evenings in this project have gone on choosing wrongly between five
+  candidates for a slow loop.
+
 Version 2.6.1 (2026-08-30)
 ---------------------------
 - config_updated has a sender. The frame was defined, encoded, decoded,

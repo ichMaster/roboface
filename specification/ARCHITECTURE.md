@@ -328,15 +328,31 @@ anchors, colours, a body and an element — derived from `face-prototype.html`'s
 rather than invented beside them. The procedural face is a manifest like the four spirits, which is
 what makes *"adding a skin requires no renderer code change"* testable rather than aspirational.
 
-**Packs are compiled in, not files — and that is a deliberate narrowing of §v2.6, stated rather
-than quietly done.** The roadmap asks for *"one directory per skin under `assets/`"* and *"load a
-pack into PSRAM at `begin()`"*. What v2.6 ships is the whole of the validating load path —
-`loadSkin` takes a candidate manifest, validates it, and substitutes the procedural face with a
-named reason — and five manifests that reach it as constants rather than as parsed files. Adding a
-filesystem would add a failure surface (a card that is absent, a partition that is unformatted, a
-file half-written) for no difference the person in front of the device could see, and every one of
-those failures resolves to the same fallback this path already implements and tests. When a later
-phase wants user-supplied skins, the seam it needs is the function that is already here.
+**Packs are linked in, not files — and that is a deliberate narrowing of §v2.6, stated rather than
+quietly done.** The roadmap asks for *"one directory per skin under `assets/`"* and *"load a pack
+into PSRAM at `begin()`"*. What ships is the whole of the validating load path — `loadSkin` takes a
+candidate manifest, validates it, and substitutes the fallback face with a named reason — plus the
+art itself as one binary linked by `.incbin`. A filesystem would add a failure surface (an absent
+card, an unformatted partition, a half-written file) for no difference the person in front of the
+device could see, and every one of those failures resolves to the same fallback this path already
+implements and tests. When a later phase wants user-supplied skins, the seam it needs is here.
+
+**Nothing is loaded into PSRAM either**, and that is a second, smaller departure from §v2.6 worth
+naming. Flash is memory-mapped on the ESP32-S3, so a body is read where it lies: 876 KB of art costs
+876 KB of flash and no RAM at all, against a sprite that already holds 150 KB of PSRAM. Decoding
+happens on the workstation (`tools/skin_assets.py`), so the firmware links no PNG decoder and spends
+nothing at boot.
+
+**The art is three encodings, chosen by the question the renderer asks of the pixels.** An opaque
+body is RGB565 and is copied. A tinted body — flame, jelly, cloud, whose element *is* their colour —
+is 8-bit luminance multiplied by the emotion's tint. A feature is 8-bit alpha, because only the
+alpha carries shape and the ink belongs to the skin: that is what lets one set of nineteen images
+serve all five faces, and it is `face-prototype.html`'s own arrangement made data.
+
+That last point is also why **the sprite is 16-bit rather than 8**. Eight was chosen for the frame
+budget and measured, back when a face was a background, a glow and one ink. Drawn art cannot live in
+a palette — not because 256 colours is too few, but because **an index cannot be blended**, and every
+feature is a mask mixed into what is under it.
 
 **A face is never absent**, and that is the definition of the feature rather than an error path. A
 device that cannot draw a face has no way to say so — not that a pack is broken, not that the WiFi
