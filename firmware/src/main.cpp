@@ -61,6 +61,26 @@ int touch_max_y = 0;
 int tap_x = 0;
 int tap_y = 0;
 
+//: The longest a loop iteration has ever gone without draining the speaker, and the longest one
+//: overall. Peaks since the last status line, because a mean hides exactly the iteration that
+//: caused the gap someone heard.
+uint32_t last_audio_tick_ms = 0;
+uint32_t worst_audio_gap_ms = 0;
+uint32_t worst_loop_ms = 0;
+uint32_t loop_started_ms = 0;
+
+//: Where the loop's worst iteration spent its time. Peaks per section, reset with the status line.
+//: **Sections rather than a total**, because a total says a loop took 170 ms and leaves five
+//: candidates -- and this project has spent whole evenings choosing wrongly between five candidates.
+uint32_t sect_ws = 0, sect_render = 0, sect_touch = 0, sect_audio = 0, sect_push = 0, sect_sens = 0;
+#define RF_TIME(acc, expr)                              \
+    do {                                                \
+        const uint32_t _t0 = millis();                  \
+        expr;                                           \
+        const uint32_t _d = millis() - _t0;             \
+        if (_d > (acc)) (acc) = _d;                     \
+    } while (0)
+
 //: The skin carousel, and the confirmation that follows a change. v2.6.
 roboface::Carousel carousel;
 uint32_t toast_until_ms = 0;
@@ -176,6 +196,38 @@ bool was_pressed = false;
 //: and every caller goes through it -- the carousel, `/skin`, `config_updated` and the abandon
 //: path -- so none of them can grow its own idea of what changing a skin involves.
 void wearSkin(std::size_t index, uint32_t now_ms, bool announce);
+
+//: Drain the speaker. **Called several times per loop iteration, not once** -- the same treatment
+//: `serviceTouch` needed, and for a stricter reason.
+//:
+//: The speaker holds two 32 ms chunks: **64 ms of buffering, and no more.** Measured on the board,
+//: one iteration reaches 136 ms while a reply is playing -- a 32 ms sprite push every time, plus a
+//: WebSocket receive that spikes to 56 ms as TTS arrives. So the speaker ran dry for about seventy
+//: milliseconds at a stretch, which is exactly what a person hears as a reply breaking up.
+//:
+//: The loop has one job that cannot wait and several that can. Nothing here is made faster; the
+//: one that cannot wait is simply asked more often, around each of the ones that can.
+//:
+//: The guard is not decoration: `audio.tick` runs the capture observer, which sends a frame, and a
+//: send that reached back into the audio path would re-enter a drain already in progress.
+bool servicing_audio = false;
+void serviceAudio() {
+    if (servicing_audio) return;
+    servicing_audio = true;
+    const uint32_t now = millis();
+    // **The gap is measured here and nowhere else.** Measuring it at the loop's own call sites was
+    // wrong the moment drains started happening inside the WebSocket receive: it reported 93 ms
+    // while the speaker was in fact being fed several times within that window. A measurement that
+    // cannot see the fix is a measurement that will argue against it.
+    if (last_audio_tick_ms != 0) {
+        const uint32_t gap = now - last_audio_tick_ms;
+        if (gap > worst_audio_gap_ms) worst_audio_gap_ms = gap;
+    }
+    last_audio_tick_ms = now;
+    audio.tick(now);
+    servicing_audio = false;
+}
+
 
 //: The last few press coordinates, for `/touch`. Small and lossy on purpose: the question it
 //: answers is "where does the panel think my finger landed", and eight samples answer it.
@@ -1516,6 +1568,14 @@ void setup() {
     ws.onBinary([](const uint8_t* payload, std::size_t length) {
         audio.startSpeaking();
         audio.write(payload, length);
+        // **Drain here, inside the receive.** Measured: one `ws.loop()` blocks for up to 142 ms
+        // while a burst of TTS chunks arrives, and the speaker holds 64 ms. Servicing it from the
+        // main loop cannot help -- by the time control returns, the gap has already been heard.
+        //
+        // Safe against the re-entrancy this file warns about elsewhere: capture is off while the
+        // speaker owns the shared I2S bus, so the observer that would send a frame cannot fire
+        // here, and `serviceAudio`'s guard covers the case anyway.
+        serviceAudio();
     });
 }
 
@@ -1674,6 +1734,11 @@ void serviceTouch() {
 void loop() {
     M5.update();
     const uint32_t now_ms = millis();
+    if (loop_started_ms != 0) {
+        const uint32_t took = now_ms - loop_started_ms;
+        if (took > worst_loop_ms) worst_loop_ms = took;
+    }
+    loop_started_ms = now_ms;
     serviceTouch();
 
     if (net.loop(now_ms)) {
@@ -1691,9 +1756,10 @@ void loop() {
 
     // Throttle the socket rather than throw audio away. The speaker paces the backlog and the
     // backlog paces the socket; TCP holds the rest on the server, where it costs nothing.
-    if (!audio.isBackpressured()) ws.loop(now_ms);
-    serviceTouch();
-    renderer.tick(now_ms);
+    if (!audio.isBackpressured()) RF_TIME(sect_ws, ws.loop(now_ms));
+    RF_TIME(sect_audio, serviceAudio());
+    RF_TIME(sect_touch, serviceTouch());
+    RF_TIME(sect_render, renderer.tick(now_ms));
     stepSelfTest(now_ms);
 
     while (Serial.available() > 0) {
@@ -1736,13 +1802,19 @@ void loop() {
 
     // Before the screen: audio starving is audible and a late repaint is not.
     now_ms_for_log = now_ms;
-    audio.tick(now_ms);
-    serviceTouch();
+    // **The number that decides whether audio stutters**, and the one this project has been
+    // guessing at. Playback is drained here; anything that delays this loop past the speaker's
+    // buffering is a gap the person hears. Measured rather than inferred from `fps`, which counts
+    // pushes and says nothing about the worst iteration.
+    RF_TIME(sect_audio, serviceAudio());
+    RF_TIME(sect_touch, serviceTouch());
 
     // The mouth's signal, from the speaker rather than the microphone. Fed every loop and not only
     // while replying: the renderer decides whether to use it, and a level that stopped arriving
     // would leave the mouth frozen at whatever it last heard.
     // The two sensors, each at its own rate and each deciding nothing here.
+    serviceAudio();
+    const uint32_t _sens0 = millis();
     if (const roboface::Motion motion = imu.tick(now_ms); motion != roboface::Motion::kNone) {
         onMotion(motion, now_ms);
     }
@@ -1750,6 +1822,7 @@ void loop() {
         presence != roboface::Presence::kNone) {
         onPresence(presence, now_ms);
     }
+    if (const uint32_t _d = millis() - _sens0; _d > sect_sens) sect_sens = _d;
 
     renderer.setAudioLevel(audio.outputLevel());
     // The **fact**, next to the server's permission. `v2.1.2` is the reason both are needed: the
@@ -1849,8 +1922,12 @@ void loop() {
                      roboface::kSkinCount);
         // Either side of the 153 KB push -- the single most expensive thing the loop does, and
         // therefore the widest gap a finger can fall into.
+        // Either side of the push -- the single most expensive thing the loop does, and therefore
+        // the widest gap the speaker can fall into.
+        serviceAudio();
         serviceTouch();
-        renderer.push();
+        RF_TIME(sect_push, renderer.push());
+        serviceAudio();
         serviceTouch();
         last_push_ms = now_ms;
         needs_push = false;
@@ -1862,7 +1939,8 @@ void loop() {
         Serial.printf(
             "[status] %s · link %s %s · ws %s · batt %d%%%s · fps=%lu mic=%lu cap=%lu · mon=%d "
             "vad s=%lu e=%lu peak=%d%% zc=%u · audio %s buf=%u q=%u ref=%u drop=%u · "
-            "mouth=%lu lvl=%d..%d%% · up %lus\n",
+            "mouth=%lu lvl=%d..%d%% · loop %lums (ws %lu rend %lu touch %lu audio %lu push %lu "
+            "sens %lu) gap %lums · up %lus\n",
             roboface::toString(state), net.isUp() ? "up" : "down", net.ipAddress(),
             ws.isConnected() ? "connected" : "disconnected", battery_percent,
             battery_charging ? " (charging)" : "",
@@ -1899,7 +1977,15 @@ void loop() {
             static_cast<unsigned long>(mouth_stats.changes),
             static_cast<int>(mouth_stats.level_min * 100.0f),
             static_cast<int>(mouth_stats.level_max * 100.0f),
+            static_cast<unsigned long>(worst_loop_ms), static_cast<unsigned long>(sect_ws),
+            static_cast<unsigned long>(sect_render), static_cast<unsigned long>(sect_touch),
+            static_cast<unsigned long>(sect_audio), static_cast<unsigned long>(sect_push),
+            static_cast<unsigned long>(sect_sens),
+            static_cast<unsigned long>(worst_audio_gap_ms),
             static_cast<unsigned long>(now_ms / 1000));
+        // Peaks, reset each line: a mean would hide exactly the iteration that caused the gap.
+        worst_loop_ms = worst_audio_gap_ms = 0;
+        sect_ws = sect_render = sect_touch = sect_audio = sect_push = sect_sens = 0;
         peak_recent = 0.0f;
         crossings_recent = 0;
         frames_at_status = renderer.framesPushed();
