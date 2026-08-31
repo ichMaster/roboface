@@ -489,6 +489,24 @@ void onCapturedFrame(const int16_t* samples, std::size_t count, uint32_t frame_m
 // would rightly call it a protocol violation.
 bool beginListening() {
     if (audio.isListening()) return true;
+    // **A muted microphone is muted, including for push-to-talk.**
+    //
+    // It was not, and the contradiction was visible on the screen: the mute glyph stayed amber and
+    // slashed while a hold quietly opened a window and the level meter ran underneath it. This
+    // project's strongest rule about chrome is that it states facts; an indicator saying "off"
+    // over a running microphone is the worst thing chrome can do.
+    //
+    // The reading that made the old behaviour tempting is that a deliberate hold is an explicit
+    // request and should override a standing setting -- a radio's push-to-talk over a muted
+    // channel. It is a fair reading and it loses to the indicator: the person who muted the
+    // microphone is precisely the person who will not be watching for a meter to appear.
+    //
+    // What a hold does while muted is now unambiguous: after 1.2 s it opens the carousel. Which
+    // also makes the carousel discoverable, since it is then the only thing a hold does at all.
+    if (!active_listening) {
+        Serial.println("[listen] мікрофон вимкнено — не слухаю (кнопка в лівому кутку)");
+        return false;
+    }
     if (!ws.isConnected()) {
         Serial.println("[listen] no connection — not listening");
         return false;
@@ -1533,7 +1551,16 @@ void serviceTouch() {
     {
         const roboface::TouchSample sample{pressed, detail.x, detail.y, now_ms,
                                            M5.Touch.getCount()};
-        const roboface::TouchResult touched = gestures.feed(sample, audio.isListening());
+        // **`inUtterance()`, not `isListening()`.** The parameter means *"speech was detected"*,
+        // and it was being given *"a listening window is open"* -- which the hold itself opened, at
+        // its first millisecond. So the flag was true for the entire duration of every hold and the
+        // carousel could never convert: the person held the face, the level meter appeared, and the
+        // dot strip never came.
+        //
+        // Two things that coincide almost always are the easiest pair in this project to confuse.
+        // They differ exactly here, in the one case the carousel exists for: a window open with
+        // nobody talking into it.
+        const roboface::TouchResult touched = gestures.feed(sample, endpointer.inUtterance());
         if (touched.gesture != roboface::TouchGesture::kNone) {
             onTouchGesture(touched, now_ms);
         }

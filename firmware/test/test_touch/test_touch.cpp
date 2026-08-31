@@ -60,6 +60,36 @@ void test_forgetting_a_press_leaves_the_next_one_clean() {
     TEST_ASSERT_EQUAL_UINT8(1, tap.count);
 }
 
+void test_a_silent_hold_becomes_the_carousel_and_a_spoken_one_does_not() {
+    // **The bug the board found, in the one shape a host test can express.**
+    //
+    // `speech_detected` means *"speech was detected"*. It was being given *"a listening window is
+    // open"* -- which the hold itself opens, at its first millisecond -- so the flag was true for
+    // the whole of every hold and `kHeldSilent` could never fire. The person held the face, the
+    // level meter appeared in the band, and the dot strip never came.
+    //
+    // The two signals coincide almost always. They differ in exactly the case the carousel exists
+    // for: a window open with nobody talking into it.
+    roboface::TouchGestures silent;
+    silent.feed({true, kCheekX, kCheekY, 1000});
+    roboface::TouchResult converted;
+    for (uint32_t t = 1050; t <= 2600; t += 50) {
+        const auto out = silent.feed({true, kCheekX, kCheekY, t}, /*speech_detected=*/false);
+        if (out.gesture != TouchGesture::kNone) converted = out;
+    }
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kHeldSilent),
+                          static_cast<int>(converted.gesture));
+
+    roboface::TouchGestures spoken;
+    spoken.feed({true, kCheekX, kCheekY, 1000});
+    for (uint32_t t = 1050; t <= 2600; t += 50) {
+        // Someone talking through the hold: it stays push-to-talk, permanently.
+        TEST_ASSERT_EQUAL_INT(
+            static_cast<int>(TouchGesture::kNone),
+            static_cast<int>(spoken.feed({true, kCheekX, kCheekY, t}, /*speech_detected=*/true).gesture));
+    }
+}
+
 void test_forget_is_not_reset() {
     // Two methods because they answer two questions, and v2.4 narrowed `reset()` on purpose. A
     // press that spans a state change must survive; a press another consumer has taken must not.
@@ -571,6 +601,7 @@ int main(int, char**) {
     RUN_TEST(test_outside_the_face_is_not_affection);
     RUN_TEST(test_a_press_survives_a_state_change_under_the_finger);
     RUN_TEST(test_forgetting_a_press_leaves_the_next_one_clean);
+    RUN_TEST(test_a_silent_hold_becomes_the_carousel_and_a_spoken_one_does_not);
     RUN_TEST(test_forget_is_not_reset);
     RUN_TEST(test_a_state_change_still_drops_the_tap_run);
     RUN_TEST(test_the_button_survives_it_too);
