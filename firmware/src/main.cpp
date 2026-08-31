@@ -48,6 +48,19 @@ app::ChromeView chrome_view;
 app::ConsoleView console_view;
 app::AudioIo audio;
 
+//: What the hardware offers besides the glass, counted so a question about it can be answered by
+//: the board rather than by a datasheet.
+uint32_t btn_pwr_count = 0;
+uint32_t btn_a_count = 0;
+uint32_t btn_b_count = 0;
+uint32_t btn_c_count = 0;
+int touch_max_y = 0;
+
+//: Where the current press began. A tap is decided on release, and the panel reports nothing
+//: useful once the finger is gone.
+int tap_x = 0;
+int tap_y = 0;
+
 //: The skin carousel, and the confirmation that follows a change. v2.6.
 roboface::Carousel carousel;
 uint32_t toast_until_ms = 0;
@@ -640,6 +653,19 @@ void onTouchGesture(const roboface::TouchResult& touched, uint32_t now_ms) {
         audio.click();
         toggleActiveListening();
         return;  // control is local UI and is deliberately not reported (DEVICE_UI §Input)
+    }
+
+    // **The picker's door** (v2.6.2). The hold that opens it still works and is still in DEVICE_UI;
+    // this exists because a gesture you have to wait out, that costs a listening window, is not
+    // something anyone should need to know about to change a face.
+    if (touched.gesture == roboface::TouchGesture::kSkinPicker) {
+        if (carousel.open(roboface::skinIndexFor(renderer.skin().name), roboface::kSkinCount,
+                          now_ms) == roboface::CarouselOutcome::kOpened) {
+            carousel.released();  // this tap is over; the next one drives the picker
+            audio.click();
+            needs_push = true;
+        }
+        return;
     }
 
     // **The carousel's gesture finally has a consumer** (v2.6). `kHeldSilent` has been produced by
@@ -1298,6 +1324,22 @@ void handleLine(const roboface::LineReader::Line& line, uint32_t now_ms) {
         return;
     }
 
+    if (line.text == "/buttons") {
+        // What this board actually has, measured rather than looked up. The CoreS3 dropped the
+        // Core's three physical buttons; whether M5Unified still reports anything for them, and
+        // whether the panel ever reports a touch below the display, are questions only the board
+        // can answer.
+        Serial.printf("\n[buttons] PWR натиснень: %u\n", static_cast<unsigned>(btn_pwr_count));
+        Serial.printf("[buttons] A/B/C натиснень: %u / %u / %u\n",
+                      static_cast<unsigned>(btn_a_count), static_cast<unsigned>(btn_b_count),
+                      static_cast<unsigned>(btn_c_count));
+        Serial.printf("[buttons] найбільший y дотику: %d (екран %d)\n", touch_max_y,
+                      roboface::kScreenHeight);
+        btn_pwr_count = btn_a_count = btn_b_count = btn_c_count = 0;
+        touch_max_y = 0;
+        return;
+    }
+
     if (line.text == "/touch") {
         Serial.printf("\n[touch] button zone x<%d y<%d · %d recorded\n",
                       roboface::kMicButtonHitWidth, roboface::kMicButtonHitHeight,
@@ -1499,6 +1541,12 @@ void serviceTouch() {
     const auto detail = M5.Touch.getDetail();
     const bool pressed = detail.isPressed();
 
+    if (M5.BtnPWR.wasPressed()) ++btn_pwr_count;
+    if (M5.BtnA.wasPressed()) ++btn_a_count;
+    if (M5.BtnB.wasPressed()) ++btn_b_count;
+    if (M5.BtnC.wasPressed()) ++btn_c_count;
+    if (pressed && detail.y > touch_max_y) touch_max_y = detail.y;
+
     // **A press that began on the microphone button is not push-to-talk.**
     //
     // `PushToTalk` is fed the raw panel level and has no idea *where* the finger is, so without
@@ -1512,21 +1560,50 @@ void serviceTouch() {
     // **While the carousel is open the finger belongs to it**, and to nothing else. Letting the
     // gesture classifier see these samples too would tickle the face on every release and report a
     // tap to the server -- the same leak the mute gesture kept springing, in a new place.
+    // **While the picker is open the finger belongs to it, and to nothing else.** Letting the
+    // gesture classifier see these samples too would tickle the face from behind its own arrows and
+    // report a tap to the server -- the leak the mute gesture kept springing, in a new place.
+    //
+    // Taps rather than a slide, since v2.6.2: the strip's dots are 5 px on a 320 px panel, the
+    // finger covers what it is selecting, and the whole thing had to be done without letting go.
+    // On the board that was stiff. Now the finger is free the moment the strip appears.
     if (carousel.isOpen()) {
+        const bool was_down = was_pressed;
         was_pressed = pressed;
-        if (pressed) {
-            if (carousel.moved(detail.x, detail.y) == roboface::CarouselOutcome::kMoved) {
-                wearSkin(carousel.selected(), now_ms, false);  // preview: no toast yet
+
+        if (!pressed) {
+            carousel.released();
+            if (was_down) {
+                // A tap completes on release, at the coordinates it began at -- `detail` reports
+                // nothing useful once the finger is gone.
+                const roboface::CarouselOutcome outcome =
+                    carousel.tapped(tap_x, tap_y, now_ms);
+                switch (outcome) {
+                    case roboface::CarouselOutcome::kMoved:
+                        wearSkin(carousel.selected(), now_ms, false);  // preview: no toast yet
+                        break;
+                    case roboface::CarouselOutcome::kConfirmed:
+                        wearSkin(carousel.selected(), now_ms, true);
+                        audio.click();
+                        break;
+                    case roboface::CarouselOutcome::kCancelled:
+                        wearSkin(carousel.selected(), now_ms, false);
+                        break;
+                    default:
+                        break;
+                }
+                needs_push = true;
             }
-            return;
+        } else if (!was_down) {
+            tap_x = detail.x;
+            tap_y = detail.y;
         }
-        const roboface::CarouselOutcome outcome = carousel.released();
-        // Confirmed *or* cancelled, the face is set from `selected()` -- a cancel has already put
-        // the original back there. One path, so a cancel cannot forget to restore.
-        wearSkin(carousel.selected(), now_ms,
-                 outcome == roboface::CarouselOutcome::kConfirmed);
-        if (outcome == roboface::CarouselOutcome::kConfirmed) audio.click();
-        needs_push = true;
+
+        // An untouched picker gives up rather than leaving the face buried under arrows.
+        if (carousel.tick(now_ms) == roboface::CarouselOutcome::kCancelled) {
+            wearSkin(carousel.selected(), now_ms, false);
+            needs_push = true;
+        }
         return;
     }
 

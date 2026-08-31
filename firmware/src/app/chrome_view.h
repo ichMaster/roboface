@@ -39,6 +39,8 @@ class ChromeView {
     void drawFaultLine(M5Canvas& canvas, roboface::ErrorCode code);
     void drawLevelMeter(M5Canvas& canvas, float level);
     void drawCarousel(M5Canvas& canvas, std::size_t selected, std::size_t skins);
+    void drawSkinButton(M5Canvas& canvas);
+    void drawPickerControls(M5Canvas& canvas);
     void drawToast(M5Canvas& canvas, const char* text);
 };
 

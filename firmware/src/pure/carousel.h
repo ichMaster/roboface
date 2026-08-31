@@ -1,18 +1,31 @@
-// Choosing a face with one finger.
+// Choosing a face.
 //
 // DEVICE_UI §Input: *"a hold is PTT from the first millisecond — that is the common case and it must
 // not wait. Only a hold that passes 1.2 s with no speech detected converts."* `pure/touch.h` has
-// produced `kHeldSilent` since v2.4 and nothing consumed it; this is its consumer, and writing it
-// is also the test of whether that gesture should exist at all.
+// produced `kHeldSilent` since v2.4; this is its consumer.
 //
-// **The gesture's cost is what shapes this file.** Opening the carousel means a listening window was
-// opened and then taken away — the person held the screen, the microphone came on, and 1.2 s later
-// the device decided they meant something else. So every rule here leans toward *not* stealing the
-// gesture, and toward making a mistaken open cheap to escape:
+// **It was slide-to-choose, and that was wrong on the hardware.** The first version followed the
+// obvious reading of "carousel": hold, keep the finger down, slide along a strip of dots, release
+// on one. It works in a description and badly in a hand — the dots are 5 px on a 320 px panel, the
+// finger covers the thing it is selecting, and the whole gesture has to be performed without
+// letting go. Tried on the board, it was called *"туго"*: stiff.
 //
-//   * speech at any point during the hold keeps it a PTT hold, permanently — `touch.h`'s rule
-//   * releasing outside the strip cancels rather than choosing the nearest
-//   * cancelling restores the face that was worn, not the one under the finger when it opened
+// So the carousel is a **modal picker driven by taps**, and the finger is free the moment the strip
+// appears:
+//
+//     ┌──────────────────────────────────┐
+//     │  ✕                               │   the top band cancels
+//     ├────────┬───────────────┬─────────┤
+//     │        │               │         │
+//     │   ◀    │   the face,   │    ▶    │   tap an arrow to step
+//     │        │   previewed   │         │   tap the face to accept
+//     │        │               │         │
+//     ├────────┴───────────────┴─────────┤
+//     │        ●  ○  ○  ○  ○             │   tap a dot to jump straight to it
+//     └──────────────────────────────────┘
+//
+// Every target is at least 76 px wide. The dots stay, because a strip of five with one lit is the
+// only thing on the screen that says *where you are* — but nothing requires you to hit one any more.
 //
 // Pure: header-only, `namespace roboface`, no clock of its own -- time arrives as a parameter.
 
@@ -26,106 +39,159 @@
 namespace roboface {
 
 //: How long the confirmation toast stands after a skin changes. DEVICE_UI calls it a *whisper*
-//: toast: long enough to read a five-letter word, short enough that it is gone before it is
-//: annoying. It fades by the same ~3 s settle rule the rest of chrome uses.
+//: toast: long enough to read a five-letter word, short enough to be gone before it is annoying.
 inline constexpr uint32_t kToastMs = 2200;
 
-//: The dot strip's geometry, in the bottom band. Derived from `layout.h` rather than picked, for
-//: the reason that header exists: the rule "chrome never blocks the face" is arithmetic, and it can
-//: only be proven on a laptop if the numbers are here.
+//: How long an untouched carousel stands before it gives up.
+//:
+//: **A picker that stays open forever is a device that has stopped being a companion.** The gesture
+//: that opens it can be performed by accident — a hand resting on the glass for a moment while the
+//: room is quiet — and the face is hidden behind arrows until someone deals with it. Twenty seconds
+//: is far longer than choosing takes and far shorter than a person's patience with a device that
+//: appears to have frozen.
+inline constexpr uint32_t kCarouselIdleMs = 20000;
+
+//: The dot strip's geometry, in the bottom band.
 inline constexpr int kCarouselDotSpacing = 34;
 inline constexpr int kCarouselDotRadius = 5;
 inline constexpr int kCarouselSelectedRadius = 8;
-
-//: Where the strip sits vertically: the middle of the bottom band.
 inline constexpr int kCarouselCentreY = kFaceBottom + kBandHeight / 2;
 
-//: How far outside the strip a finger may stray before releasing counts as a cancel. Generous,
-//: because the alternative -- snapping to the nearest dot -- means a person who has changed their
-//: mind cannot say so, and the gesture already cost them a listening window.
-inline constexpr int kCarouselCancelMarginPx = 40;
+//: The arrows' columns, inside the face area. 76 px each -- three fingertips wide, because this
+//: replaced a 5 px target and halving the problem would not have been worth the change.
+inline constexpr int kCarouselArrowWidth = 76;
+inline constexpr int kCarouselPrevRight = kFaceLeft + kCarouselArrowWidth;   // 104
+inline constexpr int kCarouselNextLeft = kFaceRight - kCarouselArrowWidth;   // 216
 
-//: Which dot a coordinate is over, or `count` when it is outside the strip.
-//:
-//: The strip is centred on the screen and sized by however many skins there are: `kSkinCount` is
-//: not baked in here, so a sixth face widens the strip rather than needing a new number.
+//: What a tap on an open carousel means.
+enum class CarouselZone : uint8_t {
+    kNone,
+    kPrev,     // ◀ the left column of the face area
+    kNext,     // ▶ the right column
+    kConfirm,  // the previewed face itself: "yes, this one"
+    kCancel,   // the top band -- big, and away from everything else
+    kDot,      // a dot in the strip: jump straight to that face
+};
+
+//: Where a dot is drawn. The drawing code asks rather than computing, so the hit test and the
+//: pixels cannot drift -- the same rule `touch.h` follows against `layout.h`.
+inline constexpr int carouselDotX(std::size_t index, std::size_t count) {
+    const int span = static_cast<int>(count - 1) * kCarouselDotSpacing;
+    return kScreenWidth / 2 - span / 2 + static_cast<int>(index) * kCarouselDotSpacing;
+}
+
+//: Which dot a coordinate is nearest, or `count` when it is not in the strip at all.
 inline constexpr std::size_t carouselDotAt(int x, int y, std::size_t count) {
-    if (count == 0) return 0;
+    if (count == 0 || y < kFaceBottom) return count;
 
     const int span = static_cast<int>(count - 1) * kCarouselDotSpacing;
     const int first_x = kScreenWidth / 2 - span / 2;
-
-    if (y < kFaceBottom - kCarouselCancelMarginPx) return count;
-    const int left = first_x - kCarouselDotSpacing / 2 - kCarouselCancelMarginPx;
-    const int right = first_x + span + kCarouselDotSpacing / 2 + kCarouselCancelMarginPx;
+    const int left = first_x - kCarouselDotSpacing / 2;
+    const int right = first_x + span + kCarouselDotSpacing / 2;
     if (x < left || x > right) return count;
 
-    // Nearest dot, by rounding rather than by a loop: the strip is evenly spaced, so this is the
-    // same answer with none of the ways a loop can be off by one at the ends.
     const int offset = x - first_x + kCarouselDotSpacing / 2;
     if (offset < 0) return 0;
     const auto index = static_cast<std::size_t>(offset / kCarouselDotSpacing);
     return index >= count ? count - 1 : index;
 }
 
-//: Where a dot is drawn. The drawing code asks rather than computing, so the hit test and the
-//: pixels cannot drift -- the same reason `touch.h` derives its zones from `layout.h`.
-inline constexpr int carouselDotX(std::size_t index, std::size_t count) {
-    const int span = static_cast<int>(count - 1) * kCarouselDotSpacing;
-    return kScreenWidth / 2 - span / 2 + static_cast<int>(index) * kCarouselDotSpacing;
+//: What a tap at this coordinate means while the carousel is open.
+//:
+//: **Total over the screen**: every pixel answers something, and nothing falls through to the
+//: gesture classifier. A modal picker that let some taps past would tickle the face from behind its
+//: own arrows.
+inline constexpr CarouselZone carouselZoneAt(int x, int y, std::size_t count) {
+    if (y < kFaceTop) return CarouselZone::kCancel;
+    if (y >= kFaceBottom) {
+        return carouselDotAt(x, y, count) < count ? CarouselZone::kDot : CarouselZone::kCancel;
+    }
+    if (x < kCarouselPrevRight) return CarouselZone::kPrev;
+    if (x >= kCarouselNextLeft) return CarouselZone::kNext;
+    return CarouselZone::kConfirm;
 }
 
 //: What the carousel wants to happen.
 enum class CarouselOutcome : uint8_t {
     kNothing,
     kOpened,
-    kMoved,     // the selection changed under the finger; preview it
+    kMoved,     // the selection changed; preview it
     kConfirmed,
     kCancelled,
 };
 
-// The carousel's state: open or not, and which dot the finger is over.
+// The carousel's state.
 //
-// **It previews rather than waiting for a release**, which is the one piece of generosity in a file
-// otherwise built around not stealing a gesture: a strip of five dots says nothing about what the
-// faces look like, and choosing blind is not choosing. So the face changes as the finger slides,
-// and a cancel puts back the one that was worn.
+// **It previews rather than waiting for a confirmation**, which is the one piece of generosity in a
+// file otherwise built around not stealing a gesture: a strip of dots says nothing about what the
+// faces look like, and choosing blind is not choosing. A cancel puts back the one that was worn.
 class Carousel {
   public:
-    //: Open it, remembering what was worn so a cancel can restore it.
     CarouselOutcome open(std::size_t current, std::size_t count, uint32_t now_ms) {
         if (open_ || count == 0) return CarouselOutcome::kNothing;
         open_ = true;
         count_ = count;
         restore_ = current;
         selected_ = current;
-        opened_at_ms_ = now_ms;
+        touched_at_ms_ = now_ms;
+        // **The finger that opened this is still down.** Its release must not be read as a tap on
+        // whatever is now underneath it -- which, since the gesture is a hold on the face, is the
+        // confirm zone. Without this, every carousel would close the instant it appeared.
+        awaiting_release_ = true;
         return CarouselOutcome::kOpened;
     }
 
-    //: The finger moved. Returns `kMoved` only when the selection actually changed -- a preview
-    //: reissued every frame would redraw the face fifty times a second for a finger sitting still.
-    CarouselOutcome moved(int x, int y) {
-        if (!open_) return CarouselOutcome::kNothing;
-        const std::size_t dot = carouselDotAt(x, y, count_);
-        outside_ = dot >= count_;
-        if (outside_ || dot == selected_) return CarouselOutcome::kNothing;
-        selected_ = dot;
-        return CarouselOutcome::kMoved;
-    }
+    //: The finger left the glass. Only interesting for the press that opened the carousel.
+    void released() { awaiting_release_ = false; }
 
-    //: The finger left. Outside the strip cancels; on it confirms.
-    CarouselOutcome released() {
-        if (!open_) return CarouselOutcome::kNothing;
-        open_ = false;
-        if (outside_) {
-            selected_ = restore_;
-            return CarouselOutcome::kCancelled;
+    //: A tap landed. Returns what it meant.
+    CarouselOutcome tapped(int x, int y, uint32_t now_ms) {
+        if (!open_ || awaiting_release_) return CarouselOutcome::kNothing;
+        touched_at_ms_ = now_ms;
+
+        switch (carouselZoneAt(x, y, count_)) {
+            case CarouselZone::kPrev:
+                // **Wrapping, both ways.** Five faces and no wrap means the person at one end has
+                // to travel the whole strip to reach the other -- with a picker this small, the
+                // ends are where you most often are.
+                selected_ = selected_ == 0 ? count_ - 1 : selected_ - 1;
+                return CarouselOutcome::kMoved;
+
+            case CarouselZone::kNext:
+                selected_ = selected_ + 1 >= count_ ? 0 : selected_ + 1;
+                return CarouselOutcome::kMoved;
+
+            case CarouselZone::kDot: {
+                const std::size_t dot = carouselDotAt(x, y, count_);
+                if (dot == selected_) return CarouselOutcome::kNothing;
+                selected_ = dot;
+                return CarouselOutcome::kMoved;
+            }
+
+            case CarouselZone::kConfirm:
+                open_ = false;
+                return CarouselOutcome::kConfirmed;
+
+            case CarouselZone::kCancel:
+                open_ = false;
+                selected_ = restore_;
+                return CarouselOutcome::kCancelled;
+
+            case CarouselZone::kNone:
+                break;
         }
-        return CarouselOutcome::kConfirmed;
+        return CarouselOutcome::kNothing;
     }
 
-    //: Give up without a release -- the device changed state under the finger, or the socket died.
+    //: Time passing. Closes an untouched picker rather than leaving the face buried under arrows.
+    CarouselOutcome tick(uint32_t now_ms) {
+        if (!open_ || now_ms - touched_at_ms_ < kCarouselIdleMs) return CarouselOutcome::kNothing;
+        open_ = false;
+        selected_ = restore_;
+        return CarouselOutcome::kCancelled;
+    }
+
+    //: Give up without a decision -- the device changed state under the finger, or the socket died.
     //: **Restores rather than keeping the preview**: a face chosen by an interrupted gesture is a
     //: face nobody chose.
     CarouselOutcome abandon() {
@@ -138,15 +204,14 @@ class Carousel {
     bool isOpen() const { return open_; }
     std::size_t selected() const { return selected_; }
     std::size_t count() const { return count_; }
-    uint32_t openedAtMs() const { return opened_at_ms_; }
 
   private:
     bool open_ = false;
-    bool outside_ = false;
+    bool awaiting_release_ = false;
     std::size_t count_ = 0;
     std::size_t selected_ = 0;
     std::size_t restore_ = 0;
-    uint32_t opened_at_ms_ = 0;
+    uint32_t touched_at_ms_ = 0;
 };
 
 }  // namespace roboface

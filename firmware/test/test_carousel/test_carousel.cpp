@@ -75,12 +75,47 @@ static void test_far_to_either_side_is_outside_it() {
 }
 
 // ---------------------------------------------------------------------------------------
-// Choosing
+// Choosing — by tapping, since v2.6.2
 // ---------------------------------------------------------------------------------------
 
+namespace {
+
+//: A carousel already open and past the release of the press that opened it, which is where every
+//: test about *choosing* wants to start.
+Carousel ready(std::size_t current) {
+    Carousel carousel;
+    carousel.open(current, kSkins, 1000);
+    carousel.released();
+    return carousel;
+}
+
+//: Coordinates for each zone, taken from the layout rather than typed.
+constexpr int kPrevX = roboface::kFaceLeft + 10;
+constexpr int kNextX = roboface::kFaceRight - 10;
+constexpr int kMidX = roboface::kScreenWidth / 2;
+constexpr int kMidY = roboface::kFaceTop + roboface::kFaceHeight / 2;
+
+}  // namespace
+
+static void test_the_zones_cover_every_pixel() {
+    // **Total over the screen.** A modal picker that let some taps fall through would tickle the
+    // face from behind its own arrows -- the leak the mute gesture kept springing, in a new place.
+    for (int x = 0; x < roboface::kScreenWidth; x += 7) {
+        for (int y = 0; y < roboface::kScreenHeight; y += 7) {
+            TEST_ASSERT_NOT_EQUAL(static_cast<int>(roboface::CarouselZone::kNone),
+                                  static_cast<int>(roboface::carouselZoneAt(x, y, kSkins)));
+        }
+    }
+}
+
+static void test_every_target_is_bigger_than_a_fingertip() {
+    // The measurement that forced this redesign: the old strip asked for a 5 px dot, and on the
+    // board that was called stiff. A fingertip is about 24 px.
+    TEST_ASSERT_TRUE(roboface::kCarouselArrowWidth >= 70);
+    TEST_ASSERT_TRUE(roboface::kCarouselNextLeft - roboface::kCarouselPrevRight >= 70);
+}
+
 static void test_opening_starts_on_the_face_already_worn() {
-    // Not on the first dot. A carousel that opened on stackchan every time would mean the person
-    // wearing the cloud has to travel back to it to cancel.
     Carousel carousel;
     TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kOpened),
                           static_cast<int>(carousel.open(3, kSkins, 1000)));
@@ -88,52 +123,108 @@ static void test_opening_starts_on_the_face_already_worn() {
     TEST_ASSERT_TRUE(carousel.isOpen());
 }
 
-static void test_sliding_previews_and_releasing_confirms() {
+static void test_the_press_that_opened_it_does_not_also_confirm_it() {
+    // **The bug this guard exists for.** The gesture is a hold *on the face*, which is the confirm
+    // zone -- so without it every carousel would close on the release of the press that opened it,
+    // in the same frame, and nobody would ever see the strip.
     Carousel carousel;
     carousel.open(0, kSkins, 1000);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kNothing),
+                          static_cast<int>(carousel.tapped(kMidX, kMidY, 1100)));
+    TEST_ASSERT_TRUE(carousel.isOpen());
+
+    carousel.released();
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kConfirmed),
+                          static_cast<int>(carousel.tapped(kMidX, kMidY, 1200)));
+}
+
+static void test_the_arrows_step_and_wrap() {
+    // Wrapping both ways, because with five faces and no wrap the person at one end has to travel
+    // the whole strip to reach the other -- and with a picker this small the ends are where you
+    // most often are.
+    Carousel carousel = ready(0);
 
     TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kMoved),
-                          static_cast<int>(carousel.moved(carouselDotX(2, kSkins), kStripY)));
-    TEST_ASSERT_EQUAL_UINT32(2, carousel.selected());
+                          static_cast<int>(carousel.tapped(kPrevX, kMidY, 1100)));
+    TEST_ASSERT_EQUAL_UINT32(kSkins - 1, carousel.selected());
+
+    carousel.tapped(kNextX, kMidY, 1200);
+    TEST_ASSERT_EQUAL_UINT32(0, carousel.selected());
+
+    carousel.tapped(kNextX, kMidY, 1300);
+    TEST_ASSERT_EQUAL_UINT32(1, carousel.selected());
+}
+
+static void test_a_dot_jumps_straight_to_its_face() {
+    // The dots stay because a strip with one lit is the only thing that says *where you are* -- but
+    // nothing requires hitting one any more, and hitting one is a shortcut rather than the method.
+    Carousel carousel = ready(0);
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kMoved),
+                          static_cast<int>(carousel.tapped(carouselDotX(3, kSkins),
+                                                           kStripY, 1100)));
+    TEST_ASSERT_EQUAL_UINT32(3, carousel.selected());
+}
+
+static void test_tapping_the_dot_already_lit_changes_nothing() {
+    Carousel carousel = ready(2);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kNothing),
+                          static_cast<int>(carousel.tapped(carouselDotX(2, kSkins),
+                                                           kStripY, 1100)));
+    TEST_ASSERT_TRUE(carousel.isOpen());
+}
+
+static void test_tapping_the_face_confirms_it() {
+    Carousel carousel = ready(0);
+    carousel.tapped(kNextX, kMidY, 1100);
+
     TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kConfirmed),
-                          static_cast<int>(carousel.released()));
-    TEST_ASSERT_EQUAL_UINT32(2, carousel.selected());
+                          static_cast<int>(carousel.tapped(kMidX, kMidY, 1200)));
+    TEST_ASSERT_EQUAL_UINT32(1, carousel.selected());
     TEST_ASSERT_FALSE(carousel.isOpen());
 }
 
-static void test_a_finger_sitting_still_does_not_repreview() {
-    // A preview reissued every frame would redraw the face fifty times a second and make the whole
-    // strip flicker under a motionless finger.
-    Carousel carousel;
-    carousel.open(0, kSkins, 1000);
-    carousel.moved(carouselDotX(2, kSkins), kStripY);
+static void test_the_top_band_cancels_and_restores() {
+    // **The escape**, and it is a large target on purpose: the gesture already cost a listening
+    // window, so changing your mind must not be the hardest part.
+    Carousel carousel = ready(4);
+    carousel.tapped(kPrevX, kMidY, 1100);
+    TEST_ASSERT_EQUAL_UINT32(3, carousel.selected());  // previewed
 
-    for (int i = 0; i < 20; ++i) {
-        TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kNothing),
-                              static_cast<int>(carousel.moved(carouselDotX(2, kSkins) + 1, kStripY)));
-    }
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kCancelled),
+                          static_cast<int>(carousel.tapped(kMidX, 8, 1200)));
+    TEST_ASSERT_EQUAL_UINT32(4, carousel.selected());  // the face that was worn
+    TEST_ASSERT_FALSE(carousel.isOpen());
 }
 
-static void test_releasing_outside_the_strip_cancels_and_restores() {
-    // **The escape.** Snapping to the nearest dot would mean a person who has changed their mind
-    // cannot say so -- and the gesture has already cost them a listening window.
-    Carousel carousel;
-    carousel.open(4, kSkins, 1000);
-    carousel.moved(carouselDotX(1, kSkins), kStripY);
-    TEST_ASSERT_EQUAL_UINT32(1, carousel.selected());  // previewed
+static void test_an_untouched_picker_gives_up() {
+    // A picker that stays open forever is a device that has stopped being a companion: the gesture
+    // can be performed by accident, and the face is buried under arrows until someone deals with it.
+    Carousel carousel = ready(2);
+    carousel.tapped(kNextX, kMidY, 1100);
 
-    carousel.moved(roboface::kScreenWidth / 2, 60);  // slid up onto the face
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kNothing),
+                          static_cast<int>(carousel.tick(1100 + roboface::kCarouselIdleMs - 1)));
     TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kCancelled),
-                          static_cast<int>(carousel.released()));
-    TEST_ASSERT_EQUAL_UINT32(4, carousel.selected());  // the face that was worn
+                          static_cast<int>(carousel.tick(1100 + roboface::kCarouselIdleMs)));
+    TEST_ASSERT_EQUAL_UINT32(2, carousel.selected());  // restored, not the preview
+}
+
+static void test_every_tap_postpones_the_timeout() {
+    Carousel carousel = ready(0);
+    uint32_t clock = 1000;
+    for (int i = 0; i < 10; ++i) {
+        clock += roboface::kCarouselIdleMs - 500;
+        carousel.tapped(kNextX, kMidY, clock);
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kNothing),
+                              static_cast<int>(carousel.tick(clock + 10)));
+    }
+    TEST_ASSERT_TRUE(carousel.isOpen());
 }
 
 static void test_being_abandoned_restores_rather_than_keeping_the_preview() {
-    // The device changed state under the finger, or the socket died. A face chosen by an
-    // interrupted gesture is a face nobody chose.
-    Carousel carousel;
-    carousel.open(0, kSkins, 1000);
-    carousel.moved(carouselDotX(3, kSkins), kStripY);
+    Carousel carousel = ready(0);
+    carousel.tapped(kNextX, kMidY, 1100);
 
     TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kCancelled),
                           static_cast<int>(carousel.abandon()));
@@ -144,20 +235,17 @@ static void test_being_abandoned_restores_rather_than_keeping_the_preview() {
 static void test_a_closed_carousel_ignores_everything() {
     Carousel carousel;
     TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kNothing),
-                          static_cast<int>(carousel.moved(160, kStripY)));
+                          static_cast<int>(carousel.tapped(kMidX, kMidY, 1000)));
     TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kNothing),
-                          static_cast<int>(carousel.released()));
+                          static_cast<int>(carousel.tick(999999)));
     TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kNothing),
                           static_cast<int>(carousel.abandon()));
 }
 
 static void test_opening_twice_is_not_a_second_open() {
-    Carousel carousel;
-    carousel.open(2, kSkins, 1000);
-    carousel.moved(carouselDotX(0, kSkins), kStripY);
+    Carousel carousel = ready(2);
+    carousel.tapped(carouselDotX(0, kSkins), kStripY, 1100);
 
-    // A second `kHeldSilent` while it is already open must not reset the selection to the face
-    // being worn -- which is the one under the finger's *origin*, not the one being previewed.
     TEST_ASSERT_EQUAL_INT(static_cast<int>(CarouselOutcome::kNothing),
                           static_cast<int>(carousel.open(2, kSkins, 2000)));
     TEST_ASSERT_EQUAL_UINT32(0, carousel.selected());
@@ -219,10 +307,17 @@ int main(int, char**) {
     RUN_TEST(test_a_press_between_two_dots_takes_the_nearer);
     RUN_TEST(test_well_above_the_strip_is_outside_it);
     RUN_TEST(test_far_to_either_side_is_outside_it);
+    RUN_TEST(test_the_zones_cover_every_pixel);
+    RUN_TEST(test_every_target_is_bigger_than_a_fingertip);
     RUN_TEST(test_opening_starts_on_the_face_already_worn);
-    RUN_TEST(test_sliding_previews_and_releasing_confirms);
-    RUN_TEST(test_a_finger_sitting_still_does_not_repreview);
-    RUN_TEST(test_releasing_outside_the_strip_cancels_and_restores);
+    RUN_TEST(test_the_press_that_opened_it_does_not_also_confirm_it);
+    RUN_TEST(test_the_arrows_step_and_wrap);
+    RUN_TEST(test_a_dot_jumps_straight_to_its_face);
+    RUN_TEST(test_tapping_the_dot_already_lit_changes_nothing);
+    RUN_TEST(test_tapping_the_face_confirms_it);
+    RUN_TEST(test_the_top_band_cancels_and_restores);
+    RUN_TEST(test_an_untouched_picker_gives_up);
+    RUN_TEST(test_every_tap_postpones_the_timeout);
     RUN_TEST(test_being_abandoned_restores_rather_than_keeping_the_preview);
     RUN_TEST(test_a_closed_carousel_ignores_everything);
     RUN_TEST(test_opening_twice_is_not_a_second_open);

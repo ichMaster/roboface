@@ -65,6 +65,33 @@ inline constexpr bool inMicButton(int x, int y) {
     return x >= 0 && x < kMicButtonHitWidth && y >= 0 && y < kMicButtonHitHeight;
 }
 
+// The skin button: bottom-left, mirroring the microphone button above it.
+//
+// **Added because the gesture was not good enough**, and saying so is the point. v2.6 put face
+// switching on a hold that converts after 1.2 s of silence — a gesture that has to be waited out,
+// costs a listening window, and then asked for a slide along 5 px dots. On the board it was called
+// stiff, and it was.
+//
+// So the picker gets a door: a visible target that opens it in one tap, exactly as mute did when it
+// stopped being a gesture. The hold still works — it is in DEVICE_UI and costs nothing to keep —
+// but nobody has to know about it.
+//
+// The same 84x44 as the microphone button, reaching *up* into the face area rather than down, for
+// the same measured reason: a 28 px band is one fingertip tall and a corner control is aimed at
+// rather than looked at.
+inline constexpr int kSkinButtonWidth = 18;
+inline constexpr int kSkinButtonHeight = 14;
+inline constexpr int kSkinButtonLeft = 6;
+inline constexpr int kSkinButtonTop = kFaceBottom + (kBandHeight - kSkinButtonHeight) / 2;
+
+inline constexpr int kSkinButtonHitWidth = 84;
+inline constexpr int kSkinButtonHitHeight = 44;
+inline constexpr int kSkinButtonHitTop = kScreenHeight - kSkinButtonHitHeight;
+
+inline constexpr bool inSkinButton(int x, int y) {
+    return x >= 0 && x < kSkinButtonHitWidth && y >= kSkinButtonHitTop && y < kScreenHeight;
+}
+
 // Where the status cluster sits (top-right, 12 px glyphs).
 inline constexpr int kGlyphSize = 12;
 inline constexpr int kStatusClusterRight = kScreenWidth - 8;

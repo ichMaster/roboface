@@ -117,7 +117,9 @@ static void test_outside_the_face_is_not_affection() {
     // (5,5) used to be here and is now the microphone button -- see the zone test below.
     TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kOutside), static_cast<int>(roboface::zoneAt(160, 5)));
     TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kOutside), static_cast<int>(roboface::zoneAt(315, 120)));
-    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kOutside), static_cast<int>(roboface::zoneAt(5, 230)));
+    // (5, 230) used to be here and is now the skin button — the bottom-left mirror of the mic one.
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kOutside),
+                          static_cast<int>(roboface::zoneAt(200, 230)));
 }
 
 static void test_a_press_survives_a_state_change_under_the_finger() {
@@ -156,6 +158,45 @@ static void test_the_button_survives_it_too() {
     const auto result = gestures.feed({false, 10, 10, 1200});
 
     TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kMicToggle), static_cast<int>(result.gesture));
+}
+
+static void test_the_skin_button_owns_the_bottom_left_corner() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kSkinButton),
+                          static_cast<int>(roboface::zoneAt(5, roboface::kScreenHeight - 1)));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kSkinButton),
+                          static_cast<int>(roboface::zoneAt(40, roboface::kSkinButtonHitTop)));
+
+    // And it stops. It reaches *up* into the face for the same measured reason the mic button
+    // reaches down: a 28 px band is one fingertip tall.
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kSkinButton),
+                          static_cast<int>(roboface::zoneAt(40, roboface::kFaceBottom - 4)));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kOutside),
+                          static_cast<int>(roboface::zoneAt(roboface::kSkinButtonHitWidth, 230)));
+}
+
+static void test_the_two_buttons_do_not_overlap_each_other() {
+    // They are the same width and reach toward each other from opposite bands. On a 240 px screen
+    // that leaves 152 px of face between them, but the arithmetic is what proves it rather than
+    // the eye -- and a later change to either height is exactly the kind that would close the gap
+    // silently.
+    TEST_ASSERT_TRUE(roboface::kMicButtonHitHeight < roboface::kSkinButtonHitTop);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchZone::kForehead),
+                          static_cast<int>(roboface::zoneAt(40, roboface::kMicButtonHitHeight)));
+}
+
+static void test_the_skin_button_is_a_tap_and_not_affection() {
+    roboface::TouchGestures gestures;
+    gestures.feed({true, 20, roboface::kScreenHeight - 10, 1000});
+    const auto result = gestures.feed({false, 20, roboface::kScreenHeight - 10, 1200});
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TouchGesture::kSkinPicker),
+                          static_cast<int>(result.gesture));
+
+    // And it does not join the tap run, for the same reason the mic button does not: a person
+    // reaching for a control has not petted anything.
+    gestures.feed({true, kCheekX, kCheekY, 2000});
+    const auto face = gestures.feed({false, kCheekX, kCheekY, 2060});
+    TEST_ASSERT_EQUAL_UINT8(1, face.count);
 }
 
 static void test_the_microphone_button_owns_the_top_left_corner() {
@@ -605,6 +646,9 @@ int main(int, char**) {
     RUN_TEST(test_forget_is_not_reset);
     RUN_TEST(test_a_state_change_still_drops_the_tap_run);
     RUN_TEST(test_the_button_survives_it_too);
+    RUN_TEST(test_the_skin_button_owns_the_bottom_left_corner);
+    RUN_TEST(test_the_two_buttons_do_not_overlap_each_other);
+    RUN_TEST(test_the_skin_button_is_a_tap_and_not_affection);
     RUN_TEST(test_the_microphone_button_owns_the_top_left_corner);
     RUN_TEST(test_the_button_never_draws_over_the_face);
     RUN_TEST(test_the_whole_target_answers_as_the_button);

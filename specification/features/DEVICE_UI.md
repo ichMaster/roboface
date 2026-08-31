@@ -58,9 +58,36 @@ The face is the button. Gestures split into two families: **affection**, which t
 | Swipe down from the top edge | — | control | the **status sheet** (below) |
 | Swipe up / tap outside | — | control | dismiss the sheet |
 | Tap the mic button | top-left corner | control | mute / unmute the microphone, with an audible click |
-| Hold 1.2 s without speaking | the face | control | opens the **skin carousel**: slide to choose, release to confirm |
+| Tap the skin button | bottom-left corner | control | opens the **face picker** |
+| Hold 1.2 s without speaking | the face | control | opens the same picker — the older way in |
 
-> **The carousel is the only gesture that takes something back, and it is built to make that cheap**
+> **The picker is driven by taps, and it has a door.** Both are corrections, and both were made on
+> the board rather than on paper.
+>
+> The first version followed the obvious reading of "carousel": hold for 1.2 s, keep the finger down,
+> slide along a strip of dots, release on one. It reads well and it is stiff in a hand — the dots are
+> 5 px on a 320 px panel, the finger covers the thing it is selecting, and the whole gesture has to
+> be completed without letting go. So the strip became a **modal picker**: ◀ and ▶ at the edges of
+> the face area (76 px columns), the face previewed between them, the dots at the bottom as a
+> position indicator you may tap but never have to hit. The top band cancels. Twenty seconds
+> untouched closes it, because the opening gesture can be performed by accident and a face buried
+> under arrows is a device that looks broken.
+>
+> And face switching got a **visible target**, exactly as mute did: a button in the **bottom-left**
+> corner, mirroring the microphone above it, same 84×44. A gesture you have to wait out, that costs
+> a listening window, is not something anyone should have to know about in order to change a face.
+> The hold still works and stays documented; nobody needs it.
+>
+> The level meter starts after the button rather than under it. When a courtesy and a control want
+> the same pixels, the control keeps them: three bars fewer is a meter nobody notices changed, and a
+> button drawn over is a button that stops being pressable.
+>
+> **The Core S3 has no physical buttons** — measured, not assumed: `A/B/C` register nothing, and the
+> highest touch coordinate the panel has ever reported is 227 of 240, so the glass does not extend
+> below the display. Every control on this device is on the screen, which is why the two that exist
+> are in opposite corners and never fade.
+>
+> **The carousel is still the only gesture that takes something back, and it is built to make that cheap**
 > (v2.6). A hold is push-to-talk from the first millisecond — that is the common case and must not
 > wait — so by the time 1.2 s of silence converts it, a listening window has been opened and is then
 > taken away. The device closes it explicitly rather than leaving it open behind the strip: a

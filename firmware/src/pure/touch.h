@@ -27,7 +27,8 @@ namespace roboface {
 //: than to the character -- a touch there is not affection.
 enum class TouchZone : uint8_t {
     kOutside,
-    kMicButton,  // the one control target on the screen: top-left of the upper band
+    kMicButton,   // top-left: mute
+    kSkinButton,  // bottom-left: open the face picker
     kForehead,
     kEye,
     kCheek,
@@ -46,6 +47,7 @@ enum class TouchGesture : uint8_t {
     kLongPress,   // held past the PTT threshold -- control, not affection
     kHeldSilent,  // held past 1.2 s with no speech: v2.6 turns this into the carousel
     kMicToggle,   // the microphone button was tapped -- control, not affection
+    kSkinPicker,  // the skin button was tapped -- open the face picker
     kCount,
 };
 
@@ -59,6 +61,7 @@ inline constexpr const char* toString(TouchGesture gesture) {
         case TouchGesture::kLongPress: return "long_press";
         case TouchGesture::kHeldSilent: return "held_silent";
         case TouchGesture::kMicToggle: return "mic_toggle";
+        case TouchGesture::kSkinPicker: return "skin_picker";
         case TouchGesture::kCount: break;
     }
     return "none";
@@ -106,6 +109,7 @@ inline constexpr TouchZone zoneAt(int x, int y, const FaceGeometry& geometry = {
     // The order still matters for readability -- a reader should not have to prove the two are
     // disjoint to know which one wins.
     if (inMicButton(x, y)) return TouchZone::kMicButton;
+    if (inSkinButton(x, y)) return TouchZone::kSkinButton;
 
     if (x < kFaceLeft || x >= kFaceRight || y < kFaceTop || y >= kFaceBottom) {
         return TouchZone::kOutside;
@@ -193,7 +197,8 @@ class TouchGestures {
             return result;
         }
 
-        if (sample.down && held_ && zone_ == TouchZone::kMicButton) {
+        if (sample.down && held_ &&
+            (zone_ == TouchZone::kMicButton || zone_ == TouchZone::kSkinButton)) {
             // **A button is a button.** A press that began on the control produces one outcome or
             // none -- never a stroke, never the carousel hold. Sliding off it far enough cancels,
             // which is the ordinary button idiom and the only way to change your mind after
@@ -239,7 +244,7 @@ class TouchGestures {
 
             if (reported_hold_) return result;  // already spoken for: a stroke, the hold, or a cancel
 
-            if (zone_ == TouchZone::kMicButton) {
+            if (zone_ == TouchZone::kMicButton || zone_ == TouchZone::kSkinButton) {
                 // Control, and it deliberately does **not** join the tap run: `taps_` is affection's
                 // counter, and a person reaching for mute has not petted anything.
                 //
@@ -256,7 +261,8 @@ class TouchGestures {
                     return result;
                 }
                 reported_at_ms_ = sample.at_ms;
-                result.gesture = TouchGesture::kMicToggle;
+                result.gesture = zone_ == TouchZone::kMicButton ? TouchGesture::kMicToggle
+                                                                : TouchGesture::kSkinPicker;
                 result.zone = zone_;
                 result.count = 1;
                 return result;

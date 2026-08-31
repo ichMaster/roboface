@@ -82,7 +82,16 @@ void ChromeView::draw(M5Canvas* canvas, const roboface::Chrome& chrome, float le
 
     if (shown.band == roboface::BandTenant::kFault) drawFaultLine(*canvas, chrome.fault());
     if (shown.band == roboface::BandTenant::kLevel) drawLevelMeter(*canvas, level);
-    if (shown.band == roboface::BandTenant::kCarousel) drawCarousel(*canvas, selected, skins);
+    if (shown.band == roboface::BandTenant::kCarousel) {
+        drawCarousel(*canvas, selected, skins);
+        // The arrows and the confirm hint live **over the face**, not in the band, and are drawn
+        // only while the picker is open. The face is still visible between them: choosing blind is
+        // not choosing, so the preview is the largest thing on the screen.
+        drawPickerControls(*canvas);
+    } else {
+        // Hidden while the picker is open -- it is the door, and the door is already open.
+        drawSkinButton(*canvas);
+    }
     if (shown.band == roboface::BandTenant::kToast) drawToast(*canvas, chrome.toastText());
 }
 
@@ -172,9 +181,13 @@ void ChromeView::drawLevelMeter(M5Canvas& canvas, float level) {
     // The only signal that the device is listening. DEVICE_UI and MISSION both say a device state
     // is a face or an indicator and never a word, so **no text is drawn here** -- not "listening",
     // not a dB figure, nothing. The bar is the message.
-    constexpr int kBars = 16;
+    constexpr int kBars = 13;
     constexpr int kGap = 2;
-    const int span = roboface::kScreenWidth - 2 * kMeterMargin;
+    // **Starts after the skin button** (v2.6.2). The meter is a courtesy and the button is a
+    // control; when they want the same pixels, the control keeps them. Three bars fewer is a meter
+    // nobody will notice changed; a button drawn over is a button that stops being pressable.
+    const int meter_left = roboface::kSkinButtonHitWidth - 12;
+    const int span = roboface::kScreenWidth - meter_left - kMeterMargin;
     const int bar_width = (span - (kBars - 1) * kGap) / kBars;
     const std::size_t lit = roboface::barsForLevel(level, kBars);
 
@@ -184,7 +197,7 @@ void ChromeView::drawLevelMeter(M5Canvas& canvas, float level) {
         // all-dark band and a band with no meter look identical, and one of them is a fault.
         const int height = kMeterMinHeight +
                            (kMeterMaxHeight - kMeterMinHeight) * index / (kBars - 1);
-        const int x = kMeterMargin + index * (bar_width + kGap);
+        const int x = meter_left + index * (bar_width + kGap);
         const uint16_t colour =
             static_cast<std::size_t>(index) < lit ? kIndicatorColour : kMeterIdleColour;
         canvas.fillRect(x, base - height, bar_width, height, colour);
@@ -206,6 +219,41 @@ void ChromeView::drawCarousel(M5Canvas& canvas, std::size_t selected, std::size_
             canvas.drawCircle(x, y, roboface::kCarouselDotRadius, kMeterIdleColour);
         }
     }
+}
+
+void ChromeView::drawSkinButton(M5Canvas& canvas) {
+    // Two overlapping rounded shapes: one face behind another. **A picture rather than a word**,
+    // as everything on this screen is except a fault code and a toast.
+    const int x = roboface::kSkinButtonLeft;
+    const int y = roboface::kSkinButtonTop;
+    const int w = roboface::kSkinButtonWidth;
+    const int h = roboface::kSkinButtonHeight;
+
+    static_assert(roboface::clearOfFace(roboface::kSkinButtonLeft, roboface::kSkinButtonTop,
+                                        roboface::kSkinButtonWidth, roboface::kSkinButtonHeight),
+                  "the skin glyph must not overlap the face");
+
+    canvas.drawRoundRect(x, y, w - 6, h, 4, kMeterIdleColour);
+    canvas.fillRoundRect(x + 6, y + 2, w - 6, h - 2, 4, kIndicatorColour);
+    // Two eyes on the front one, so it reads as a face rather than as two rectangles.
+    canvas.fillRect(x + 10, y + 6, 2, 2, kBandBackground);
+    canvas.fillRect(x + 15, y + 6, 2, 2, kBandBackground);
+}
+
+void ChromeView::drawPickerControls(M5Canvas& canvas) {
+    // **Triangles at the edges of the face area, vertically centred.** Drawn rather than tapped
+    // into a band because they replaced a 5 px dot: the target is the whole 76 px column, and the
+    // glyph only has to say which way it goes.
+    const int cy = roboface::kFaceTop + roboface::kFaceHeight / 2;
+    constexpr int kArrow = 14;
+
+    const int left_x = roboface::kFaceLeft + 22;
+    canvas.fillTriangle(left_x, cy, left_x + kArrow, cy - kArrow, left_x + kArrow, cy + kArrow,
+                        kIndicatorColour);
+
+    const int right_x = roboface::kFaceRight - 22;
+    canvas.fillTriangle(right_x, cy, right_x - kArrow, cy - kArrow, right_x - kArrow, cy + kArrow,
+                        kIndicatorColour);
 }
 
 void ChromeView::drawToast(M5Canvas& canvas, const char* text) {
